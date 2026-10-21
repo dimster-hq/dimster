@@ -41,6 +41,7 @@ non-breaking changes only.
   workers and when writing topology result files.
 - Correctness violation entries retain their detection timestamps so future
   comparison timelines preserve temporal resolution.
+- Packaged images omitted kafka-clients' runtime compression codecs (lz4, zstd, snappy), so any `compression.type` other than `none` failed with `NoClassDefFoundError` on Kubernetes.
 
 ## [0.1.0]
 

@@ -59,7 +59,11 @@
 		<dependencySet>
 			<outputDirectory>lib</outputDirectory>
 			<unpack>false</unpack>
-			<scope>compile</scope>
+			<!-- runtime, not compile: kafka-clients declares its compression
+			     codecs (lz4-java, zstd-jni, snappy-java) as runtime
+			     dependencies, and without them producers fail with
+			     NoClassDefFoundError for any compression.type but none. -->
+			<scope>runtime</scope>
 			<useProjectArtifact>false</useProjectArtifact>
 			<outputFileNameMapping>${artifact.groupId}-${artifact.artifactId}-${artifact.version}${dashClassifier?}.${artifact.extension}</outputFileNameMapping>
 		</dependencySet>
