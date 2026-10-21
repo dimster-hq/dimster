@@ -79,21 +79,42 @@ pub struct DimsterConfig {
     pub environments: HashMap<String, Environment>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct KubernetesConfig {
     #[serde(default = "default_namespace")]
     pub namespace: String,
     pub context: Option<String>,
 }
 
+// Hand-written rather than derived: when the whole `kubernetes:` block is
+// absent, `#[serde(default)]` on DimsterConfig uses this impl, and a derived
+// Default would leave the namespace empty instead of the field default.
+impl Default for KubernetesConfig {
+    fn default() -> Self {
+        Self {
+            namespace: default_namespace(),
+            context: None,
+        }
+    }
+}
+
 fn default_namespace() -> String {
     "dimster".to_string()
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct ImageConfig {
     #[serde(default = "default_tag")]
     pub tag: String,
+}
+
+// Hand-written for the same reason as KubernetesConfig: `dimster init` writes
+// no `image:` block, and a derived Default would give an empty tag (images
+// tagged `dimster:-kafka4.2.0`, which docker rejects).
+impl Default for ImageConfig {
+    fn default() -> Self {
+        Self { tag: default_tag() }
+    }
 }
 
 // Default image tag is the CLI's own package version (set at compile time
@@ -107,10 +128,18 @@ fn default_tag() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct ResultsConfig {
     #[serde(default = "default_results_dir")]
     pub dir: String,
+}
+
+impl Default for ResultsConfig {
+    fn default() -> Self {
+        Self {
+            dir: default_results_dir(),
+        }
+    }
 }
 
 fn default_results_dir() -> String {
@@ -657,6 +686,14 @@ fn set_nested_yaml_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_top_level_blocks_use_field_defaults() {
+        let config: DimsterConfig = serde_yaml::from_str("environments: {}").unwrap();
+        assert_eq!(config.kubernetes.namespace, "dimster");
+        assert_eq!(config.image.tag, env!("CARGO_PKG_VERSION"));
+        assert_eq!(config.results.dir, "./results");
+    }
 
     fn config_with_namespaces(global: &str, envs: &[(&str, Option<&str>)]) -> DimsterConfig {
         let mut environments = HashMap::new();

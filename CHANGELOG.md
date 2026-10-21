@@ -42,6 +42,7 @@ non-breaking changes only.
 - Correctness violation entries retain their detection timestamps so future
   comparison timelines preserve temporal resolution.
 - Packaged images omitted kafka-clients' runtime compression codecs (lz4, zstd, snappy), so any `compression.type` other than `none` failed with `NoClassDefFoundError` on Kubernetes.
+- With no `image:` (or `kubernetes:`/`results:`) block in `dimster-config.yaml`, as written by `dimster init`, the CLI used an empty image tag and `dimster build` failed.
 
 ## [0.1.0]
 
