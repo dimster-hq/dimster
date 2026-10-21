@@ -268,8 +268,8 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
                                              TestResult.PerformanceResults perf,
                                              CorrectnessTimeSeriesRecorder correctnessSeries)
             throws IOException {
-        long startTime = System.nanoTime();
-        long oldTime = System.nanoTime();
+        long startTime = startMeasurementWindow();
+        long oldTime = startTime;
         long endTime = duration.toNanos() > 0 ? startTime + duration.toNanos() : Long.MAX_VALUE;
 
         CumulativeLatencies agg = new CumulativeLatencies();

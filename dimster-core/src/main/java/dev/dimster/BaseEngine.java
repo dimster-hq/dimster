@@ -309,6 +309,15 @@ public abstract class BaseEngine implements AutoCloseable {
     }
 
     /**
+     * Starts a measurement window: discards everything the worker's period
+     * counters accumulated so far, then returns the window's start time.
+     */
+    protected long startMeasurementWindow() throws IOException {
+        worker.getPeriodStats();
+        return System.nanoTime();
+    }
+
+    /**
      * Tells the worker which dataset this test point generates records from
      * (the workload's, or the payload dataset). Must run before clients are
      * created and probed: producers generate rows from it and consumers use

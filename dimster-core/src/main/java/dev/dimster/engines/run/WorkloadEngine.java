@@ -896,8 +896,8 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
     }
 
     private TestResult collectStatsInner(Duration testDuration, boolean collectAgg) throws IOException {
-        long startTime = System.nanoTime();
-        long oldTime = System.nanoTime();
+        long startTime = startMeasurementWindow();
+        long oldTime = startTime;
         long testEndTime = testDuration.toNanos() > 0 ? startTime + testDuration.toNanos() : Long.MAX_VALUE;
 
         TestResult result = new TestResult();

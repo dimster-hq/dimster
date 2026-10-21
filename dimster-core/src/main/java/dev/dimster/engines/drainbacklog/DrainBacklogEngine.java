@@ -174,8 +174,7 @@ public class DrainBacklogEngine extends BaseEngine {
 
         var perf = new TestResult.PerformanceResults();
         var drainData = new DrainBacklogResult.DrainData();
-        long oldTime = System.nanoTime();
-        worker.getPeriodStats(); // discard startup stats
+        long oldTime = startMeasurementWindow();
 
         // === BUILD PHASE ===
         throwOnStopRequested(stopRequested);
