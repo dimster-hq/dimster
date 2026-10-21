@@ -1,0 +1,29 @@
+name: Quick run test - Clicks AVRO
+
+engineConfig:
+  perPartitionMetrics: true   # Producer/consumer metrics with partition-level reporting
+  perConsumerMetrics: true    # Per-consumer metrics (disable for large consumer counts)
+  cooldownMinutes: 0
+  # printContents: true
+
+runConfig:
+  testDurationMinutes: 2     # The duration of each test point with latency recording
+  warmupDurationMinutes: 0    # The initial duration of each test point without latency recording
+  rampIntervals: 0
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 1
+  messageDistributor: KEY_COLUMN
+  consumerType: CONSUMER_GROUP
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 1
+  producersPerTopic: 1
+  producerRate: 1000
+  dataset:
+    preset: clicks
+    format: AVRO
+    keyColumn: user_id
+    columns:
+      user_id:
+        distribution: UNIFORM
