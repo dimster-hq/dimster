@@ -10,48 +10,6 @@ While Dimster is on 0.x, **minor version bumps may include breaking changes**
 layout, or results JSON schema. Patch bumps are bug fixes and additive
 non-breaking changes only.
 
-## [Unreleased]
-
-### Added
-
-- Live modification can restart a random subset of producers with
-  `--restart-producers <N>`.
-- Correctness `CONCURRENT` tests can restart dynamically assigned consumers
-  with deterministic per-test-point selection via `consumerRestartSeed`.
-- Correctness results record cumulative loss, duplicate, out-of-order, and CRC
-  counter arrays at the configured sample interval. Correctness charts and
-  `dimster compare --directory` render complete duplicate, out-of-order, and
-  CRC time series alongside aggregate violation bars. Message loss remains a
-  final aggregate because intermediate missing-message counts represent lag.
-- Generated datasets: the `dataset` workload field (and scenario dimension) makes producers send schema-encoded rows (Avro or JSON) from a preset (`clicks`, `orders`, `taxi`) or inline column definitions, with configurable cardinality, Zipf skew, null rates and clustering, and realistic names, addresses, emails, URLs and text. See docs/concepts/data-generation.md.
-- `BYTES` dataset columns: opaque values with a configurable length, random fraction (`randomRatio`) and cardinality.
-- The `KEY_COLUMN` message distributor, which keys records by a dataset column.
-- `engineConfig.printContents`, which adds each record's key and readable contents to the printed message lines.
-- Measured byte rates in results (`publishBytesRate`, `consumeBytesRate`, `avgRecordBytes`); charts and `dimster csv` use them when present.
-
-### Changed
-
-- `--restart-consumers <N>` now selects exactly N consumers uniformly from the
-  full topology instead of filtering by per-group consumer index. Random
-  producer and consumer selections are recorded in coordinator logs and result
-  JSON.
-- Correctness consumer restart attempts are recorded in each test outcome, and
-  a failed worker dispatch invalidates that outcome.
-- Every record now has a schema, `{_dimster: bytes, ...}`. Workloads without a `dataset` use the payload dataset `{_dimster: bytes, payload: bytes}` in RAW encoding: the header followed by `messageSize - 1` payload bytes, built on the workers from `randomBytesRatio`, `randomizedPayloadPoolSize` or `payloadFile` rather than by the coordinator. As before, normal records are prebuilt arrays shared by all producers, so the default path allocates nothing per record. Normal records are still exactly `messageSize` bytes, but correctness records are now larger by 21 bytes (25 with a CRC), because the correctness header precedes the payload instead of overwriting its start. Results report the dataset as preset `payload`, format `RAW`.
-- `printMessages` lines (`PRODUCED`, `PROCESSED`) are now logged at INFO rather than DEBUG, so they appear without a debug log config.
-- Latency histograms now use 4 significant digits (0.01% resolution) instead of 5. Each was 14-21 MB at 5 digits, so every stats sample copied about 100 MB and cost about a CPU-second; on CPU-limited workers this stretched sampling intervals and caused GC pauses. Reported percentiles change by at most 0.01%.
-
-### Fixed
-
-- Correctness workloads using static consumer assignment now serialize their
-  topic-partition topology correctly when dispatching consumers to remote
-  workers and when writing topology result files.
-- Correctness violation entries retain their detection timestamps so future
-  comparison timelines preserve temporal resolution.
-- Packaged images omitted kafka-clients' runtime compression codecs (lz4, zstd, snappy), so any `compression.type` other than `none` failed with `NoClassDefFoundError` on Kubernetes.
-- With no `image:` (or `kubernetes:`/`results:`) block in `dimster-config.yaml`, as written by `dimster init`, the CLI used an empty image tag and `dimster build` failed.
-- The first period of each run, correctness and drain-backlog phase counted messages sent before the phase began (between the previous phase's last sample and this phase's start), inflating its rate. Most visible on slow clusters, where that gap spans seconds.
-
 ## [0.1.0]
 
 Initial public release.
@@ -100,3 +58,32 @@ Initial public release.
 ### Added
 
 - Infrastructure dimension support via extra metadata arguments and overridable Dimster envs.
+
+## [0.5.0]
+
+### Added
+
+- Live modification can restart a random subset of producers with `--restart-producers <N>`.
+- Correctness `CONCURRENT` tests can restart dynamically assigned consumers with deterministic per-test-point selection via `consumerRestartSeed`.
+- Correctness results record cumulative loss, duplicate, out-of-order, and CRC counter arrays at the configured sample interval. Correctness charts and `dimster compare --directory` render complete duplicate, out-of-order, and CRC time series alongside aggregate violation bars. Message loss remains a final aggregate because intermediate missing-message counts represent lag.
+- Generated datasets: the `dataset` workload field (and scenario dimension) makes producers send schema-encoded rows (Avro or JSON) from a preset (`clicks`, `orders`, `taxi`) or inline column definitions, with configurable cardinality, Zipf skew, null rates and clustering, and realistic names, addresses, emails, URLs and text. See docs/concepts/data-generation.md.
+- `BYTES` dataset columns: opaque values with a configurable length, random fraction (`randomRatio`) and cardinality.
+- The `KEY_COLUMN` message distributor, which keys records by a dataset column.
+- `engineConfig.printContents`, which adds each record's key and readable contents to the printed message lines.
+- Measured byte rates in results (`publishBytesRate`, `consumeBytesRate`, `avgRecordBytes`); charts and `dimster csv` use them when present.
+
+### Changed
+
+- `--restart-consumers <N>` now selects exactly N consumers uniformly from the full topology instead of filtering by per-group consumer index. Random producer and consumer selections are recorded in coordinator logs and result JSON.
+- Correctness consumer restart attempts are recorded in each test outcome, and a failed worker dispatch invalidates that outcome.
+- Every record now has a schema. Normal records are still exactly `messageSize` bytes but "dataset" based records depend on the schema, values and format.
+- `printMessages` lines (`PRODUCED`, `PROCESSED`) are now logged at INFO rather than DEBUG, so they appear without a debug log config. `printContent` added to visualize text-renderable payloads.
+- Latency histograms now use 4 significant digits (0.01% resolution) instead of 5 to reduce sizes with minimal impact on accuracy.
+
+### Fixed
+
+- Correctness workloads using static consumer assignment now serialize their topic-partition topology correctly when dispatching consumers to remote workers and when writing topology result files.
+- Correctness violation entries retain their detection timestamps so future comparison timelines preserve temporal resolution.
+- Packaged images omitted kafka-clients' runtime compression codecs (lz4, zstd, snappy), so any `compression.type` other than `none` failed with `NoClassDefFoundError` on Kubernetes.
+- With no `image:` (or `kubernetes:`/`results:`) block in `dimster-config.yaml`, as written by `dimster init`, the CLI used an empty image tag and `dimster build` failed.
+- The first period of each run, correctness and drain-backlog phase counted messages sent before the phase began (between the previous phase's last sample and this phase's start), inflating its rate. Most visible on slow clusters, where that gap spans seconds.
