@@ -801,9 +801,12 @@ public class ExploreEngine extends BaseEngine {
         log.info("    Phase 3: Sustaining {} msgs/s for {}s ({} intervals)",
                 rateFormat.format(rate), config.sustainDurationSeconds, sustainIntervals);
 
-        Histogram aggPublishLatency = new Histogram(dev.dimster.stats.StatsCollector.NON_E2E_LATENCY_MAX_MICROS, 5);
-        Histogram aggE2eLatency = new Histogram(dev.dimster.stats.StatsCollector.E2E_LATENCY_MAX_MICROS, 5);
-        Histogram aggE2eDeliveryLatency = new Histogram(dev.dimster.stats.StatsCollector.E2E_LATENCY_MAX_MICROS, 5);
+        Histogram aggPublishLatency = new Histogram(dev.dimster.stats.StatsCollector.NON_E2E_LATENCY_MAX_MICROS,
+                dev.dimster.stats.StatsCollector.LATENCY_SIG_DIGITS);
+        Histogram aggE2eLatency = new Histogram(dev.dimster.stats.StatsCollector.E2E_LATENCY_MAX_MICROS,
+                dev.dimster.stats.StatsCollector.LATENCY_SIG_DIGITS);
+        Histogram aggE2eDeliveryLatency = new Histogram(dev.dimster.stats.StatsCollector.E2E_LATENCY_MAX_MICROS,
+                dev.dimster.stats.StatsCollector.LATENCY_SIG_DIGITS);
 
         if (skipStabilize) {
             log.info("    Skipping stabilize — last window at sustainable rate");

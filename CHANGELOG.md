@@ -32,6 +32,7 @@ non-breaking changes only.
   JSON.
 - Correctness consumer restart attempts are recorded in each test outcome, and
   a failed worker dispatch invalidates that outcome.
+- Latency histograms now use 4 significant digits (0.01% resolution) instead of 5. Each was 14-21 MB at 5 digits, so every stats sample copied about 100 MB and cost about a CPU-second; on CPU-limited workers this stretched sampling intervals and caused GC pauses. Reported percentiles change by at most 0.01%.
 
 ### Fixed
 

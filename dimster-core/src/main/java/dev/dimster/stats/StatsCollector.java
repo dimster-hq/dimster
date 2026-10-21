@@ -25,6 +25,18 @@ public class StatsCollector implements ConsumerCallback {
     public static final long NON_E2E_LATENCY_MAX_MICROS = TimeUnit.MINUTES.toMicros(5);
     public static final long E2E_LATENCY_MAX_MICROS = TimeUnit.HOURS.toMicros(12);
 
+    /**
+     * Precision of the main latency histograms: 4 significant digits, so a
+     * recorded value is accurate to 1 part in 10,000 (0.01%), e.g. within
+     * 4 us at 100 ms and 32 us at 1 s. Reports show milliseconds to two
+     * decimals, so this is invisible below roughly 250 ms. It was 5 digits,
+     * which made each histogram 14-21 MB: every period snapshot then copied
+     * ~100 MB and cost about a CPU-second per sample, slowing period-stats
+     * calls to seconds on CPU-limited workers. At 4 digits they are 2-3 MB.
+     * Recorders, period stats and aggregates must all use the same value.
+     */
+    public static final int LATENCY_SIG_DIGITS = 4;
+
     private final LongAdder messagesSent = new LongAdder();
     private final LongAdder errors = new LongAdder();
     private final LongAdder timeoutErrors = new LongAdder();
@@ -58,18 +70,18 @@ public class StatsCollector implements ConsumerCallback {
     private final LongAdder totalTransactionsCommitted = new LongAdder();
     private final LongAdder totalTransactionsAborted = new LongAdder();
 
-    private final Recorder publishLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 5);
-    private final Recorder scheduleLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 5);
-    private final Recorder publishDelayLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 5);
-    private final Recorder endToEndLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, 5);
+    private final Recorder publishLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final Recorder scheduleLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final Recorder publishDelayLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final Recorder endToEndLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     // Delivery latency: publish timestamp → poll return time (before per-record processing).
     // Only meaningful when consumers simulate processing time — otherwise the value is
     // indistinguishable from endToEndLatency. Gated by recordDeliveryLatency so the
     // histogram + per-record CPU cost are skipped on the common no-processing workload.
-    private final Recorder endToEndDeliveryLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, 5);
+    private final Recorder endToEndDeliveryLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     private volatile boolean recordDeliveryLatency = false;
     private final Recorder pollBatchSizeRecorder = new Recorder(100_000, 3);
-    private final Recorder commitSyncLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 5);
+    private final Recorder commitSyncLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     private final Recorder processingTimeRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 3);
     /**
      * Producer transaction commit latency. Read directly by PrometheusEndpoint

@@ -17,6 +17,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import static dev.dimster.stats.StatsCollector.E2E_LATENCY_MAX_MICROS;
+import static dev.dimster.stats.StatsCollector.LATENCY_SIG_DIGITS;
 import static dev.dimster.stats.StatsCollector.NON_E2E_LATENCY_MAX_MICROS;
 
 public class    PeriodStats {
@@ -48,20 +49,20 @@ public class    PeriodStats {
     public long totalTransactionsAborted = 0;
 
     @JsonIgnore
-    public Histogram publishLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, 5);
+    public Histogram publishLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] publishLatencyBytes;
 
     @JsonIgnore
-    public Histogram publishDelayLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, 5);
+    public Histogram publishDelayLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] publishDelayLatencyBytes;
 
     @JsonIgnore
-    public Histogram endToEndLatency = new Histogram(E2E_LATENCY_MAX_MICROS, 5);
+    public Histogram endToEndLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] endToEndLatencyBytes;
 
     // Delivery latency: publish timestamp → poll return time (before per-record processing)
     @JsonIgnore
-    public Histogram endToEndDeliveryLatency = new Histogram(E2E_LATENCY_MAX_MICROS, 5);
+    public Histogram endToEndDeliveryLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] endToEndDeliveryLatencyBytes;
 
     @JsonIgnore
@@ -69,11 +70,11 @@ public class    PeriodStats {
     public byte[] pollBatchSizeBytes;
 
     @JsonIgnore
-    public Histogram commitSyncLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, 5);
+    public Histogram commitSyncLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] commitSyncLatencyBytes;
 
     @JsonIgnore
-    public Histogram scheduleLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, 5);
+    public Histogram scheduleLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] scheduleLatencyBytes;
 
     @JsonIgnore
