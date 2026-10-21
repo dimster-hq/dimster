@@ -10,6 +10,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 import dev.dimster.availability.AvailabilityResult;
+import dev.dimster.datagen.ResolvedDataset;
+import dev.dimster.worker.commands.PeriodStats;
 
 @JsonPropertyOrder({"mode", "metadata", "kafkaConfig", "workloadConfig", "results"})
 public class TestResult {
@@ -91,6 +93,22 @@ public class TestResult {
         public int rampIntervals;
         public int rampIntervalSeconds;
         public int sampleRateMillis;
+        // Dataset the test point generated records from: "payload"/RAW when
+        // the workload sets none. For other datasets, messageSize is the
+        // estimated average record size. Absent in results from before
+        // datasets existed.
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String datasetPreset;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String datasetFormat;
+
+        /** Records which dataset the test point generated records from. */
+        public void setDataset(ResolvedDataset dataset) {
+            if (dataset != null) {
+                datasetPreset = dataset.preset() != null ? dataset.preset() : "custom";
+                datasetFormat = dataset.format().name();
+            }
+        }
     }
 
     public static class PerformanceResults {
@@ -101,6 +119,35 @@ public class TestResult {
 
         public List<Double> publishRate = new ArrayList<>();
         public List<Double> consumeRate = new ArrayList<>();
+
+        // Measured throughput per period in MB/s (10^6 bytes), from the actual
+        // encoded record sizes. Unlike rate x messageSize this is exact when
+        // record sizes vary, as they do with generated datasets.
+        public List<Double> publishBytesRate = new ArrayList<>();
+        public List<Double> consumeBytesRate = new ArrayList<>();
+        /** Average encoded size of the records sent, over all recorded periods. */
+        public double avgRecordBytes;
+
+        // Running totals behind avgRecordBytes; not part of the result JSON.
+        @JsonIgnore
+        private long recordedBytesSent;
+        @JsonIgnore
+        private long recordedMessagesSent;
+
+        /**
+         * Records one period's measured byte rates, given the period's message
+         * rates. Bytes per second follow as rate x (bytes / messages) for the
+         * period, so callers need not pass the elapsed time again.
+         */
+        public void addByteRates(PeriodStats stats, double publishRate, double consumeRate) {
+            publishBytesRate.add(stats.messagesSent > 0
+                    ? publishRate * stats.bytesSent / stats.messagesSent / 1_000_000 : 0.0);
+            consumeBytesRate.add(stats.messagesReceived > 0
+                    ? consumeRate * stats.bytesReceived / stats.messagesReceived / 1_000_000 : 0.0);
+            recordedBytesSent += stats.bytesSent;
+            recordedMessagesSent += stats.messagesSent;
+            avgRecordBytes = recordedMessagesSent > 0 ? (double) recordedBytesSent / recordedMessagesSent : 0;
+        }
 
         public List<Double> scheduleLatencyMin = new ArrayList<>();
         public List<Double> scheduleLatency50pct = new ArrayList<>();

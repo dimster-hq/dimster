@@ -41,6 +41,7 @@ import dev.dimster.availability.AvailabilityConfig;
 import dev.dimster.availability.AvailabilityRecorder;
 import dev.dimster.availability.AvailabilityResult;
 import dev.dimster.availability.ProbeAssignment;
+import dev.dimster.datagen.ResolvedDataset;
 import dev.dimster.engines.correctness.CorrectnessConfig;
 import dev.dimster.engines.correctness.CorrectnessResult;
 import dev.dimster.kafka.KafkaConfig;
@@ -283,6 +284,22 @@ public class RemoteWorkerClient implements Worker {
         }
     }
 
+    @Override
+    public void setPrintContents(boolean enabled) {
+        try {
+            sendPost(planner.allWorkers(), "/set-print-contents", writer.writeValueAsBytes(enabled));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to set print contents", e);
+        }
+    }
+
+    // Producers generate the rows and consumers read the record format, so
+    // every worker needs the dataset. A null dataset is sent as JSON null.
+    @Override
+    public void setDataset(ResolvedDataset dataset) throws IOException {
+        sendPost(planner.allWorkers(), "/set-dataset", writer.writeValueAsBytes(dataset));
+    }
+
     // Forward to consumer workers only — producers don't simulate processing time.
     // Wire payload is a 2-element int array [minMs, maxMs]; see WorkerHttpServer#handleSetConsumerProcessingTime.
     @Override
@@ -403,15 +420,6 @@ public class RemoteWorkerClient implements Worker {
                 })
                 .toList();
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-    }
-
-    @Override
-    public void updatePayloads(List<byte[]> payloads) throws IOException {
-        // Same payloads land on every producer worker — they're identical
-        // in the existing startLoad fan-out, and runProducer threads on
-        // each worker pick from the same pool.
-        sendPost(planner.producerWorkers(), "/update-payloads",
-                writeBytes(payloads.toArray(new byte[0][])));
     }
 
     private byte[] writeBytes(Object payload) {

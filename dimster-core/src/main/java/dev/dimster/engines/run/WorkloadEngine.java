@@ -289,6 +289,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             log.info("Per-consumer metrics enabled");
         }
 
+        configureDataset(point);
         createConsumers();
         setConsumerRecreation();
         createProducers();
@@ -315,8 +316,6 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         testPointMinutesOverride = 0;
         totalRunMinutesOverride = 0;
 
-        List<byte[]> payloadData = buildPayloads();
-
         // Per-test-point runConfig. When the workload's `scenarios:` block sweeps
         // any runConfig field (e.g. rampIntervals: [3, 5, 10]), each test point
         // carries its own RunConfig snapshot. Defaults to the workload-level config
@@ -338,7 +337,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         boolean scheduledWorkload = point.producerRateSchedule() != null;
 
         ProducerWorkAssignment producerWorkAssignment = new ProducerWorkAssignment(
-                payloadData, initialRate, null, point.messageDistributor(),
+                initialRate, null, point.messageDistributor(),
                 point.partitionsPerTopic(), point.messageDistributorSkew());
 
         worker.startLoad(producerWorkAssignment);
@@ -626,7 +625,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             TestPointMutator.MutationPlan plan;
             try {
                 plan = new TestPointMutator(topologyPlanner,
-                        size -> buildPayloads(base, size))
+                        size -> ScenarioExpander.payloadDataset(base, size))
                         .planConsumerRestart(testPoint, plannedTopology, restartConsumersCount);
             } catch (IllegalArgumentException e) {
                 log.warn("MODIFY rejected: {}", e.getMessage());
@@ -664,7 +663,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             TestPointMutator.MutationPlan plan;
             try {
                 plan = new TestPointMutator(topologyPlanner,
-                        size -> buildPayloads(base, size))
+                        size -> ScenarioExpander.payloadDataset(base, size))
                         .planProducerRestart(testPoint, plannedTopology, restartProducersCount);
             } catch (IllegalArgumentException e) {
                 log.warn("MODIFY rejected: {}", e.getMessage());
@@ -712,12 +711,11 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             TestPointMutator.MutationPlan plan;
             try {
                 plan = new TestPointMutator(topologyPlanner,
-                        // Build payloads at the requested messageSize using
-                        // the same buildPayloads helper that runs at test-
-                        // point start. Holds BaseWorkload's payload settings
-                        // (useRandomizedPayloads, randomBytesRatio, etc.)
-                        // constant across the live change.
-                        size -> buildPayloads(base, size))
+                        // Builds the payload dataset at the requested
+                        // messageSize, exactly as at test-point start, so
+                        // BaseWorkload's payload settings (randomBytesRatio,
+                        // payloadFile, ...) hold across the live change.
+                        size -> ScenarioExpander.payloadDataset(base, size))
                         .plan(testPoint, plannedTopology, req);
             } catch (IllegalArgumentException e) {
                 log.warn("MODIFY rejected: {}", e.getMessage());
@@ -826,12 +824,12 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                     prev.consumerProcParallelism(),
                     prev.consumerProcMode(),
                     prev.consumerProcCapacity());
+            configureDataset(prev);
             worker.createConsumers(consumerSet);
             setConsumerRecreation();
             worker.createProducers(prevTopology.producers());
-            List<byte[]> payloadData = buildPayloads(base, prev.messageSize());
             ProducerWorkAssignment assignment = new ProducerWorkAssignment(
-                    payloadData, effectiveTargetRate(prev), prev.producerRateSchedule(),
+                    effectiveTargetRate(prev), prev.producerRateSchedule(),
                     prev.producerRateSchedule() == null ? null : System.currentTimeMillis(),
                     prev.messageDistributor(),
                     prev.partitionsPerTopic(), prev.messageDistributorSkew());
@@ -844,10 +842,6 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                     "inconsistent state; consider `dimster stop` and restart", e);
             return "force-reset FAILED: " + e.getMessage();
         }
-    }
-
-    private List<byte[]> buildPayloads() {
-        return buildPayloads(base, testPoint.messageSize());
     }
 
     private void setConsumerRecreation() {
@@ -878,14 +872,15 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
      *  Disabled if any test point has producer rate > 50 msg/s, to avoid log
      *  flooding and self-inflicted slowdown. */
     private void applyPrintMessages(List<TestPoint> allPoints) {
-        boolean configured = workload.engineConfig.printMessages;
+        boolean configured = workload.engineConfig.printingRequested();
         boolean effective = configured
                 && allPoints.stream().allMatch(p -> effectiveTargetRate(p) <= 50);
         if (configured && !effective) {
-            log.warn("engineConfig.printMessages disabled: at least one test " +
+            log.warn("engineConfig.printMessages/printContents disabled: at least one test " +
                      "point has producerRate > 50 msg/s");
         }
         worker.setPrintMessages(effective);
+        worker.setPrintContents(effective && workload.engineConfig.printContents);
     }
 
     private TestResult collectStats(Duration testDuration, boolean collectAgg) throws IOException {
@@ -927,6 +922,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         result.workloadConfig.topics = testPoint.topics();
         result.workloadConfig.partitionsPerTopic = testPoint.partitionsPerTopic();
         result.workloadConfig.messageSize = testPoint.messageSize();
+        result.workloadConfig.setDataset(testPoint.dataset());
         result.workloadConfig.messageDistributor = testPoint.messageDistributor().name();
         result.workloadConfig.messageDistributorSkew = testPoint.messageDistributorSkew();
         result.workloadConfig.consumerType = testPoint.consumerType().name();
@@ -1156,6 +1152,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
 
         r.publishRate.add(publishRate);
         r.consumeRate.add(consumeRate);
+        r.addByteRates(stats, publishRate, consumeRate);
         r.publishLatencyAvg.add(microsToMillis(stats.publishLatency.getMean()));
         r.publishLatencyMin.add(microsToMillis(stats.publishLatency.getMinValue()));
         r.publishLatency50pct.add(microsToMillis(stats.publishLatency.getValueAtPercentile(50)));

@@ -34,4 +34,19 @@ public class BaseWorkloadSerializationTest {
         assertTrue("payloadFile should appear when set: " + json,
                 json.contains("\"payloadFile\":\"payload/custom.data\""));
     }
+
+    @Test
+    public void datasetOmittedWhenNullAndRoundTripsWhenSet() throws Exception {
+        var mapper = new ObjectMapper();
+        assertFalse(mapper.writeValueAsString(new BaseWorkload()).contains("dataset"));
+
+        var bw = new BaseWorkload();
+        bw.dataset = new dev.dimster.datagen.DatasetSpec();
+        bw.dataset.preset = "clicks";
+        bw.dataset.format = dev.dimster.datagen.RecordFormat.JSON;
+        String json = mapper.writeValueAsString(bw);
+        assertTrue(json, json.contains("\"dataset\":{\"preset\":\"clicks\",\"format\":\"JSON\"}"));
+        var copy = mapper.readValue(json, BaseWorkload.class);
+        assertTrue("clicks".equals(copy.dataset.preset));
+    }
 }

@@ -1,0 +1,28 @@
+# Taxi trips shaped like the NYC TLC yellow-taxi trip records: mostly small
+# integer codes, 265 skewed pickup/dropoff zones and money amounts with two
+# decimals. Wide and numeric, which suits columnar and projection
+# experiments. Only the shape is modelled; no TLC data is included.
+# About 90 bytes per record as AVRO and 410 as JSON.
+columns:
+  vendor_id:             {type: INT, min: 1, max: 2, cardinality: 2, distribution: ZIPF, skew: 0.5, scramble: false}
+  pickup_time:           {type: TIMESTAMP, jitterMs: 600000}
+  dropoff_time:          {type: TIMESTAMP}
+  passenger_count:       {type: INT, min: 1, max: 6, cardinality: 6, distribution: ZIPF, skew: 1.6, scramble: false, nullRate: 0.03}
+  trip_distance:         {type: DOUBLE, min: 0, max: 12, distribution: NORMAL, scale: 2}
+  ratecode_id:           {type: INT, min: 1, max: 6, cardinality: 6, distribution: ZIPF, skew: 3.0, scramble: false}
+  store_and_fwd_flag:
+    type: STRING
+    values:  [N, Y]
+    weights: [99, 1]
+  pu_location_id:        {type: INT, min: 1, max: 265, cardinality: 265, distribution: ZIPF, skew: 1.0}
+  do_location_id:        {type: INT, min: 1, max: 265, cardinality: 265, distribution: ZIPF, skew: 0.9}
+  payment_type:          {type: INT, min: 1, max: 5, cardinality: 5, distribution: ZIPF, skew: 1.5, scramble: false}
+  fare_amount:           {type: DOUBLE, min: 3, max: 80, distribution: NORMAL, scale: 2}
+  extra:                 {type: DOUBLE, min: 0, max: 5, scale: 1}
+  mta_tax:               {type: DOUBLE, min: 0.5, max: 0.5, scale: 2}
+  tip_amount:            {type: DOUBLE, min: 0, max: 20, scale: 2}
+  tolls_amount:          {type: DOUBLE, min: 0, max: 7, scale: 2, nullRate: 0.9}
+  improvement_surcharge: {type: DOUBLE, min: 1, max: 1, scale: 2}
+  total_amount:          {type: DOUBLE, min: 5, max: 120, distribution: NORMAL, scale: 2}
+  congestion_surcharge:  {type: DOUBLE, min: 0, max: 2.5, scale: 2}
+  airport_fee:           {type: DOUBLE, min: 0, max: 1.75, scale: 2, nullRate: 0.9}

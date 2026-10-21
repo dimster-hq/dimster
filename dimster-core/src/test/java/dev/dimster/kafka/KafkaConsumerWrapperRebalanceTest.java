@@ -13,6 +13,7 @@ import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import dev.dimster.ConsumerProcMode;
+import dev.dimster.datagen.RecordFormat;
 import dev.dimster.spi.kafka.RawConsumer;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -69,7 +70,7 @@ public class KafkaConsumerWrapperRebalanceTest {
         properties.setProperty("dimster.poll.timeout.ms", "1");
         return new KafkaConsumerWrapper(
                 consumer, properties, callback, "topic", "consumer-1",
-                0, 0, 1, staticPartitions, false,
+                0, 0, 1, staticPartitions, false, null, RecordFormat.RAW,
                 ConsumerProcMode.BLOCKING, 0);
     }
 

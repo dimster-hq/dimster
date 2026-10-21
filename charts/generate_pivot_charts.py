@@ -29,8 +29,10 @@ from generate_run_charts import (
     PERCENTILE_TICK_VALUES,
     PERCENTILE_TICK_LABELS,
     avg,
+    avg_mbs,
     bar_options,
     line_options,
+    message_size_cell,
     metadata_annotation_html,
     percentile_options,
     percentile_points,
@@ -238,16 +240,8 @@ def build_pivot_chart_configs(data):
         chart_idx += 1
 
         # ------- Aggregate bar: Throughput (MB/s) -------
-        def to_mbs(rate_arr, msg_size):
-            return round(avg(rate_arr) * msg_size / 1_000_000, 2)
-
-        avg_pub_mb = []
-        avg_con_mb = []
-        for si in range(n_scenarios):
-            t = scenarios[si]["tests"][t_idx]
-            msg_size = t.get("workloadConfig", {}).get("messageSize", 1000)
-            avg_pub_mb.append(to_mbs(t["results"].get("publishRate", []), msg_size))
-            avg_con_mb.append(to_mbs(t["results"].get("consumeRate", []), msg_size))
+        avg_pub_mb = [avg_mbs(scenarios[si]["tests"][t_idx], "publish") for si in range(n_scenarios)]
+        avg_con_mb = [avg_mbs(scenarios[si]["tests"][t_idx], "consume") for si in range(n_scenarios)]
         opts_mbs = bar_options("Throughput (MB/s)", "MB/s")
         opts_mbs["maintainAspectRatio"] = False
         chart_configs.append({
@@ -530,7 +524,7 @@ def _scenario_distinguishing_table(scenarios, t_idx):
             f'<td>{name}</td>'
             f'<td>{wc.get("topics", "")}</td>'
             f'<td>{wc.get("partitionsPerTopic", "")}</td>'
-            f'<td>{wc.get("messageSize", "")}</td>'
+            f'<td>{message_size_cell(wc)}</td>'
             f'<td>{wc.get("producersPerTopic", "")}</td>'
             f'<td>{wc.get("producerRate", "")}</td>'
             f'<td>{wc.get("consumerGroupsPerTopic", "")}</td>'

@@ -1,6 +1,7 @@
 package dev.dimster.utils.distributor;
 
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.random.RandomGenerator;
 
 /**
  * Draws samples from a discrete Zipf distribution over the integers [1, n].
@@ -24,7 +25,8 @@ import java.util.concurrent.ThreadLocalRandom;
  *
  * <p>The class is immutable and safe to share across threads. The actual
  * randomness comes from {@link ThreadLocalRandom} inside {@link #sample()},
- * so producer threads never contend on a shared RNG.
+ * so producer threads never contend on a shared RNG, or from a caller-supplied
+ * generator via {@link #sample(RandomGenerator)}.
  *
  * <p>Reference: W. Hörmann and G. Derflinger, "Rejection-inversion to
  * generate variates from monotone discrete distributions", ACM Transactions
@@ -62,12 +64,20 @@ public final class ZipfSampler {
      * loop almost always accepts on the first iteration for typical s values.
      */
     public int sample() {
+        return sample(ThreadLocalRandom.current());
+    }
+
+    /**
+     * Draw a single integer in [1, n] using the given random source. The data
+     * generator uses this with seeded generators so that its streams are
+     * reproducible; {@link #sample()} uses {@link ThreadLocalRandom}.
+     */
+    public int sample(RandomGenerator rnd) {
         // Single-element distribution is trivial; short-circuit so we don't
         // have to reason about degenerate inverse-CDF ranges.
         if (n == 1) {
             return 1;
         }
-        ThreadLocalRandom rnd = ThreadLocalRandom.current();
         while (true) {
             // u is a uniform draw from [hIntegralX1, hIntegralN]. Note the
             // boundaries: for exponent > 0 we have hIntegralX1 < hIntegralN.

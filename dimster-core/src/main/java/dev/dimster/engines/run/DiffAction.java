@@ -111,17 +111,17 @@ public sealed interface DiffAction {
     }
 
     /**
-     * Live-swap the producer payload pool. Used for messageSize change:
-     * the engine builds new payloads at the new size and ships them to
-     * the workers, where each runProducer thread picks them up on its
-     * next iteration. No KafkaProducer restart.
+     * Set the dataset producers generate records from. Used for a
+     * messageSize change: the engine builds the payload dataset at the new
+     * size, and the producer restart that follows picks it up (each
+     * runProducer task captures the dataset when it starts).
      */
-    record UpdatePayloads(java.util.List<byte[]> payloads, int messageSize, String reason)
+    record SetDataset(dev.dimster.datagen.ResolvedDataset dataset, int messageSize, String reason)
             implements DiffAction {
         @Override public String describe() {
-            return "update-payloads to messageSize=" + messageSize + " — " + reason;
+            return "set-dataset to messageSize=" + messageSize + " — " + reason;
         }
-        @Override public void apply(Worker w) throws IOException { w.updatePayloads(payloads); }
+        @Override public void apply(Worker w) throws IOException { w.setDataset(dataset); }
     }
 
     // ─── Producer-subsystem restart (used by messageDistributor change) ──

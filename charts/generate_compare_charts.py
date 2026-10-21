@@ -30,8 +30,10 @@ from generate_run_charts import (
     PERCENTILE_TICK_VALUES,
     PERCENTILE_TICK_LABELS,
     avg,
+    avg_mbs,
     bar_options,
     line_options,
+    message_size_cell,
     metadata_annotation_html,
     percentile_dataset,
     percentile_options,
@@ -555,18 +557,11 @@ def build_run_compare_chart_configs(entries):
         chart_idx += 1
 
         # --- 2. Throughput MB/s ---
-        def to_mbs(rate_arr, msg_size):
-            return round(avg(rate_arr) * msg_size / 1_000_000, 2)
-
         datasets_mbs = []
         for f_idx in range(n_files):
             palette = file_palette(f_idx)
-            avg_pub_mb = []
-            avg_con_mb = []
-            for t in scenario_tests[f_idx]:
-                msg_size = t.get("workloadConfig", {}).get("messageSize", 1000)
-                avg_pub_mb.append(to_mbs(t["results"].get("publishRate", []), msg_size))
-                avg_con_mb.append(to_mbs(t["results"].get("consumeRate", []), msg_size))
+            avg_pub_mb = [avg_mbs(t, "publish") for t in scenario_tests[f_idx]]
+            avg_con_mb = [avg_mbs(t, "consume") for t in scenario_tests[f_idx]]
             datasets_mbs.append({"label": f"{labels[f_idx]} Publish", "data": avg_pub_mb,
                                  "backgroundColor": palette[0]})
             datasets_mbs.append({"label": f"{labels[f_idx]} Consume", "data": avg_con_mb,
@@ -840,7 +835,7 @@ def _build_workload_table(tests, heading):
             f'<td>{t.get("label", "")}</td>'
             f'<td>{wc.get("topics", "")}</td>'
             f'<td>{wc.get("partitionsPerTopic", "")}</td>'
-            f'<td>{wc.get("messageSize", "")}</td>'
+            f'<td>{message_size_cell(wc)}</td>'
             f'<td>{wc.get("producersPerTopic", "")}</td>'
             f'<td>{wc.get("producerRate", "")}</td>'
             f'<td>{wc.get("consumerGroupsPerTopic", "")}</td>'

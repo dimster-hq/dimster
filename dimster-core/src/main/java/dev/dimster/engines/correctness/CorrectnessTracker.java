@@ -2,6 +2,7 @@ package dev.dimster.engines.correctness;
 
 import java.time.Instant;
 
+import dev.dimster.datagen.RecordFormat;
 import dev.dimster.kafka.ConsumerCallback;
 import dev.dimster.stats.StatsCollector;
 
@@ -20,11 +21,13 @@ public class CorrectnessTracker implements ConsumerCallback {
     }
 
     @Override
-    public void messageReceived(byte[] payload, String topic, int partition,
+    public void messageReceived(byte[] payload, RecordFormat format, String topic, int partition,
                                 long publishTimestampMillis, Instant deliveryTime, Instant processingStartTime) {
-        stats.messageReceived(payload, topic, partition, publishTimestampMillis, deliveryTime, processingStartTime);
+        stats.messageReceived(payload, format, topic, partition, publishTimestampMillis, deliveryTime, processingStartTime);
 
-        var msg = CorrectnessPayload.decode(payload);
+        // The correctness fields live in Dimster's header, which the record
+        // format locates (the leading bytes for RAW, the _dimster field otherwise).
+        var msg = CorrectnessPayload.decode(format.header(payload));
         if (msg.producerId() >= 0) {
             checker.messageReceived(msg.producerId(), msg.sequence(), topic, partition, msg.crcValid());
         }

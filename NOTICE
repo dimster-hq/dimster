@@ -38,6 +38,14 @@ substantially rewritten:
   - dimster-core/src/main/java/dev/dimster/worker/commands/ConsumerAssignment.java
   - dimster-core/src/main/java/dev/dimster/worker/commands/ProducerWorkAssignment.java
 
+The data generator dictionaries in
+dimster-core/src/main/resources/datagen/dict/ include data from:
+  - GeoNames (https://www.geonames.org), licensed under CC BY 4.0
+    (https://creativecommons.org/licenses/by/4.0/): cities.txt and
+    countries.txt are derived from the cities15000 and countryInfo dumps.
+  - The US Census Bureau (public domain): first_names.txt, last_names.txt.
+See dimster-core/src/main/resources/datagen/dict/SOURCES.md for details.
+
 The Dimster source code as a whole is licensed under the MIT License
 (see LICENSE). The Apache 2.0 license applies to the OpenMessaging
 Benchmark-derived files listed above, in respect of any original

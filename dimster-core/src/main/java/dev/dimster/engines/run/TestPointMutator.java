@@ -18,6 +18,7 @@ import dev.dimster.ProducerRateSchedule;
 import dev.dimster.ScenarioExpander.TestPoint;
 import dev.dimster.coordinator.ModifyRequest;
 import dev.dimster.coordinator.ModifyResult;
+import dev.dimster.datagen.ResolvedDataset;
 import dev.dimster.worker.commands.ProducerWorkAssignment;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.utils.distributor.MessageDistributorType;
@@ -85,12 +86,12 @@ public class TestPointMutator {
             List<DiffAction> actions) {}
 
     private final TopologyPlanner planner;
-    private final java.util.function.IntFunction<List<byte[]>> payloadBuilder;
+    private final java.util.function.IntFunction<ResolvedDataset> payloadDataset;
 
     /**
      * @param planner          used for worker pool round-robin when adding
      *                         producers/consumers.
-     * @param payloadBuilder   builds the payload pool for a given
+     * @param payloadDataset   builds the payload dataset for a given
      *                         messageSize. Supplied by WorkloadEngine,
      *                         which holds the BaseWorkload settings
      *                         (useRandomizedPayloads, randomBytesRatio,
@@ -98,9 +99,9 @@ public class TestPointMutator {
      *                         payloads are constructed.
      */
     public TestPointMutator(TopologyPlanner planner,
-                            java.util.function.IntFunction<List<byte[]>> payloadBuilder) {
+                            java.util.function.IntFunction<ResolvedDataset> payloadDataset) {
         this.planner = planner;
-        this.payloadBuilder = payloadBuilder;
+        this.payloadDataset = payloadDataset;
     }
 
     /**
@@ -253,6 +254,7 @@ public class TestPointMutator {
         double producerRate = schedule == null
                 ? pickDouble(overrides, "producerRate", current.producerRate())
                 : schedule.maxConfiguredRate();
+        int messageSize = pickInt(overrides, "messageSize", current.messageSize());
         return new TestPoint(
                 current.scenarioName(),
                 current.scenarioIndex(),
@@ -265,7 +267,7 @@ public class TestPointMutator {
                 pickInt(overrides, "producersPerTopic", current.producersPerTopic()),
                 pickInt(overrides, "consumerGroupsPerTopic", current.consumerGroupsPerTopic()),
                 pickInt(overrides, "consumersPerGroup", current.consumersPerGroup()),
-                pickInt(overrides, "messageSize", current.messageSize()),
+                messageSize,
                 producerRate,
                 schedule,
                 pickEnum(overrides, "messageDistributor", MessageDistributorType.class,
@@ -280,7 +282,13 @@ public class TestPointMutator {
                 pickInt(overrides, "consumerProcCapacity", current.consumerProcCapacity()),
                 current.drainBacklogConfig(),
                 current.exploreConfig(),
-                current.runConfig());
+                current.runConfig(),
+                // Only the payload dataset follows messageSize; workload
+                // datasets are not live-modifiable (validate rejects a
+                // messageSize change for them).
+                messageSize != current.messageSize() && current.dataset().isPayloadDataset()
+                        ? payloadDataset.apply(messageSize)
+                        : current.dataset());
     }
 
     private static int pickInt(Map<String, Object> overrides, String key, int current) {
@@ -340,7 +348,7 @@ public class TestPointMutator {
                 base.consumerProcMsMin(), base.consumerProcMsMax(), base.consumerProcParallelism(),
                 base.consumerProcMode(), base.consumerProcCapacity(),
                 base.drainBacklogConfig(), base.exploreConfig(),
-                base.runConfig());
+                base.runConfig(), base.dataset());
     }
 
     // ─── Step 1b: Kafka config override application ────────────────────
@@ -424,6 +432,16 @@ public class TestPointMutator {
             throw new IllegalArgumentException(
                     "messageSize must be > 0, got " + mutated.messageSize());
         }
+        if (!current.dataset().isPayloadDataset() && mutated.messageSize() != current.messageSize()) {
+            throw new IllegalArgumentException(
+                    "messageSize does not apply when the test point generates a dataset");
+        }
+        if (mutated.messageDistributor() != current.messageDistributor()
+                && (mutated.messageDistributor() == MessageDistributorType.KEY_COLUMN
+                        || current.messageDistributor() == MessageDistributorType.KEY_COLUMN)) {
+            throw new IllegalArgumentException(
+                    "messageDistributor KEY_COLUMN is tied to the dataset's keyColumn and can't be switched live");
+        }
         if (mutated.consumerType() != current.consumerType()) {
             throw new IllegalArgumentException(
                     "consumerType change is not yet supported");
@@ -501,10 +519,10 @@ public class TestPointMutator {
                     mutated.consumerProcMsMin(), mutated.consumerProcMsMax()));
         }
 
-        // (b2) messageSize change → push new payloads, then restart all
-        // producers. The new runProducer threads capture the freshly-set
-        // activePayloads at submission, so the first send after restart
-        // ships at the new size. KafkaProducers themselves don't care
+        // (b2) messageSize change → set the new payload dataset, then
+        // restart all producers. The new runProducer threads capture the
+        // freshly-set dataset at submission, so the first send after
+        // restart ships at the new size. KafkaProducers themselves don't care
         // about message size, but restarting them is the simplest way to
         // get a clean cutover (no in-flight old-size sends mixing with
         // new-size ones).
@@ -550,9 +568,9 @@ public class TestPointMutator {
         // (RemoveProducers all + CreateProducers all + StartLoad).
         boolean producerSubsystemRestart = distributorChanged || pinningRecomputeNeeded;
 
-        // messageSize change folds into the producer-restart path: ship
-        // new payloads, then restart producers (which pick them up at
-        // submission time via activePayloads).
+        // messageSize change folds into the producer-restart path: set the
+        // new payload dataset, then restart producers (which pick it up at
+        // submission time).
         // distributorChanged uses a different restart shape (full
         // CreateProducers + StartLoad) so we don't fold it here — see
         // the distributor-restart block below.
@@ -581,14 +599,11 @@ public class TestPointMutator {
                         configChangeReason(producerConfigChanged, classicConsumerConfigChanged,
                                 shareConsumerConfigChanged, commonConfigChanged)));
             }
-            // Push new payloads before any producer restart/add so the
-            // new runProducer threads capture the new pool. Only emit
-            // when messageSize actually changed and we're using the
-            // restart-producers path (the distributor-restart path
-            // pushes payloads via StartLoad's assignment instead).
-            if (messageSizeChanged && !producerSubsystemRestart) {
-                List<byte[]> payloads = payloadBuilder.apply(mutated.messageSize());
-                actions.add(new DiffAction.UpdatePayloads(payloads, mutated.messageSize(),
+            // Set the new payload dataset before any producer restart/add,
+            // including the producer-subsystem restart below, so the new
+            // runProducer threads capture it.
+            if (messageSizeChanged) {
+                actions.add(new DiffAction.SetDataset(mutated.dataset(), mutated.messageSize(),
                         "messageSize " + current.messageSize() + " -> " + mutated.messageSize()));
             }
         }
@@ -646,7 +661,7 @@ public class TestPointMutator {
         //   CreateProducers(all new VirtualProducers with new pinning)
         //   StartLoad(new ProducerWorkAssignment)
         // StartLoad refreshes the worker's activeMessageDistributor +
-        // activePayloads + rateLimiter and spawns the runProducer
+        // rateLimiter and spawns the runProducer
         // threads. Subsumes the producer half of any restartProducers
         // path AND any AddProducers / RemoveProducers path for
         // producer-count changes — the new producer set is rebuilt
@@ -675,11 +690,10 @@ public class TestPointMutator {
                     currentTopology, mutated);
             actions.add(new DiffAction.CreateProducers(newProducers, reason));
             // Build a fresh ProducerWorkAssignment carrying the new
-            // distributor type/skew, payloads at the (possibly-new)
-            // messageSize, and the (possibly-new) producer rate.
-            List<byte[]> payloads = payloadBuilder.apply(mutated.messageSize());
+            // distributor type/skew and the (possibly-new) producer rate.
+            // A messageSize change already set the new payload dataset.
             ProducerWorkAssignment assignment = new ProducerWorkAssignment(
-                    payloads, effectiveTargetRate(mutated), mutated.producerRateSchedule(),
+                    effectiveTargetRate(mutated), mutated.producerRateSchedule(),
                     mutated.producerRateSchedule() == null ? null : System.currentTimeMillis(),
                     mutated.messageDistributor(),
                     mutated.partitionsPerTopic(),

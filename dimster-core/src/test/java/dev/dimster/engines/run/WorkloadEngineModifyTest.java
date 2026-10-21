@@ -3,6 +3,8 @@ package dev.dimster.engines.run;
 import dev.dimster.ConsumerProcMode;
 import dev.dimster.ConsumerType;
 import dev.dimster.ProducerRateSchedule;
+import dev.dimster.datagen.DatasetResolver;
+import dev.dimster.datagen.ResolvedDataset;
 import dev.dimster.ScenarioExpander.TestPoint;
 import dev.dimster.coordinator.ModifyRequest;
 import dev.dimster.coordinator.ModifyResult;
@@ -66,7 +68,9 @@ public class WorkloadEngineModifyTest {
         List<String> lastRemovedConsumers = null;
         ConsumerSet lastRestartedConsumers = null;
         KafkaConfig lastKafkaConfig = null;
-        List<byte[]> lastUpdatedPayloads = null;
+        ResolvedDataset lastDataset = null;
+        // The dataset that was set when producers were last restarted.
+        ResolvedDataset datasetAtRestart = null;
         List<VirtualProducer> lastCreatedProducers = null;
         dev.dimster.worker.commands.ProducerWorkAssignment lastStartLoadAssignment = null;
         ProducerRateSchedule lastRateSchedule = null;
@@ -85,12 +89,15 @@ public class WorkloadEngineModifyTest {
         }
         @Override public void addProducers(List<VirtualProducer> p) { this.lastAddedProducers = p; }
         @Override public void removeProducers(List<String> n) { this.lastRemovedProducers = n; }
-        @Override public void restartProducers(List<VirtualProducer> p) { this.lastRestartedProducers = p; }
+        @Override public void restartProducers(List<VirtualProducer> p) {
+            this.lastRestartedProducers = p;
+            this.datasetAtRestart = lastDataset;
+        }
         @Override public void addConsumers(ConsumerSet c) { this.lastAddedConsumers = c; }
         @Override public void removeConsumers(List<String> n) { this.lastRemovedConsumers = n; }
         @Override public void restartConsumers(ConsumerSet c) { this.lastRestartedConsumers = c; }
         @Override public void setKafkaConfig(KafkaConfig c) { this.lastKafkaConfig = c; }
-        @Override public void updatePayloads(List<byte[]> p) { this.lastUpdatedPayloads = p; }
+        @Override public void setDataset(ResolvedDataset d) { this.lastDataset = d; }
 
         // No-op everything else — applyModification doesn't touch them.
         @Override public void setKafkaConfig(File f) {}
@@ -147,7 +154,8 @@ public class WorkloadEngineModifyTest {
                 ConsumerProcMode.BLOCKING,
                 10000, // consumerProcCapacity
                 null, null,
-                new dev.dimster.engines.run.RunConfig());
+                new dev.dimster.engines.run.RunConfig(),
+                DatasetResolver.payloadDataset(1000 - 1, 0.5, 100, null));
     }
 
     private TestPoint makeTestPointWithDistributor(int producersPerTopic, int consumersPerGroup,
@@ -165,7 +173,8 @@ public class WorkloadEngineModifyTest {
                 ConsumerProcMode.BLOCKING,
                 10000, // consumerProcCapacity
                 null, null,
-                new dev.dimster.engines.run.RunConfig());
+                new dev.dimster.engines.run.RunConfig(),
+                DatasetResolver.payloadDataset(1000 - 1, 0.5, 100, null));
     }
 
     /** Variant of makeTopology with PINNED_PARTITIONS pinning (one partition per producer). */
@@ -575,10 +584,11 @@ public class WorkloadEngineModifyTest {
 
         ModifyResult r = engine.applyModification(workloadReq("messageSize", 2000));
         assertTrue(r.message(), r.accepted());
-        // updatePayloads pushed first so the restart picks them up.
-        assertTrue("updatePayloads should have been called",
-                worker.lastUpdatedPayloads != null && !worker.lastUpdatedPayloads.isEmpty());
-        assertEquals(2000, worker.lastUpdatedPayloads.get(0).length);
+        // The payload dataset at the new size is set first, so the restart picks it up.
+        assertTrue("the new payload dataset should be set before producers restart",
+                worker.datasetAtRestart != null && worker.datasetAtRestart.isPayloadDataset());
+        assertEquals(List.of(1999, 1999), List.of(worker.datasetAtRestart.columns().get(0).minLength(),
+                worker.datasetAtRestart.columns().get(0).maxLength()));
         // Then producers restarted (existing ones, both kept).
         assertTrue("restartProducers should have been called",
                 worker.lastRestartedProducers != null

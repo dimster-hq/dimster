@@ -1,0 +1,63 @@
+name: Datagen - cardinality and clustering sweep
+
+# How column cardinality and clustering affect compression. The orders preset
+# is used throughout; each test point overrides a few columns (inline columns
+# merge onto preset columns field by field, by name). runLength holds each
+# sampled value for that many consecutive rows on a producer, which clusters
+# values within batches.
+
+engineConfig:
+  perPartitionMetrics: false
+  perConsumerMetrics: false
+  cooldownMinutes: 0
+
+runConfig:
+  testDurationMinutes: 1
+  warmupDurationMinutes: 1
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 6
+  messageDistributor: NO_KEY
+  consumerType: CONSUMER_GROUP
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 3
+  producersPerTopic: 2
+  # Sized for the starter `local` env (250m CPU per pod). Raise it on an env
+  # with more CPU, see docs/getting-started/10-localBeefy-env.md.
+  producerRate: 3000
+  kafkaConfig:
+    producerConfig:
+      acks: all
+      linger.ms: 10
+      batch.size: 131072
+      compression.type: zstd
+
+scenarios:
+  - name: customer-cardinality
+    label: ["customers-1k", "customers-100k", "customers-unbounded-names"]
+    dataset:
+      - preset: orders
+        columns:
+          customer_id:      {cardinality: 1000}
+          customer_name:    {cardinality: 1000}
+          email:            {cardinality: 1000}
+          shipping_address: {cardinality: 1000}
+      - preset: orders
+        columns:
+          customer_id:      {cardinality: 100000}
+          customer_name:    {cardinality: 100000}
+          email:            {cardinality: 100000}
+          shipping_address: {cardinality: 100000}
+      - preset: orders
+        columns:
+          customer_name:    {cardinality: 10000000}
+          email:            {cardinality: 10000000}
+          shipping_address: {cardinality: 10000000}
+
+  - name: clustering
+    label: ["run-1", "run-100", "run-1000"]
+    dataset:
+      - {preset: orders, columns: {country: {runLength: 1}, status: {runLength: 1}}}
+      - {preset: orders, columns: {country: {runLength: 100}, status: {runLength: 100}}}
+      - {preset: orders, columns: {country: {runLength: 1000}, status: {runLength: 1000}}}

@@ -186,6 +186,9 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
         // Create the actual Kafka topics from the planned names.
         List<String> topics = createPlannedTopics();
 
+        // Set before producers: in DRAIN mode consumers are created later and
+        // read the same dataset's record format.
+        configureDataset(point);
         createProducers();
 
         if (config.testMode == CorrectnessConfig.TestMode.CONCURRENT) {
@@ -204,18 +207,11 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
             waitForClientsReady("PRODUCER", 60);
         }
 
-        // Build payloads (used for size reference; actual payload is correctness-encoded at send time)
-        int messageSize = point.messageSize();
-        int minSize = config.enableCrc ? CorrectnessPayload.HEADER_WITH_CRC_SIZE
-                : CorrectnessPayload.HEADER_SIZE;
-        if (messageSize < minSize) {
-            log.warn("Message size {} is less than minimum {} for correctness payload, adjusting",
-                    messageSize, minSize);
-            messageSize = minSize;
-        }
-        List<byte[]> payloads = buildPayloads(base, messageSize);
+        // The correctness fields form each record's _dimster header, ahead of
+        // the dataset's columns, so records are larger than messageSize by
+        // the header's extra bytes.
         var workAssignment = new ProducerWorkAssignment(
-                payloads, point.producerRate(), point.messageDistributor(),
+                point.producerRate(), point.messageDistributor(),
                 point.partitionsPerTopic(), point.messageDistributorSkew());
 
         throwOnStopRequested(stopRequested);
@@ -577,6 +573,7 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
         wc.topics = point.topics();
         wc.partitionsPerTopic = point.partitionsPerTopic();
         wc.messageSize = point.messageSize();
+        wc.setDataset(point.dataset());
         wc.messageDistributor = point.messageDistributor().name();
         wc.producersPerTopic = point.producersPerTopic();
         wc.producerRate = point.producerRate();
@@ -596,6 +593,7 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
 
         r.publishRate.add(publishRate);
         r.consumeRate.add(consumeRate);
+        r.addByteRates(stats, publishRate, consumeRate);
 
         r.publishLatencyAvg.add(microsToMillis(stats.publishLatency.getMean()));
         r.publishLatencyMin.add(microsToMillis(stats.publishLatency.getMinValue()));
@@ -771,13 +769,14 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
      *  Disabled if any test point has producer rate > 50 msg/s, to avoid log
      *  flooding and self-inflicted slowdown. */
     private void applyPrintMessages(List<TestPoint> allPoints) {
-        boolean configured = workload.engineConfig.printMessages;
+        boolean configured = workload.engineConfig.printingRequested();
         boolean effective = configured
                 && allPoints.stream().allMatch(p -> p.producerRate() <= 50);
         if (configured && !effective) {
-            log.warn("engineConfig.printMessages disabled: at least one test " +
+            log.warn("engineConfig.printMessages/printContents disabled: at least one test " +
                      "point has producerRate > 50 msg/s");
         }
         worker.setPrintMessages(effective);
+        worker.setPrintContents(effective && workload.engineConfig.printContents);
     }
 }

@@ -38,7 +38,7 @@ import java.util.Random;
  */
 public sealed interface MessageDistributor
         permits NoKeyDistributor, KeyRoundRobin, RandomNano, KeyZipf, PartitionZipf, PartitionRoundRobin,
-                PinnedPartitionsDistributor {
+                PinnedPartitionsDistributor, KeyColumnDistributor {
 
     int UNIQUE_COUNT = 10_000;
     int KEY_BYTE_SIZE = 7;
@@ -88,6 +88,8 @@ public sealed interface MessageDistributor
             // partition subset is performed by KafkaProducerWrapper using the pinned partitions
             // computed by TopologyPlanner. The distributor itself is a no-op.
             case PINNED_PARTITIONS     -> new PinnedPartitionsDistributor();
+            // KEY_COLUMN is a marker too: LocalWorker takes the key from the generated row.
+            case KEY_COLUMN            -> new KeyColumnDistributor();
         };
     }
 

@@ -4,8 +4,6 @@ import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.utils.Sleeper;
 import dev.dimster.utils.StopRequestedException;
 import dev.dimster.utils.distributor.MessageDistributorType;
-import dev.dimster.utils.payload.FilePayloadReader;
-import dev.dimster.utils.payload.PayloadReader;
 import dev.dimster.worker.Worker;
 import dev.dimster.worker.commands.ClientHealth;
 import dev.dimster.worker.topology.TopologyFormatter;
@@ -29,10 +27,6 @@ public abstract class BaseEngine implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(BaseEngine.class);
 
-    // Same pattern used by BenchmarkRunner for campaign-level metadata.beginTime / endTime.
-    // We mirror the format here so per-scenario timestamps can be parsed by the same
-    // CLI helper that already understands campaign timestamps.
-    // Thread-safety: DateTimeFormatter is immutable, unlike SimpleDateFormat.
     private static final DateTimeFormatter SCENARIO_TIMESTAMP_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss");
 
@@ -314,29 +308,14 @@ public abstract class BaseEngine implements AutoCloseable {
         log.info("Created {} consumers", consumerSet.consumers().size());
     }
 
-    protected List<byte[]> buildPayloads(BaseWorkload baseWorkload, int messageSize) {
-        List<byte[]> payloads = new ArrayList<>();
-        if (baseWorkload.useRandomizedPayloads) {
-            Random r = new Random();
-            int randomBytes = (int) (messageSize * baseWorkload.randomBytesRatio);
-            for (int i = 0; i < baseWorkload.randomizedPayloadPoolSize; i++) {
-                byte[] randArray = new byte[randomBytes];
-                r.nextBytes(randArray);
-                byte[] combined = Arrays.copyOf(randArray, messageSize);
-                combined[0] = MessageType.NORMAL;
-                payloads.add(combined);
-            }
-        } else {
-            if (baseWorkload.payloadFile == null) {
-                throw new IllegalArgumentException(
-                        "payloadFile must be set when useRandomizedPayloads is false");
-            }
-            PayloadReader reader = new FilePayloadReader(messageSize);
-            byte[] payload = reader.load(baseWorkload.payloadFile);
-            payload[0] = MessageType.NORMAL;
-            payloads.add(payload);
-        }
-        return payloads;
+    /**
+     * Tells the worker which dataset this test point generates records from
+     * (the workload's, or the payload dataset). Must run before clients are
+     * created and probed: producers generate rows from it and consumers use
+     * its record format.
+     */
+    protected void configureDataset(ScenarioExpander.TestPoint point) throws IOException {
+        worker.setDataset(point.dataset());
     }
 
 }

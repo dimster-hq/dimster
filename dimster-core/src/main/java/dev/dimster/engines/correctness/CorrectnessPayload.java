@@ -68,6 +68,17 @@ public final class CorrectnessPayload {
     }
 
     /**
+     * Encode a standalone correctness header (22 bytes, or 26 with a CRC): the
+     * {@code _dimster} field of each correctness record, which precedes the
+     * dataset's columns.
+     */
+    public static byte[] header(int producerId, long sequence, long timestampMs, boolean includeCrc) {
+        byte[] header = new byte[includeCrc ? HEADER_WITH_CRC_SIZE : HEADER_SIZE];
+        encode(header, producerId, sequence, timestampMs, includeCrc);
+        return header;
+    }
+
+    /**
      * Decode a correctness payload.
      *
      * The first byte must be {@link MessageType#CORRECTNESS}; if not, returns

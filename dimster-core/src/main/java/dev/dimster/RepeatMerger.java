@@ -86,6 +86,8 @@ public class RepeatMerger {
             m.messageSize = first.messageSize;
             m.messageDistributor = first.messageDistributor;
             m.consumerType = first.consumerType;
+            m.datasetPreset = first.datasetPreset;
+            m.datasetFormat = first.datasetFormat;
 
             // Average performance metrics
             m.peakSustainableRate = avg(outcomes, o -> o.peakSustainableRate);
@@ -188,6 +190,7 @@ public class RepeatMerger {
 
         // Average scalar aggregates
         m.aggregatedPublishLatencyAvg = avg(results, r -> r.aggregatedPublishLatencyAvg);
+        m.avgRecordBytes = avg(results, r -> r.avgRecordBytes);
         m.aggregatedPublishLatency50pct = avg(results, r -> r.aggregatedPublishLatency50pct);
         m.aggregatedPublishLatency75pct = avg(results, r -> r.aggregatedPublishLatency75pct);
         m.aggregatedPublishLatency95pct = avg(results, r -> r.aggregatedPublishLatency95pct);

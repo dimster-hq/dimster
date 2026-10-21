@@ -15,6 +15,7 @@
 - [Dimensional Testing](concepts/dimensional-testing.md) — campaigns, scenarios, test points, and the co-variance rule that turns one workload file into many runs.
 - [Compare command vs dimensions](concepts/comparing-campaigns.md) — when the thing you want to vary is the cluster, not the workload.
 - [Results and Charts](concepts/results-and-charts.md) — what lands in your results directory and how the charts get generated.
+- [Data Generation](concepts/data-generation.md) — generated datasets (presets, cardinality, skew, clustering, Avro and JSON records) for format, compression experiments.
 - [Live Workload Modification](concepts/live-modification.md) — change throughput or end a test point mid-run via `dimster run --modify`. Useful for exploratory throughput discovery without committing to a full Explore campaign.
 
 ## Benchmark Modes

@@ -21,6 +21,7 @@ import com.sun.net.httpserver.HttpServer;
 import dev.dimster.ProducerRateSchedule;
 import dev.dimster.availability.AvailabilityConfig;
 import dev.dimster.availability.AvailabilityResult;
+import dev.dimster.datagen.ResolvedDataset;
 import dev.dimster.engines.correctness.CorrectnessConfig;
 import dev.dimster.engines.correctness.CorrectnessResult;
 import dev.dimster.kafka.KafkaConfig;
@@ -129,6 +130,8 @@ public class WorkerHttpServer {
         server.createContext("/per-partition-stats", this::handlePerPartitionStats);
         server.createContext("/set-max-consumer-recreations", this::handleSetMaxConsumerRecreations);
         server.createContext("/set-print-messages", this::handleSetPrintMessages);
+        server.createContext("/set-print-contents", this::handleSetPrintContents);
+        server.createContext("/set-dataset", this::handleSetDataset);
         server.createContext("/set-consumer-processing-time", this::handleSetConsumerProcessingTime);
         server.createContext("/set-consumer-proc-capacity", this::handleSetConsumerProcCapacity);
         server.createContext("/probes-received", this::handleProbesReceived);
@@ -140,7 +143,6 @@ public class WorkerHttpServer {
         server.createContext("/add-consumers", this::handleAddConsumers);
         server.createContext("/remove-consumers", this::handleRemoveConsumers);
         server.createContext("/restart-consumers", this::handleRestartConsumers);
-        server.createContext("/update-payloads", this::handleUpdatePayloads);
 
         server.start();
         log.info("Worker HTTP server started on port {}", port);
@@ -191,8 +193,7 @@ public class WorkerHttpServer {
             String rateText = assignment.publishRateSchedule() == null
                     ? assignment.publishRate() + " msg/s"
                     : assignment.publishRateSchedule().type + " schedule";
-            log.info("Start load publish-rate: {} -- payload-size: {}", rateText,
-                    assignment.payloadData().get(0).length);
+            log.info("Start load publish-rate: {}", rateText);
             localWorker.startLoad(assignment);
         });
     }
@@ -347,6 +348,21 @@ public class WorkerHttpServer {
         });
     }
 
+    private void handleSetPrintContents(HttpExchange exchange) throws IOException {
+        handle(exchange, () -> {
+            Boolean enabled = mapper.readValue(exchange.getRequestBody(), Boolean.class);
+            localWorker.setPrintContents(enabled);
+        });
+    }
+
+    // Body is a ResolvedDataset as JSON: the workload's dataset or the payload dataset.
+    private void handleSetDataset(HttpExchange exchange) throws IOException {
+        handle(exchange, () -> {
+            ResolvedDataset dataset = mapper.readValue(exchange.getRequestBody(), ResolvedDataset.class);
+            localWorker.setDataset(dataset);
+        });
+    }
+
     // Payload is a 2-element int array: [minMs, maxMs]. See RemoteWorkerClient#setConsumerProcessingTime.
     private void handleSetConsumerProcessingTime(HttpExchange exchange) throws IOException {
         handle(exchange, () -> {
@@ -431,18 +447,6 @@ public class WorkerHttpServer {
             ConsumerSet consumerSet = mapper.readValue(exchange.getRequestBody(), ConsumerSet.class);
             log.info("Received restart consumers request: {} consumers", consumerSet.consumers().size());
             localWorker.restartConsumers(consumerSet);
-        });
-    }
-
-    private void handleUpdatePayloads(HttpExchange exchange) throws IOException {
-        handle(exchange, () -> {
-            // Wire shape mirrors ProducerWorkAssignment.payloadData: a
-            // top-level JSON array of byte[] (Jackson serializes byte[]
-            // as base64). Decoding handled by the mapper.
-            byte[][] arr = mapper.readValue(exchange.getRequestBody(), byte[][].class);
-            List<byte[]> payloads = List.of(arr);
-            log.info("Received update-payloads request: {} payloads", payloads.size());
-            localWorker.updatePayloads(payloads);
         });
     }
 

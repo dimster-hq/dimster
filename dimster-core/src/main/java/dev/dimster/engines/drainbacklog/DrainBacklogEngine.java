@@ -150,10 +150,11 @@ public class DrainBacklogEngine extends BaseEngine {
                 false /* dynamic consumer assignment */);
         recordPlannedTopology(point.label(), workload.engineConfig.printTopology);
         createPlannedTopics();
+        // Set before producers: consumers, created after the backlog is
+        // built, read the same dataset's record format.
+        configureDataset(point);
         createProducers();
         waitForClientsReady("PRODUCER", 60);
-
-        List<byte[]> payloads = buildPayloads(base, point.messageSize());
 
         // Enable per-partition/per-consumer metrics before producers start sending,
         // so build-phase sends populate the per-partition counters for Prometheus.
@@ -168,7 +169,7 @@ public class DrainBacklogEngine extends BaseEngine {
         double buildRate = dbc.buildRate > 0 ? dbc.buildRate : point.producerRate();
         log.info("Starting producers at build rate: {} msg/s", buildRate);
         worker.startLoad(new ProducerWorkAssignment(
-                payloads, buildRate, point.messageDistributor(),
+                buildRate, point.messageDistributor(),
                 point.partitionsPerTopic(), point.messageDistributorSkew()));
 
         var perf = new TestResult.PerformanceResults();
@@ -341,6 +342,7 @@ public class DrainBacklogEngine extends BaseEngine {
 
         r.publishRate.add(publishRate);
         r.consumeRate.add(consumeRate);
+        r.addByteRates(stats, publishRate, consumeRate);
 
         r.publishLatencyAvg.add(microsToMillis(stats.publishLatency.getMean()));
         r.publishLatencyMin.add(microsToMillis(stats.publishLatency.getMinValue()));
@@ -359,6 +361,7 @@ public class DrainBacklogEngine extends BaseEngine {
         wc.topics = point.topics();
         wc.partitionsPerTopic = point.partitionsPerTopic();
         wc.messageSize = point.messageSize();
+        wc.setDataset(point.dataset());
         wc.messageDistributor = point.messageDistributor().name();
         wc.producersPerTopic = point.producersPerTopic();
         wc.producerRate = point.producerRate();
@@ -394,7 +397,7 @@ public class DrainBacklogEngine extends BaseEngine {
      *  buildRate (build phase) and backlogProducerRate (drain phase). If any
      *  of those exceeds 50 msg/s on any test point, printing is disabled. */
     private void applyPrintMessages(List<TestPoint> allPoints) {
-        boolean configured = workload.engineConfig.printMessages;
+        boolean configured = workload.engineConfig.printingRequested();
         boolean effective = configured && allPoints.stream().allMatch(p -> {
             double max = p.producerRate();
             if (p.drainBacklogConfig() != null) {
@@ -404,9 +407,10 @@ public class DrainBacklogEngine extends BaseEngine {
             return max <= 50;
         });
         if (configured && !effective) {
-            log.warn("engineConfig.printMessages disabled: at least one test " +
+            log.warn("engineConfig.printMessages/printContents disabled: at least one test " +
                      "point has producer rate > 50 msg/s (build/drain/base)");
         }
         worker.setPrintMessages(effective);
+        worker.setPrintContents(effective && workload.engineConfig.printContents);
     }
 }

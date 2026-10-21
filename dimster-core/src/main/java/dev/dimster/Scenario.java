@@ -2,6 +2,7 @@ package dev.dimster;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+import dev.dimster.datagen.DatasetSpec;
 import dev.dimster.engines.drainbacklog.DrainBacklogDimensions;
 import dev.dimster.engines.explore.ExploreDimensions;
 import dev.dimster.engines.run.RunDimensions;
@@ -40,6 +41,11 @@ public class Scenario {
     public List<Double> messageDistributorSkew;
     public List<ConsumerType> consumerType;
     public KafkaConfig kafkaConfig;
+    /**
+     * Optional per-test-point generated datasets (whole objects, like
+     * {@link #producerRateSchedule}). Overrides {@code baseWorkload.dataset}.
+     */
+    public List<DatasetSpec> dataset;
 
     public List<Integer> consumerProcMsMin;
     public List<Integer> consumerProcMsMax;

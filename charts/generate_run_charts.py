@@ -161,6 +161,34 @@ def avg(lst):
     return sum(lst) / len(lst)
 
 
+def avg_mbs(test, direction):
+    """Average throughput of a test point in MB/s, for "publish" or "consume".
+
+    Prefers the measured byte rates (publishBytesRate / consumeBytesRate),
+    which are exact when record sizes vary, as with generated datasets, and
+    falls back to rate x messageSize for results that predate them.
+    """
+    results = test.get("results", {})
+    measured = results.get(f"{direction}BytesRate")
+    if measured:
+        return round(avg(measured), 2)
+    msg_size = test.get("workloadConfig", {}).get("messageSize", 1000)
+    return round(avg(results.get(f"{direction}Rate", [])) * msg_size / 1_000_000, 2)
+
+
+def message_size_cell(workload_config):
+    """messageSize for config tables; with a dataset it is an estimated average.
+
+    The default payload dataset (format RAW) has exact sizes, so it shows as
+    a plain size.
+    """
+    size = workload_config.get("messageSize", "")
+    fmt = workload_config.get("datasetFormat")
+    if fmt and fmt != "RAW":
+        return f'~{size} ({workload_config.get("datasetPreset", "custom")}/{fmt})'
+    return size
+
+
 def dict_or_empty(value):
     """Return dict values as-is and coerce JSON null/missing values to {}.
 
@@ -273,15 +301,8 @@ def build_chart_configs(data):
         chart_idx += 1
 
         # --- 2. Throughput MB/s ---
-        def to_mbs(rate_arr, msg_size):
-            return round(avg(rate_arr) * msg_size / 1_000_000, 2)
-
-        avg_pub_mb = []
-        avg_con_mb = []
-        for t in tests:
-            msg_size = t.get("workloadConfig", {}).get("messageSize", 1000)
-            avg_pub_mb.append(to_mbs(t["results"].get("publishRate", []), msg_size))
-            avg_con_mb.append(to_mbs(t["results"].get("consumeRate", []), msg_size))
+        avg_pub_mb = [avg_mbs(t, "publish") for t in tests]
+        avg_con_mb = [avg_mbs(t, "consume") for t in tests]
 
         chart_configs.append({
             "id": f"chart-{s_idx}-{chart_idx}",
@@ -1303,7 +1324,7 @@ def build_scenario_sections(scenarios, chart_sections, mode="main", per_partitio
                 f'<td>{t.get("label", "")}</td>'
                 f'<td>{wc.get("topics", "")}</td>'
                 f'<td>{wc.get("partitionsPerTopic", "")}</td>'
-                f'<td>{wc.get("messageSize", "")}</td>'
+                f'<td>{message_size_cell(wc)}</td>'
                 f'<td>{wc.get("producersPerTopic", "")}</td>'
                 f'<td>{wc.get("producerRate", "")}</td>'
                 f'<td>{wc.get("consumerGroupsPerTopic", "")}</td>'
@@ -1334,9 +1355,8 @@ def build_scenario_sections(scenarios, chart_sections, mode="main", per_partitio
             r = t.get("results", {})
             pub_rate = avg(r.get("publishRate", []))
             con_rate = avg(r.get("consumeRate", []))
-            msg_size = t.get("workloadConfig", {}).get("messageSize", 1000)
-            pub_mbs = pub_rate * msg_size / 1_000_000
-            con_mbs = con_rate * msg_size / 1_000_000
+            pub_mbs = avg_mbs(t, "publish")
+            con_mbs = avg_mbs(t, "consume")
 
             def fmt_lat(val):
                 if val is None or val == 0:

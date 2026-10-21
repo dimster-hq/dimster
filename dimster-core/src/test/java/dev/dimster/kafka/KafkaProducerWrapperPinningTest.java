@@ -96,6 +96,6 @@ public class KafkaProducerWrapperPinningTest {
      * never dereferenced.
      */
     private static KafkaProducerWrapper wrapper(int[] pinnedPartitions) {
-        return new KafkaProducerWrapper(null, "topic", "test-producer", pinnedPartitions, false);
+        return new KafkaProducerWrapper(null, "topic", "test-producer", 0, pinnedPartitions, false);
     }
 }

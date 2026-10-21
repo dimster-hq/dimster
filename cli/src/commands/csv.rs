@@ -197,6 +197,13 @@ struct RunWorkloadConfig {
     warmup_duration_minutes: i32,
     #[serde(default)]
     sample_rate_millis: i32,
+    // Dataset of the test point: "payload" (RAW) when the workload sets none,
+    // absent in older results. For other datasets, message_size is the
+    // estimated average record size.
+    #[serde(default)]
+    dataset_preset: Option<String>,
+    #[serde(default)]
+    dataset_format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -207,6 +214,13 @@ struct RunPerformanceResults {
     publish_rate: Vec<f64>,
     #[serde(default)]
     consume_rate: Vec<f64>,
+    // Measured MB/s per period; empty in results that predate them.
+    #[serde(default)]
+    publish_bytes_rate: Vec<f64>,
+    #[serde(default)]
+    consume_bytes_rate: Vec<f64>,
+    #[serde(default)]
+    avg_record_bytes: f64,
 
     #[serde(default)]
     aggregated_publish_latency_avg: f64,
@@ -446,7 +460,8 @@ publish_latency_p99,publish_latency_p999,publish_latency_p9999,publish_latency_m
 publish_delay_avg,publish_delay_p50,publish_delay_p75,publish_delay_p95,\
 publish_delay_p99,publish_delay_p999,publish_delay_p9999,publish_delay_max,\
 e2e_latency_avg,e2e_latency_p50,e2e_latency_p75,e2e_latency_p95,\
-e2e_latency_p99,e2e_latency_p999,e2e_latency_p9999,e2e_latency_max";
+e2e_latency_p99,e2e_latency_p999,e2e_latency_p9999,e2e_latency_max,\
+dataset_preset,dataset_format,avg_record_bytes,prod_mbs_avg,con_mbs_avg";
 
 const CORRECTNESS_HEADER: &str = "workload,kafka_config,environment,system,\
 begin_time,end_time,scenario,label,\
@@ -713,6 +728,8 @@ fn convert_run(result: &RunResult, rows: &mut Vec<String>) {
 
             let (prod_min, prod_avg, prod_max) = rate_stats(&r.publish_rate);
             let (con_min, con_avg, con_max) = rate_stats(&r.consume_rate);
+            let prod_mbs = avg_mbs(&r.publish_bytes_rate, prod_avg, wc.message_size);
+            let con_mbs = avg_mbs(&r.consume_bytes_rate, con_avg, wc.message_size);
 
             let row = format!(
                 "{},{},{},{},{},{},{},{},\
@@ -723,7 +740,8 @@ fn convert_run(result: &RunResult, rows: &mut Vec<String>) {
                  {:.2},{:.2},{:.2},{:.2},{:.2},{:.2},\
                  {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
                  {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
-                 {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3}",
+                 {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
+                 {},{},{:.1},{:.3},{:.3}",
                 csv_escape(m.name.as_deref().unwrap_or("")),
                 csv_escape(m.kafka_config_name.as_deref().unwrap_or("")),
                 csv_escape(m.environment.as_deref().unwrap_or("")),
@@ -777,6 +795,11 @@ fn convert_run(result: &RunResult, rows: &mut Vec<String>) {
                 r.aggregated_end_to_end_latency_p999,
                 r.aggregated_end_to_end_latency_p9999,
                 r.aggregated_end_to_end_latency_max,
+                csv_escape(wc.dataset_preset.as_deref().unwrap_or("")),
+                csv_escape(wc.dataset_format.as_deref().unwrap_or("")),
+                r.avg_record_bytes,
+                prod_mbs,
+                con_mbs,
             );
             rows.push(row);
         }
@@ -835,6 +858,16 @@ fn convert_correctness(result: &CorrectnessResult, rows: &mut Vec<String>) {
                 recorded_count("CRC_FAILURE"),
             ));
         }
+    }
+}
+
+/// Average MB/s: the measured per-period byte rates when present (exact for
+/// variable-size dataset records), otherwise the message rate times messageSize.
+fn avg_mbs(bytes_rate: &[f64], rate_avg: f64, message_size: i64) -> f64 {
+    if bytes_rate.is_empty() {
+        rate_avg * message_size as f64 / 1_000_000.0
+    } else {
+        bytes_rate.iter().sum::<f64>() / bytes_rate.len() as f64
     }
 }
 
@@ -939,5 +972,38 @@ mod tests {
         let converted = convert_value(&run_request, Path::new("run-request.json")).unwrap();
 
         assert!(converted.is_none());
+    }
+
+    #[test]
+    fn avg_mbs_prefers_measured_byte_rates() {
+        assert_eq!(avg_mbs(&[0.5, 1.5], 9999.0, 1000), 1.0);
+    }
+
+    #[test]
+    fn avg_mbs_falls_back_to_rate_times_message_size() {
+        assert_eq!(avg_mbs(&[], 2000.0, 500), 1.0);
+    }
+
+    #[test]
+    fn run_rows_have_one_cell_per_header_column() {
+        let json = r#"{
+            "metadata": {"name": "w"},
+            "scenarioResults": [{"name": "s", "tests": [{
+                "label": "t",
+                "workloadConfig": {"messageSize": 281, "datasetPreset": "clicks", "datasetFormat": "AVRO"},
+                "results": {"publishRate": [1000.0], "consumeRate": [1000.0],
+                            "publishBytesRate": [0.28], "consumeBytesRate": [0.28],
+                            "avgRecordBytes": 281.0}
+            }]}]
+        }"#;
+        let result: RunResult = serde_json::from_str(json).unwrap();
+        let mut rows = Vec::new();
+        convert_run(&result, &mut rows);
+        assert_eq!(rows[0].split(',').count(), RUN_HEADER.split(',').count());
+        assert!(
+            rows[0].ends_with("clicks,AVRO,281.0,0.280,0.280"),
+            "{}",
+            rows[0]
+        );
     }
 }

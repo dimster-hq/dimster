@@ -1,0 +1,48 @@
+name: Datagen - record format x compression
+
+# Generated clickstream rows (the clicks preset) encoded as Avro and as JSON,
+# each with three compression codecs. Scenario lists are zipped, not crossed,
+# so the six combinations are spelled out point by point. Compare the
+# measured MB/s (publishBytesRate) with broker BytesInPerSec to see what each
+# codec achieves on each format.
+
+engineConfig:
+  perPartitionMetrics: false
+  perConsumerMetrics: false
+  cooldownMinutes: 0
+
+runConfig:
+  testDurationMinutes: 1
+  warmupDurationMinutes: 1
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 6
+  consumerType: CONSUMER_GROUP
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 3
+  producersPerTopic: 2
+  # Sized for the starter `local` env (250m CPU per pod). Raise it on an env
+  # with more CPU, see docs/getting-started/10-localBeefy-env.md.
+  producerRate: 3000
+  # Key records by user, so key skew follows the user_id Zipf distribution.
+  messageDistributor: KEY_COLUMN
+  kafkaConfig:
+    producerConfig:
+      acks: all
+      linger.ms: 10
+      batch.size: 131072
+
+scenarios:
+  - name: format-x-compression
+    label: ["avro-none", "avro-lz4", "avro-zstd", "json-none", "json-lz4", "json-zstd"]
+    dataset:
+      - {preset: clicks, format: AVRO, keyColumn: user_id}
+      - {preset: clicks, format: AVRO, keyColumn: user_id}
+      - {preset: clicks, format: AVRO, keyColumn: user_id}
+      - {preset: clicks, format: JSON, keyColumn: user_id}
+      - {preset: clicks, format: JSON, keyColumn: user_id}
+      - {preset: clicks, format: JSON, keyColumn: user_id}
+    kafkaConfig:
+      producerConfig:
+        compression.type: [none, lz4, zstd, none, lz4, zstd]

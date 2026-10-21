@@ -113,11 +113,12 @@ public class ExploreEngine extends BaseEngine {
         // doubled during ramp, then binary-searched) so per-message printing would
         // inevitably saturate logs and skew the search itself — force it off regardless
         // of the user setting.
-        if (exploreWorkload.engineConfig.printMessages) {
-            log.warn("engineConfig.printMessages is not supported by the explore " +
+        if (exploreWorkload.engineConfig.printingRequested()) {
+            log.warn("engineConfig.printMessages/printContents is not supported by the explore " +
                      "engine (rates are dynamic) and will be ignored");
         }
         worker.setPrintMessages(false);
+        worker.setPrintContents(false);
 
         try {
             for (int i = startTestPoint; i < allPoints.size(); i++) {
@@ -193,6 +194,8 @@ public class ExploreEngine extends BaseEngine {
         outcome.consumerGroupsPerTopic = point.consumerGroupsPerTopic();
         outcome.consumersPerGroup = point.consumersPerGroup();
         outcome.messageSize = point.messageSize();
+        outcome.datasetPreset = point.dataset().preset() != null ? point.dataset().preset() : "custom";
+        outcome.datasetFormat = point.dataset().format().name();
         outcome.messageDistributor = point.messageDistributor().toString();
         outcome.consumerType = point.consumerType().toString();
 
@@ -221,6 +224,7 @@ public class ExploreEngine extends BaseEngine {
                 false /* dynamic consumer assignment */);
         recordPlannedTopology(point.label(), exploreWorkload.engineConfig.printTopology);
         List<String> topics = createPlannedTopics();
+        configureDataset(point);
         createConsumers();
         worker.setMaxConsumerRecreations(exploreWorkload.engineConfig.maxConsumerRecreations);
         // Enable per-partition metrics when needed for worst-partition e2e checking
@@ -236,14 +240,11 @@ public class ExploreEngine extends BaseEngine {
         // Verify connectivity
         ensureReady(topics, point.consumerGroupsPerTopic(), 30);
 
-        // Build payloads
-        List<byte[]> payloads = buildPayloads(point);
-
         throwOnStopRequested(stopRequested);
 
         // Start at initial rate (resolved per-test-point from explore config)
         worker.startLoad(new ProducerWorkAssignment(
-                payloads, exploreConfig.initialRate, point.messageDistributor(),
+                exploreConfig.initialRate, point.messageDistributor(),
                 point.partitionsPerTopic(), point.messageDistributorSkew()));
 
         // Find peak sustainable rate
@@ -1123,11 +1124,6 @@ public class ExploreEngine extends BaseEngine {
 
     // ==================== Setup Helpers ====================
 
-
-
-    private List<byte[]> buildPayloads(TestPoint point) {
-        return buildPayloads(base, point.messageSize());
-    }
 
     @Override
     public void close() throws Exception {

@@ -23,6 +23,11 @@ non-breaking changes only.
   `dimster compare --directory` render complete duplicate, out-of-order, and
   CRC time series alongside aggregate violation bars. Message loss remains a
   final aggregate because intermediate missing-message counts represent lag.
+- Generated datasets: the `dataset` workload field (and scenario dimension) makes producers send schema-encoded rows (Avro or JSON) from a preset (`clicks`, `orders`, `taxi`) or inline column definitions, with configurable cardinality, Zipf skew, null rates and clustering, and realistic names, addresses, emails, URLs and text. See docs/concepts/data-generation.md.
+- `BYTES` dataset columns: opaque values with a configurable length, random fraction (`randomRatio`) and cardinality.
+- The `KEY_COLUMN` message distributor, which keys records by a dataset column.
+- `engineConfig.printContents`, which adds each record's key and readable contents to the printed message lines.
+- Measured byte rates in results (`publishBytesRate`, `consumeBytesRate`, `avgRecordBytes`); charts and `dimster csv` use them when present.
 
 ### Changed
 
@@ -32,6 +37,8 @@ non-breaking changes only.
   JSON.
 - Correctness consumer restart attempts are recorded in each test outcome, and
   a failed worker dispatch invalidates that outcome.
+- Every record now has a schema, `{_dimster: bytes, ...}`. Workloads without a `dataset` use the payload dataset `{_dimster: bytes, payload: bytes}` in RAW encoding: the header followed by `messageSize - 1` payload bytes, built on the workers from `randomBytesRatio`, `randomizedPayloadPoolSize` or `payloadFile` rather than by the coordinator. As before, normal records are prebuilt arrays shared by all producers, so the default path allocates nothing per record. Normal records are still exactly `messageSize` bytes, but correctness records are now larger by 21 bytes (25 with a CRC), because the correctness header precedes the payload instead of overwriting its start. Results report the dataset as preset `payload`, format `RAW`.
+- `printMessages` lines (`PRODUCED`, `PROCESSED`) are now logged at INFO rather than DEBUG, so they appear without a debug log config.
 - Latency histograms now use 4 significant digits (0.01% resolution) instead of 5. Each was 14-21 MB at 5 digits, so every stats sample copied about 100 MB and cost about a CPU-second; on CPU-limited workers this stretched sampling intervals and caused GC pauses. Reported percentiles change by at most 0.01%.
 
 ### Fixed

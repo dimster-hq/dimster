@@ -9,8 +9,6 @@ package dev.dimster.worker.commands;
 import dev.dimster.ProducerRateSchedule;
 import dev.dimster.utils.distributor.MessageDistributorType;
 
-import java.util.List;
-
 /**
  * Carries everything {@code LocalWorker.startLoad} needs to spin up the
  * producer threads for one test point. {@code partitionsPerTopic} and
@@ -18,7 +16,6 @@ import java.util.List;
  * distributors but are passed unconditionally to keep the wiring uniform.
  */
 public record ProducerWorkAssignment(
-        List<byte[]> payloadData,
         double publishRate,
         ProducerRateSchedule publishRateSchedule,
         Long scheduleStartEpochMillis,
@@ -26,28 +23,26 @@ public record ProducerWorkAssignment(
         int partitionsPerTopic,
         double messageDistributorSkew) {
 
-    public ProducerWorkAssignment(List<byte[]> payloadData,
-                                  double publishRate,
+    public ProducerWorkAssignment(double publishRate,
                                   MessageDistributorType messageDistributorType,
                                   int partitionsPerTopic,
                                   double messageDistributorSkew) {
-        this(payloadData, publishRate, null, null, messageDistributorType,
+        this(publishRate, null, null, messageDistributorType,
                 partitionsPerTopic, messageDistributorSkew);
     }
 
-    public ProducerWorkAssignment(List<byte[]> payloadData,
-                                  double publishRate,
+    public ProducerWorkAssignment(double publishRate,
                                   ProducerRateSchedule publishRateSchedule,
                                   MessageDistributorType messageDistributorType,
                                   int partitionsPerTopic,
                                   double messageDistributorSkew) {
-        this(payloadData, publishRate, publishRateSchedule, null, messageDistributorType,
+        this(publishRate, publishRateSchedule, null, messageDistributorType,
                 partitionsPerTopic, messageDistributorSkew);
     }
 
     public ProducerWorkAssignment withPublishRate(double newRate) {
         return new ProducerWorkAssignment(
-                payloadData, newRate, publishRateSchedule, scheduleStartEpochMillis, messageDistributorType,
+                newRate, publishRateSchedule, scheduleStartEpochMillis, messageDistributorType,
                 partitionsPerTopic, messageDistributorSkew);
     }
 
@@ -56,7 +51,7 @@ public record ProducerWorkAssignment(
                 ? null
                 : publishRateSchedule.copyDividedBy(divisor);
         return new ProducerWorkAssignment(
-                payloadData, publishRate / divisor, dividedSchedule, scheduleStartEpochMillis,
+                publishRate / divisor, dividedSchedule, scheduleStartEpochMillis,
                 messageDistributorType, partitionsPerTopic, messageDistributorSkew);
     }
 }

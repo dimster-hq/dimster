@@ -1,5 +1,6 @@
 package dev.dimster.engines.explore;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 import java.util.ArrayList;
@@ -55,6 +56,13 @@ public class ExploreResult {
         public int messageSize;
         public String messageDistributor;
         public String consumerType;
+        // Dataset the test point generated records from: "payload"/RAW when
+        // the workload sets none. For other datasets, messageSize is the
+        // estimated average record size.
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String datasetPreset;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String datasetFormat;
 
         /** Peak sustainable rate in msgs/sec */
         public double peakSustainableRate;

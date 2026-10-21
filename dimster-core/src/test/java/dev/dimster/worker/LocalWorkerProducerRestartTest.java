@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import dev.dimster.datagen.DatasetResolver;
 import dev.dimster.kafka.KafkaProducerWrapper;
 import dev.dimster.spi.kafka.RawProducer;
 import dev.dimster.utils.distributor.MessageDistributorType;
@@ -41,12 +42,12 @@ public class LocalWorkerProducerRestartTest {
         FakeRawProducer raw = new FakeRawProducer();
         String name = "producer-topic-i0";
         KafkaProducerWrapper wrapper = new KafkaProducerWrapper(
-                raw, "topic", name, new int[0], false);
+                raw, "topic", name, 0, new int[0], false);
         setField(worker, "producers", new ArrayList<>(List.of(wrapper)));
 
+        worker.setDataset(DatasetResolver.payloadDataset(9, 0.5, 1, null));
         worker.startLoad(new ProducerWorkAssignment(
-                List.of(new byte[10]), 0.1,
-                MessageDistributorType.NO_KEY, 1, 1.0));
+                0.1, MessageDistributorType.NO_KEY, 1, 1.0));
         assertTrue("producer should send once before entering the long rate-limit sleep",
                 raw.firstSend.await(2, TimeUnit.SECONDS));
 
@@ -66,7 +67,7 @@ public class LocalWorkerProducerRestartTest {
         LocalWorker worker = new LocalWorker(false);
         String name = "producer-topic-i0";
         KafkaProducerWrapper replacement = new KafkaProducerWrapper(
-                new FakeRawProducer(), "topic", name, new int[0], false);
+                new FakeRawProducer(), "topic", name, 0, new int[0], false);
         setField(worker, "producers", new ArrayList<>(List.of(replacement)));
 
         long oldGeneration = registerProducerInstance(worker, name);

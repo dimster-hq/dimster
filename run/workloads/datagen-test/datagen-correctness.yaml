@@ -1,0 +1,36 @@
+name: Datagen - correctness with generated records
+
+# Correctness mode with generated taxi-trip rows: the producer id, sequence
+# and CRC travel in each record's _dimster header field, as they do for the
+# default payload dataset, so loss/duplicate/ordering checks work on
+# schema-encoded records too.
+
+engineConfig:
+  perPartitionMetrics: false
+  perConsumerMetrics: false
+  cooldownMinutes: 0
+
+correctnessConfig:
+  testMode: CONCURRENT
+  testDurationMinutes: 1
+  gracePeriodSeconds: 60
+  detectDuplicates: true
+  detectOutOfOrder: true
+  enableCrc: true
+  failOnLoss: true
+  failOnDuplicates: false
+  failOnOutOfOrder: true
+  failOnCrc: true
+
+baseWorkload:
+  topics: 2
+  partitionsPerTopic: 4
+  messageDistributor: NO_KEY
+  consumerType: CONSUMER_GROUP
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 4
+  producersPerTopic: 1
+  producerRate: 2000
+  dataset:
+    preset: taxi
+    format: AVRO

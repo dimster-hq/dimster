@@ -12,6 +12,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import dev.dimster.MessageType;
+import dev.dimster.datagen.RecordFormat;
+import dev.dimster.datagen.RecordPrinter;
 import dev.dimster.spi.kafka.AckType;
 import dev.dimster.spi.kafka.RawShareConsumer;
 import dev.dimster.spi.kafka.ShareAckListener;
@@ -62,6 +64,12 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
      *  Wired in from {@code engineConfig.printMessages}; the upstream
      *  coordinator already enforces the rate guard, so this wrapper just obeys. */
     private final boolean printMessages;
+    /** Renders record contents for those lines (engineConfig.printContents),
+     *  or null to print none. */
+    private final RecordPrinter recordPrinter;
+    /** Layout of the consumed values (RAW for the payload dataset, else the
+     *  dataset's format), used to find each record's message type. */
+    private final RecordFormat recordFormat;
 
     /**
      * @param name canonical client name from {@code VirtualConsumer.name()}
@@ -77,11 +85,15 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
                                      int procMsMin,
                                      int procMsMax,
                                      int procParallelism,
-                                     boolean printMessages) {
+                                     boolean printMessages,
+                                     RecordPrinter recordPrinter,
+                                     RecordFormat recordFormat) {
         this.consumer = consumer;
         this.callback = callback;
         this.name = name;
         this.printMessages = printMessages;
+        this.recordPrinter = recordPrinter;
+        this.recordFormat = recordFormat;
 
         this.explicitAck = "explicit".equalsIgnoreCase(
                 (String) consumerConfig.getOrDefault("share.acknowledgement.mode", "implicit"));
@@ -146,24 +158,26 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
                             recordList,
                             closing,
                             callback,
+                            recordFormat,
                             deliveryTime,
                             (messageIdx, simulatedProcessingStartTime) -> {
                                 // Process single message with its simulated processing start time
                                 var record = recordList.get(messageIdx);
 
                                 // Print the messages if configured
-                                if (printMessages && log.isDebugEnabled()) {
+                                if (printMessages) {
                                     long e2eLatencyMs = simulatedProcessingStartTime.toEpochMilli() - record.timestamp();
                                     byte[] value = record.value();
-                                    String msgType = MessageType.nameOf(value != null && value.length > 0 ? value[0] : -1);
-                                    log.debug("PROCESSED client={} topic={} partition={} offset={} timestamp={} e2eLatencyMs={} type={}",
+                                    String msgType = MessageType.nameOf(recordFormat.typeOf(value));
+                                    log.info("PROCESSED client={} topic={} partition={} offset={} timestamp={} e2eLatencyMs={} type={}{}",
                                             this.name,
                                             record.topic(), record.partition(),
-                                            record.offset(), record.timestamp(), e2eLatencyMs, msgType);
+                                            record.offset(), record.timestamp(), e2eLatencyMs, msgType,
+                                            RecordPrinter.logSuffix(recordPrinter, record.key(), value));
                                 }
 
                                 // Records stats
-                                callback.messageReceived(record.value(), record.topic(), record.partition(),
+                                callback.messageReceived(record.value(), recordFormat, record.topic(), record.partition(),
                                         record.timestamp(), deliveryTime, simulatedProcessingStartTime);
 
                                 // Maybe acknowledge

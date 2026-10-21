@@ -47,6 +47,7 @@ public class KafkaProducerWrapper implements AutoCloseable, KafkaMetricsSource {
     private final RawProducer<String, byte[]> producer;
     private final String topic;
     private final String name;
+    private final int producerIdx;
     private final int[] pinnedPartitions;
     // Plain int — each wrapper is owned by exactly one thread for the lifetime of a test
     // point: the engine thread during probeProducers (sequential, no concurrency), then
@@ -59,15 +60,18 @@ public class KafkaProducerWrapper implements AutoCloseable, KafkaMetricsSource {
      * @param producer          the underlying Kafka producer
      * @param topic             topic this producer publishes to
      * @param name              stable display name (used in logs and Prometheus labels)
+     * @param producerIdx       the producer's index within its topic (VirtualProducer.producerIdx);
+     *                          unique per topic across workers, used by generated datasets
      * @param pinnedPartitions  partitions this producer round-robins through;
      *                          empty array means no pinning
      * @param transactional     whether the producer was configured with a transactional.id
      */
     public KafkaProducerWrapper(RawProducer<String, byte[]> producer, String topic, String name,
-                                int[] pinnedPartitions, boolean transactional) {
+                                int producerIdx, int[] pinnedPartitions, boolean transactional) {
         this.producer = producer;
         this.topic = topic;
         this.name = name;
+        this.producerIdx = producerIdx;
         // Defensive copy so the caller can't mutate the wrapper's pinning post-construction.
         this.pinnedPartitions = pinnedPartitions == null
                 ? new int[0]
@@ -77,6 +81,11 @@ public class KafkaProducerWrapper implements AutoCloseable, KafkaMetricsSource {
 
     public String getTopic() {
         return topic;
+    }
+
+    /** The producer's index within its topic; see the constructor. */
+    public int producerIdx() {
+        return producerIdx;
     }
 
     /** Returns a copy of the pinned partitions array (empty if no pinning). */

@@ -54,7 +54,8 @@ Operational settings shared across all engine modes. Lives at the top level of t
 | `perPartitionMetrics` | boolean | `false` | Emit per-partition metrics (in addition to per-topic aggregates). Increases metric cardinality significantly on high-partition topologies. |
 | `perConsumerMetrics` | boolean | `false` | Emit per-consumer-instance metrics. Off by default to keep metric cardinality manageable. |
 | `cooldownMinutes` | integer | `0` | Minutes to wait between test points before tearing down topics and consumer groups. Gives Kafka time to stabilise and metric scrapers time to collect final samples. |
-| `printMessages` | boolean | `false` | Log every successfully produced and consumed record (partition, offset, timestamp). Intended for low-rate debugging only -- the coordinator forces this off for any test point with producer rate > 50 msg/s, and always off for the explore engine (where rate is dynamic). |
+| `printMessages` | boolean | `false` | Log every successfully produced (`PRODUCED`) and consumed (`PROCESSED`) record at INFO level: topic, partition, offset, timestamp, and for consumers the end-to-end latency and message type. Intended for low-rate debugging only -- the coordinator forces this off for any test point with producer rate > 50 msg/s, and always off for the explore engine (where rate is dynamic). |
+| `printContents` | boolean | `false` | Also print each record's key and contents on those lines (`key=... value=...`). Generated [dataset](#generated-datasets) records are shown as JSON (Avro records are decoded with the dataset's schema); payload-pool records, which are mostly random bytes, as their message type, size and first 16 bytes. Turns printing on by itself, under the same rate limit as `printMessages`. |
 
 ### engineConfig Example
 
@@ -79,13 +80,14 @@ These fields define the default test parameters. Each field can be overridden pe
 | `producersPerTopic` | integer | `1` | Number of producer instances per topic.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `consumerGroupsPerTopic` | integer | `1` | Number of consumer groups per topic (controls fan-out).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `consumersPerGroup` | integer | `1` | Number of consumers per consumer group.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `messageSize` | integer | `1000` | Message payload size in bytes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `messageSize` | integer | `1000` | Message payload size in bytes. Does not apply when `dataset` is set: the test point's message size is then the dataset's estimated average record size. |
 | `producerRate` | integer | `10000` | Target aggregate producer rate in messages per second for fixed-rate workloads. When `producerRateSchedule` is set, Dimster automatically resolves this to the schedule's max rate in test-point metadata/results.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `producerRateSchedule` | object | _(unset)_ | Optional variable producer-rate schedule. When set, producers follow the schedule instead of the fixed `producerRate`. See [Producer Rate Schedules](#producer-rate-schedules).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `useRandomizedPayloads` | boolean | `true` | Generate randomized message payloads (provides more realistic compression behavior).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `randomBytesRatio` | double | `0.5` | Fraction of message bytes that are random (0.0 to 1.0).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `randomizedPayloadPoolSize` | integer | `100` | Number of pre-generated random payloads to cycle through.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `payloadFile` | string | _(unset)_ | Path to a static payload file. Required when `useRandomizedPayloads` is `false`; otherwise ignored.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `useRandomizedPayloads` | boolean | `true` | Without a `dataset`, records are the header followed by `messageSize - 1` payload bytes (the default [payload dataset](#generated-datasets)). When true, the payloads are generated; when false, they come from `payloadFile`. |
+| `randomBytesRatio` | double | `0.5` | Fraction of each generated payload that is random (0.0 to 1.0); the rest is zeros, which controls compressibility. |
+| `randomizedPayloadPoolSize` | integer | `100` | Number of distinct generated payloads, sampled uniformly. Every producer draws from the same payloads. |
+| `payloadFile` | string | _(unset)_ | Path to a payload file of exactly `messageSize` bytes, sent as every payload (its first byte is replaced by the header). Required when `useRandomizedPayloads` is `false`; otherwise ignored. |
+| `dataset` | object | _(unset)_ | Optional generated dataset. When set, producers send schema-encoded rows (Avro or JSON) generated from a preset or inline column definitions instead of the payload dataset. See [Generated Datasets](#generated-datasets). |
 | `messageDistributor` | enum | `NO_KEY` | Message distribution strategy. See [Message Distributor Types](#message-distributor-types).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `messageDistributorSkew` | double | `1.0` | Zipf exponent used by `KEY_ZIPF` and `PARTITION_ZIPF`. Higher values produce a steeper, more skewed distribution. Ignored by other strategies.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `consumerType` | enum | `CONSUMER_GROUP` | Consumer type. See [Consumer Types](#consumer-types).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -162,6 +164,7 @@ The message distributor controls how each producer record is routed to a partiti
 | `KEY_ROUND_ROBIN` | Cycle through a pool of 10,000 pre-generated keys in round-robin order. Each key always hashes to the same partition, so partition load depends on how evenly the partitioner distributes the key space. Provides a stable, repeatable distribution across runs. |
 | `RANDOM_NANO` | Pick a random key from the pool on each send using `System.nanoTime()`. Produces a roughly uniform partition distribution through the hash partitioner, but with more randomness per-message than `KEY_ROUND_ROBIN`. |
 | `KEY_ZIPF` | Pick a key from the pool with a Zipf-distributed index. A small subset of keys is produced far more often than the rest, leading to hot partitions through the broker's hash partitioner. The resulting partition skew depends on how keys happen to hash — it's realistic but not fully deterministic. Skew controlled by `messageDistributorSkew`. |
+| `KEY_COLUMN` | Use the value of the dataset's `keyColumn` as the record key, so key and partition skew follow that column's distribution (for example a Zipf-distributed `user_id`). Requires a `dataset` with a `keyColumn`, and a `keyColumn` requires this distributor. |
 
 #### Partition-targeted strategies
 
@@ -185,6 +188,112 @@ Two notes when picking a value:
 
 - The differences between low skew values widen as `partitionsPerTopic` grows. At 10 partitions the gap between `1.0` and `1.5` is moderate; at 100+ partitions p0's share for `skew=1.0` drops below 20% while `skew=1.5` stays near 38%.
 - For "realistic production-like skew" use `1.1`–`1.5`. For "stress fairness / hot-partition isolation" experiments where you want one partition to clearly dominate, use `2.0` or higher.
+
+### Generated Datasets
+
+`dataset` replaces the default payload dataset (opaque random bytes) with generated rows that look like real data, for comparing record formats and measuring compression. The concepts (how values, cardinality and skew are generated) are described in [Data Generation](../concepts/data-generation.md), which also has [column recipes](../concepts/data-generation.md#column-recipes) for common cases (number ranges, fixed value sets, dates, names, text); this section lists the fields.
+
+```yaml
+baseWorkload:
+  messageDistributor: KEY_COLUMN
+  dataset:
+    preset: clicks          # clicks | orders | taxi, optional
+    format: AVRO            # AVRO (default) | JSON
+    seed: 42                # default 0
+    keyColumn: user_id      # optional; requires messageDistributor KEY_COLUMN
+    columns:                # optional; merged onto the preset's columns by name
+      country: {cardinality: 20}
+      coupon:  {type: STRING, kind: ALPHANUMERIC, length: [8, 8], cardinality: 500, nullRate: 0.9}
+```
+
+Every record has the schema `{_dimster: bytes, <columns>...}`. The `_dimster` field is Dimster's own header: the message type (normal, probe or correctness), plus the producer id, sequence and CRC in correctness mode. Dimster writes and reads it; it is never a dataset column, and column names starting with `_dimster` are rejected.
+
+Without a `dataset`, every record still has a schema: the payload dataset, `{_dimster: bytes, payload: bytes}`, in RAW encoding (the header bytes, then the payload bytes, with no framing). The payload is `messageSize - 1` bytes built from `useRandomizedPayloads`, `randomBytesRatio`, `randomizedPayloadPoolSize` and `payloadFile`, so normal records are exactly `messageSize` bytes. Correctness records are larger by the extra header bytes (21, or 25 with a CRC), since the header precedes the payload. Results report this dataset as preset `payload`, format `RAW`.
+
+#### dataset Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `preset` | string | _(unset)_ | A built-in dataset: `clicks` (web clickstream events, 12 columns), `orders` (e-commerce orders with customer names, emails and addresses, 15 columns) or `taxi` (trips shaped like NYC TLC yellow-taxi records, 19 columns). Each is defined in `dimster-core/src/main/resources/datagen/presets/<preset>.yaml`, which lists its columns; see [Where presets are defined](../concepts/data-generation.md#where-presets-are-defined). |
+| `format` | enum | `AVRO` | Record encoding. `AVRO` is Avro binary encoding of the schema above (nullable columns are `["null", T]` unions); `JSON` is a compact JSON object with `_dimster` as its first member, in lowercase hex. |
+| `seed` | long | `0` | Seed for value generation. With the same seed, each column maps the same rank to the same value on every producer and in every run. |
+| `keyColumn` | string | _(unset)_ | Column whose value becomes the record key. Requires `messageDistributor: KEY_COLUMN`. |
+| `columns` | map | _(unset)_ | Column definitions in schema order, keyed by column name (`[A-Za-z_][A-Za-z0-9_]*`). A column that matches a preset column overrides it field by field; other columns are appended. |
+
+#### Overriding Preset Columns
+
+`columns` merges onto the preset rather than replacing it:
+
+- A column whose name matches a preset column overrides only the fields it sets; its other fields are inherited from the preset, and it keeps its position.
+- A column with a new name is appended after the preset's columns, in workload order.
+- Preset columns that `columns` doesn't mention are kept as they are.
+
+For example, `orders` defines `customer_id: {type: LONG, min: 1, max: 9999999, cardinality: 200000, distribution: ZIPF, skew: 0.7}`. With
+
+```yaml
+dataset:
+  preset: orders
+  columns:
+    customer_id: {cardinality: 1000}                            # override one field
+    coupon: {type: STRING, kind: ALPHANUMERIC, length: [8, 8]}  # new column, appended
+```
+
+`customer_id` becomes `{type: LONG, min: 1, max: 9999999, cardinality: 1000, distribution: ZIPF, skew: 0.7}`, every other `orders` column is unchanged, and `coupon` is the last column.
+
+Because overrides merge:
+
+- A preset column can't be removed, and an inherited field can't be cleared, only given another value. To leave out preset columns, omit `preset` and define every column inline; the preset's file (see [Where presets are defined](../concepts/data-generation.md#where-presets-are-defined)) is a starting point to copy.
+- Changing a column's `type` keeps its other inherited fields. Fields that don't apply to the new type are rejected with an error naming the column and field, so define a differently named column instead.
+- Each element of a scenario's `dataset` list is a complete dataset definition: it merges onto its own `preset`, not onto `baseWorkload.dataset`.
+
+#### Column Fields
+
+| Field | Applies to | Default | Description |
+|-------|------------|---------|-------------|
+| `type` | all | _(required)_ | `LONG`, `INT`, `DOUBLE`, `BOOLEAN`, `STRING`, `TIMESTAMP` (wall-clock epoch milliseconds), `SEQUENCE` (a per-producer counter, unique within a topic) or `BYTES` (opaque bytes: a random prefix followed by zeros; Avro `bytes`, lowercase hex in JSON). |
+| `cardinality` | `LONG`, `INT`, `STRING`, `BYTES` | see description | Number of distinct values. For numbers, unset means a range (see `min`/`max`). For strings, unset means the whole dictionary for dictionary kinds and unbounded (a fresh value per row) otherwise. For bytes, unset means unbounded. |
+| `distribution` | `LONG`, `INT`, `DOUBLE`, `STRING`, `BYTES` | `UNIFORM` | `UNIFORM`; `ZIPF` (categorical only: rank 0 is the most frequent, see `skew`); or `NORMAL` (ranges only: mean at the midpoint, standard deviation of a sixth of the range, clamped). Which types accept which: see [Distributions](#distributions). |
+| `skew` | `ZIPF` columns | `1.0` | Zipf exponent: 0 is uniform, 1 is classic Zipf, 2 and above concentrate heavily on the first values. |
+| `min`, `max` | `LONG`, `INT`, `DOUBLE` | `0`, type maximum (`DOUBLE`: `0`, `1`) | The value range. For categorical integers, the domain the values are drawn from. |
+| `scramble` | `LONG`, `INT` | `true` | Categorical integers: map ranks to pseudo-random values in `[min, max]` (true) or to `min + rank` (false, which makes the most frequent values the smallest). |
+| `scale` | `DOUBLE` | _(no rounding)_ | Number of decimal places to round to, such as `2` for money. |
+| `values`, `weights` | `STRING` | _(unset)_ | A weighted enum: the values, and optional relative weights (equal when unset). Can't be combined with `kind`, `cardinality` or `distribution`. |
+| `kind` | `STRING` | `ALPHANUMERIC` | What values look like. Dictionary kinds: `FIRST_NAME`, `LAST_NAME`, `CITY`, `COUNTRY`, `DOMAIN`, `USER_AGENT`, `WORD`. Composite kinds: `FULL_NAME`, `STREET_ADDRESS`, `EMAIL`, `URL`, `SENTENCE`. Formatted kinds: `ALPHANUMERIC`, `IP`, `UUID`. |
+| `length` | `ALPHANUMERIC`, `BYTES` | `[8, 16]`, `[100, 100]` | `[min, max]` length in characters (`ALPHANUMERIC`) or bytes (`BYTES`). |
+| `randomRatio` | `BYTES` | `1.0` | Fraction of each value that is random; the rest is zeros. Lower values compress better. |
+| `words` | `SENTENCE` | `[5, 15]` | `[min, max]` number of words. |
+| `trueRate` | `BOOLEAN` | `0.5` | Probability of `true`. |
+| `jitterMs` | `TIMESTAMP` | `0` | Values are the current time minus a uniform random `[0, jitterMs]`. |
+| `nullRate` | all | `0` | Probability that a value is null. A nonzero rate makes the column nullable. |
+| `runLength` | all | `1` | Hold each sampled value for this many consecutive rows on a producer. Clusters values within batches, which affects compression and batch-level min/max skipping. |
+
+#### Distributions
+
+`distribution` is one of three values:
+
+- `UNIFORM` (the default): every value, or every rank, equally likely.
+- `ZIPF`: for categorical columns, those with a `cardinality`. Rank 0 is the most frequent, and rank `k` has probability proportional to `1 / (k + 1)^skew` (see `skew`). Cardinalities up to 2^31 - 1.
+- `NORMAL`: for ranges, numbers without a `cardinality`. The mean is the midpoint of `[min, max]` and the standard deviation a sixth of the range; values outside the range are clamped to it. The mean and spread can't be set separately.
+
+Which ones a column accepts depends on its type:
+
+| Column | `UNIFORM` | `ZIPF` | `NORMAL` |
+|---|---|---|---|
+| `LONG`, `INT` with `cardinality` | yes | yes | no |
+| `LONG`, `INT` without `cardinality` (a range) | yes | no (needs a `cardinality`) | yes |
+| `DOUBLE` | yes | no | yes |
+| `STRING` with a dictionary `kind` | yes | yes (the cardinality defaults to the dictionary size) | no |
+| `STRING` with another `kind` | yes | needs a `cardinality` | no |
+| `BYTES` | yes | needs a `cardinality` | no |
+| `STRING` with `values` | not settable: use `weights` | | |
+| `BOOLEAN` | not settable: use `trueRate` | | |
+| `TIMESTAMP`, `SEQUENCE` | not settable | | |
+
+A combination marked no or not settable is rejected with an error naming the column. Message keys and partitions have their own, separate distributions; see [Message Distributor Types](#message-distributor-types).
+
+Record sizes follow from the data, so `messageSize` does not apply. Dimster estimates the dataset's average record size from a sample of rows and uses it as the test point's `messageSize`, so that byte-based settings and figures (backlog sizes, explore MB/s) stay approximately right. The results also carry measured byte rates (`publishBytesRate`, `consumeBytesRate`) and `avgRecordBytes`, which the charts use when present.
+
+Lists in a scenario are zipped, not crossed, so a dataset dimension combined with a `kafkaConfig` dimension is written point by point. See `run/workloads/datagen-test/` for examples.
 
 ### Consumer Types
 
@@ -211,6 +320,7 @@ Scenarios allow running multiple test variations from a single workload file. Ea
 | `messageSize` | list of integer | Override `messageSize` per test point. |
 | `producerRate` | list of integer | Override `producerRate` per test point. |
 | `producerRateSchedule` | list of object | Override `producerRateSchedule` per test point. |
+| `dataset` | list of object | Override `dataset` per test point. Each element is a whole dataset definition (preset, format, columns). Can't be combined with a `messageSize` list. |
 | `messageDistributor` | list of enum | Override `messageDistributor` per test point. |
 | `messageDistributorSkew` | list of double | Override `messageDistributorSkew` per test point. |
 | `consumerType` | list of enum | Override `consumerType` per test point. |

@@ -9,6 +9,7 @@ import dev.dimster.ProducerRateSchedule;
 import dev.dimster.availability.AvailabilityConfig;
 import dev.dimster.availability.AvailabilityResult;
 import dev.dimster.availability.ProbeAssignment;
+import dev.dimster.datagen.ResolvedDataset;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.engines.correctness.CorrectnessConfig;
 import dev.dimster.engines.correctness.CorrectnessResult;
@@ -129,6 +130,20 @@ public interface Worker extends AutoCloseable {
      *  side simply obeys. */
     default void setPrintMessages(boolean enabled) {}
 
+    /** Toggle adding each record's key and contents to the printed lines
+     *  (engineConfig.printContents); only has an effect while printing. */
+    default void setPrintContents(boolean enabled) {}
+
+    /**
+     * Sets the dataset that producers generate records from: the workload's
+     * dataset, or the default payload dataset. Producers and consumers both
+     * depend on it (consumers find the message type through the dataset's
+     * record format), so the engine calls this before creating them, and
+     * before {@link #probeProducers()}. A live messageSize change sets a new
+     * payload dataset and then restarts producers, which pick it up.
+     */
+    default void setDataset(ResolvedDataset dataset) throws IOException {}
+
     /** Adjust the simulated per-record processing time on all active consumers. */
     default void setConsumerProcessingTime(int minMs, int maxMs) {}
 
@@ -188,12 +203,4 @@ public interface Worker extends AutoCloseable {
      * configuration or consumer-type change requires a fresh KafkaConsumer.
      */
     default void restartConsumers(ConsumerSet consumers) throws IOException {}
-
-    /**
-     * Live-swap the payload pool that producers send. Used by
-     * {@code /modify --messageSize <N>} to change message size on the fly
-     * without restarting any KafkaProducer — the next iteration of each
-     * producer thread reads the new payloads. The list must be non-empty.
-     */
-    default void updatePayloads(List<byte[]> payloads) throws IOException {}
 }

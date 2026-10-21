@@ -1,6 +1,7 @@
 package dev.dimster.kafka;
 
 import dev.dimster.MessageType;
+import dev.dimster.datagen.RecordFormat;
 import dev.dimster.utils.Sleeper;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
@@ -79,6 +80,7 @@ public class ProcessingTimeSimulator {
      * @param batchSize number of messages in the batch
      * @param closing signal to check for early termination
      * @param callback callback for recording processing metrics
+     * @param format layout of the record values, to find each one's message type
      * @param deliveryTime when consumer.poll() returned (base time for calculating processing start times)
      * @param messageProcessor callback to process each message with its simulated start time
      * @return total sleep time in milliseconds
@@ -87,6 +89,7 @@ public class ProcessingTimeSimulator {
             List<ConsumerRecord<String, byte[]>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
+            RecordFormat format,
             Instant deliveryTime,
             MessageProcessor messageProcessor) {
 
@@ -100,11 +103,11 @@ public class ProcessingTimeSimulator {
         }
 
         if (procParallelism == 1) {
-            return processBatchSequential(records, closing, callback, deliveryTime, messageProcessor);
+            return processBatchSequential(records, closing, callback, format, deliveryTime, messageProcessor);
         } else if (procParallelism > 1) {
-            return processBatchConstrained(records, closing, callback, deliveryTime, messageProcessor);
+            return processBatchConstrained(records, closing, callback, format, deliveryTime, messageProcessor);
         } else { // procParallelism == -1
-            return processBatchFullParallel(records, closing, callback, deliveryTime, messageProcessor);
+            return processBatchFullParallel(records, closing, callback, format, deliveryTime, messageProcessor);
         }
     }
 
@@ -112,11 +115,10 @@ public class ProcessingTimeSimulator {
      * Whether simulated processing time should be applied to this record.
      * Only NORMAL and CORRECTNESS payloads incur processing time; control-plane
      * types (AVAILABILITY, PROBE) and empty payloads complete instantly.
+     * {@code format} locates the message type within the value.
      */
-    private static boolean appliesProcessingTime(ConsumerRecord<String, byte[]> record) {
-        byte[] value = record.value();
-        if (value == null || value.length == 0) return false;
-        byte marker = value[0];
+    private static boolean appliesProcessingTime(ConsumerRecord<String, byte[]> record, RecordFormat format) {
+        int marker = format.typeOf(record.value());
         return marker == MessageType.NORMAL || marker == MessageType.CORRECTNESS;
     }
 
@@ -134,6 +136,7 @@ public class ProcessingTimeSimulator {
             List<ConsumerRecord<String, byte[]>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
+            RecordFormat format,
             Instant deliveryTime,
             MessageProcessor messageProcessor) {
 
@@ -148,7 +151,7 @@ public class ProcessingTimeSimulator {
             messageProcessor.processMessage(i, startTime);
 
             // Only NORMAL/CORRECTNESS records consume simulated processing time
-            if (appliesProcessingTime(records.get(i))) {
+            if (appliesProcessingTime(records.get(i), format)) {
                 cumulativeMs += randomProcMs();
             }
         }
@@ -177,6 +180,7 @@ public class ProcessingTimeSimulator {
             List<ConsumerRecord<String, byte[]>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
+            RecordFormat format,
             Instant deliveryTime,
             MessageProcessor messageProcessor) {
 
@@ -185,7 +189,7 @@ public class ProcessingTimeSimulator {
         // Generate processing times for all messages; non-NORMAL/CORRECTNESS get 0.
         long[] processingTimes = new long[batchSize];
         for (int i = 0; i < batchSize; i++) {
-            processingTimes[i] = appliesProcessingTime(records.get(i)) ? randomProcMs() : 0;
+            processingTimes[i] = appliesProcessingTime(records.get(i), format) ? randomProcMs() : 0;
         }
 
         // Track cumulative work per worker (simulates work-stealing queue)
@@ -240,6 +244,7 @@ public class ProcessingTimeSimulator {
             List<ConsumerRecord<String, byte[]>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
+            RecordFormat format,
             Instant deliveryTime,
             MessageProcessor messageProcessor) {
 
@@ -249,7 +254,7 @@ public class ProcessingTimeSimulator {
         // Only NORMAL/CORRECTNESS records contribute to maxTime.
         long maxTime = 0;
         for (int i = 0; i < batchSize; i++) {
-            if (appliesProcessingTime(records.get(i))) {
+            if (appliesProcessingTime(records.get(i), format)) {
                 maxTime = Math.max(maxTime, randomProcMs());
             }
 
@@ -283,16 +288,18 @@ public class ProcessingTimeSimulator {
      *
      * @param record the consumer record to process
      * @param deliveryTime when consumer.poll() returned
+     * @param format the layout of the record value, to find its message type
      * @return CompletedRecord if processed immediately, null if queued
      */
     public CompletedRecord offerAsync(ConsumerRecord<String, byte[]> record,
-                                      Instant deliveryTime) {
+                                      Instant deliveryTime,
+                                      RecordFormat format) {
         if (!continuousMode) {
             throw new IllegalStateException("offerAsync() requires continuousMode=true");
         }
 
         // Only NORMAL/CORRECTNESS records incur simulated processing time.
-        long procMs = appliesProcessingTime(record) ? randomProcMs() : 0;
+        long procMs = appliesProcessingTime(record, format) ? randomProcMs() : 0;
 
         // Calculate when this record should start processing based on parallelism mode
         long startOffsetMs = calculateStartOffsetMs(procMs);
@@ -435,7 +442,7 @@ public class ProcessingTimeSimulator {
 
     /**
      * Completed record with full ConsumerRecord and timing information for processing.
-     * Returned by {@link #drainCompleted()} and {@link #offerAsync(ConsumerRecord, Instant)}.
+     * Returned by {@link #drainCompleted()} and {@link #offerAsync(ConsumerRecord, Instant, RecordFormat)}.
      */
     public record CompletedRecord(ConsumerRecord<String, byte[]> record,
                                    Instant deliveryTime, Instant simulatedStartTime) {}

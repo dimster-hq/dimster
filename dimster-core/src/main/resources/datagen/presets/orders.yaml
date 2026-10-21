@@ -1,0 +1,26 @@
+# E-commerce order lines: customers with names, emails and addresses,
+# a skewed product catalogue, and mostly-null discount codes. Columns are
+# generated independently (the customer name does not follow customer_id).
+# About 130 bytes per record as AVRO and 380 as JSON.
+columns:
+  order_id:         {type: SEQUENCE}
+  order_time:       {type: TIMESTAMP, jitterMs: 1000}
+  customer_id:      {type: LONG, min: 1, max: 9999999, cardinality: 200000, distribution: ZIPF, skew: 0.7}
+  customer_name:    {type: STRING, kind: FULL_NAME, cardinality: 200000}
+  email:            {type: STRING, kind: EMAIL, cardinality: 200000}
+  shipping_address: {type: STRING, kind: STREET_ADDRESS, cardinality: 200000}
+  city:             {type: STRING, kind: CITY, distribution: ZIPF, skew: 1.0}
+  country:          {type: STRING, kind: COUNTRY, distribution: ZIPF, skew: 1.3}
+  product_sku:      {type: STRING, kind: ALPHANUMERIC, length: [10, 10], cardinality: 20000, distribution: ZIPF, skew: 1.1}
+  quantity:         {type: INT, min: 1, max: 10, cardinality: 10, distribution: ZIPF, skew: 1.5, scramble: false}
+  unit_price:       {type: DOUBLE, min: 1, max: 500, scale: 2}
+  currency:
+    type: STRING
+    values:  [USD, EUR, GBP, JPY, CAD, AUD]
+    weights: [55, 20, 10, 6, 5, 4]
+  status:
+    type: STRING
+    values:  [PLACED, PAID, SHIPPED, DELIVERED, CANCELLED, RETURNED]
+    weights: [10, 15, 25, 42, 5, 3]
+  discount_code:    {type: STRING, kind: ALPHANUMERIC, length: [8, 8], cardinality: 500, nullRate: 0.85}
+  gift:             {type: BOOLEAN, trueRate: 0.05}

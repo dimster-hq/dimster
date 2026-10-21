@@ -1,0 +1,81 @@
+name: Datagen - column recipes
+
+# A catalogue of common column definitions, runnable as a small workload.
+# Copy the ones you need into your own dataset. Each is explained in
+# docs/concepts/data-generation.md ("Column recipes").
+
+engineConfig:
+  cooldownMinutes: 0
+  # Prints each record; keep producerRate at 50 msg/s or less.
+  printContents: true
+
+runConfig:
+  testDurationMinutes: 1
+  warmupDurationMinutes: 0
+  rampIntervals: 0
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 1
+  producersPerTopic: 1
+  consumersPerGroup: 1
+  producerRate: 5
+  dataset:
+    format: JSON
+    columns:
+      # --- Numbers ---
+      # Whole number in [0, 100], every value equally likely.
+      score:        {type: INT, min: 0, max: 100}
+      # Whole number in [0, 100], bell-shaped around 50 (std dev ~16.7).
+      exam_mark:    {type: INT, min: 0, max: 100, distribution: NORMAL}
+      # Money: two decimal places.
+      price:        {type: DOUBLE, min: 0.5, max: 500, scale: 2}
+      # Fraction in [0, 1).
+      ratio:        {type: DOUBLE}
+      # Small code where 1 is most common, then 2, ... (rank order kept).
+      rating:       {type: INT, min: 1, max: 5, cardinality: 5, distribution: ZIPF, skew: 1.2, scramble: false}
+
+      # --- Identifiers ---
+      # Unique per record (within a topic), increasing per producer.
+      order_id:     {type: SEQUENCE}
+      # 10,000 distinct customers, a few far more active than the rest.
+      customer_id:  {type: LONG, min: 1, max: 99999999, cardinality: 10000, distribution: ZIPF, skew: 1.0}
+      # A fresh UUID on every record.
+      request_id:   {type: STRING, kind: UUID}
+      # 500 distinct 10-character product codes.
+      sku:          {type: STRING, kind: ALPHANUMERIC, length: [10, 10], cardinality: 500}
+
+      # --- A fixed set of values ---
+      # Equally likely.
+      size:         {type: STRING, values: [S, M, L, XL]}
+      # Weighted: 70% / 25% / 5%.
+      status:       {type: STRING, values: [OK, RETRY, FAILED], weights: [70, 25, 5]}
+      # Booleans: true 10% of the time.
+      is_premium:   {type: BOOLEAN, trueRate: 0.1}
+
+      # --- Dates and times (all epoch-based numbers) ---
+      # Event time: now, minus up to 5 seconds of lateness (epoch millis).
+      event_time:   {type: TIMESTAMP, jitterMs: 5000}
+      # A date in 2020-2024 as epoch millis (2020-01-01 to 2024-12-31).
+      signup_time:  {type: LONG, min: 1577836800000, max: 1735603200000}
+      # A date of birth in 1950-2005 as days since 1970-01-01.
+      birth_day:    {type: INT, min: -7305, max: 13148}
+
+      # --- People and places ---
+      name:         {type: STRING, kind: FULL_NAME, cardinality: 10000}
+      email:        {type: STRING, kind: EMAIL, cardinality: 10000}
+      address:      {type: STRING, kind: STREET_ADDRESS, cardinality: 10000}
+      # Most-populous cities most often.
+      city:         {type: STRING, kind: CITY, distribution: ZIPF, skew: 1.0}
+      country:      {type: STRING, kind: COUNTRY, cardinality: 20}
+
+      # --- Text and web ---
+      comment:      {type: STRING, kind: SENTENCE, words: [3, 12]}
+      page:         {type: STRING, kind: URL, cardinality: 1000, distribution: ZIPF}
+      client_ip:    {type: STRING, kind: IP, cardinality: 5000}
+
+      # --- Optional and clustered values ---
+      # Missing (null) 80% of the time.
+      coupon:       {type: STRING, kind: ALPHANUMERIC, length: [8, 8], cardinality: 50, nullRate: 0.8}
+      # Changes only every 100 records, like events arriving region by region.
+      region:       {type: STRING, values: [north, south, east, west], runLength: 100}

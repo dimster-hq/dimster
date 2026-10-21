@@ -30,6 +30,11 @@ import dev.dimster.availability.AvailabilityPayload;
 import dev.dimster.availability.AvailabilityRecorder;
 import dev.dimster.availability.AvailabilityResult;
 import dev.dimster.availability.ProbeAssignment;
+import dev.dimster.datagen.DatasetGenerator;
+import dev.dimster.datagen.RecordFormat;
+import dev.dimster.datagen.RecordPrinter;
+import dev.dimster.datagen.ResolvedDataset;
+import dev.dimster.datagen.RowGenerator;
 import dev.dimster.engines.correctness.CorrectnessConfig;
 import dev.dimster.engines.correctness.CorrectnessPayload;
 import dev.dimster.engines.correctness.CorrectnessResult;
@@ -58,6 +63,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import dev.dimster.utils.Timer;
+import dev.dimster.utils.distributor.KeyColumnDistributor;
 import dev.dimster.utils.distributor.MessageDistributor;
 import dev.dimster.worker.commands.ClientHealth;
 import dev.dimster.worker.commands.ClientStatus;
@@ -123,10 +129,9 @@ public class LocalWorker implements Worker {
     private final Set<String> stoppedProducerNames = ConcurrentHashMap.newKeySet();
 
     // Captured at startLoad() so addProducers() invoked later can spin up a
-    // matching runProducer task with the same distributor / payloads / rate.
+    // matching runProducer task with the same distributor / rate.
     // Null until startLoad fires.
     private volatile MessageDistributor activeMessageDistributor;
-    private volatile List<byte[]> activePayloads;
     // Producer wrapper ownership lives in the runProducer task, not in the
     // modify thread. Restart/remove waits on these tasks before closing the
     // wrappers so a rate-limited producer cannot wake up and send after close().
@@ -144,11 +149,34 @@ public class LocalWorker implements Worker {
     private final java.util.concurrent.atomic.AtomicInteger producerIdCounter =
             new java.util.concurrent.atomic.AtomicInteger(0);
 
+    // Generates every record of the current test point: the workload's
+    // dataset, or the default payload dataset. Set by setDataset before
+    // producers and consumers are created; each producer task captures it
+    // when it starts, like the correctness flags, so a dataset change takes
+    // effect when producers are restarted.
+    private volatile DatasetGenerator datasetGenerator = null;
+
+    // Header of every non-correctness data record (Dimster's _dimster field).
+    private static final byte[] NORMAL_HEADER = {MessageType.NORMAL};
+    private static final byte[] PROBE_HEADER = {MessageType.PROBE};
+
     // Per-message printing (engineConfig.printMessages). Volatile because
     // setPrintMessages is invoked once at engine startup (potentially on a
     // different thread than producer/consumer threads) and must be visible
     // to the producer success callback and the consumer wrappers' constructors.
     private volatile boolean printMessages = false;
+    // engineConfig.printContents: add each record's key and contents to the
+    // printed lines. Kept so setDataset can rebuild the printer, which needs
+    // the dataset to decode Avro records.
+    private volatile boolean printContents = false;
+    // Renders record contents for the printed lines; null unless
+    // printContents is on. Producers read it per send, and consumer wrappers
+    // take it at construction, like printMessages.
+    private volatile RecordPrinter recordPrinter = null;
+    // Layout of the record values consumers receive: RAW for the payload
+    // pool, else the dataset's format. Set by setDataset before consumers
+    // are created, and given to each consumer wrapper.
+    private volatile RecordFormat recordFormat = RecordFormat.RAW;
 
     // Consumer set kept for the recreation loop: when a consumer fails we re-instantiate
     // it from its VirtualConsumer entry (preserving its name, group, and static partitions).
@@ -209,7 +237,7 @@ public class LocalWorker implements Worker {
             // (KafkaSpi.factory() does the ServiceLoader lookup once and caches it).
             var kafkaProducer = KafkaSpi.factory().<String, byte[]>newProducer(perProducerProps);
             var wrapper = new KafkaProducerWrapper(kafkaProducer, vp.topic(), vp.name(),
-                    vp.pinnedPartitions(), transactional);
+                    vp.producerIdx(), vp.pinnedPartitions(), transactional);
             initTransactionsTimed(wrapper, perProducerProps);
             registerProducerInstance(vp.name());
             producers.add(wrapper);
@@ -346,13 +374,11 @@ public class LocalWorker implements Worker {
                 producerWorkAssignment.messageDistributorType(),
                 producerWorkAssignment.partitionsPerTopic(),
                 producerWorkAssignment.messageDistributorSkew());
-        List<byte[]> payloads = producerWorkAssignment.payloadData();
 
         // Stash for any addProducers() call that arrives later via /modify
-        // — it needs the same distributor + payloads to spin up a matching
-        // runProducer task on the new producer.
+        // — it needs the same distributor to spin up a matching runProducer
+        // task on the new producer.
         this.activeMessageDistributor = messageDistributor;
-        this.activePayloads = payloads;
         this.producerIdCounter.set(0);
         this.stoppedProducerNames.clear();
         this.producerTasks.clear();
@@ -360,20 +386,23 @@ public class LocalWorker implements Worker {
 
         for (KafkaProducerWrapper producer : producers) {
             int producerId = producerIdCounter.getAndIncrement();
-            submitProducerTask(producer, messageDistributor, payloads, producerId);
+            submitProducerTask(producer, messageDistributor, producerId);
         }
     }
 
     @Override
     public void probeProducers() {
-        byte[] probePayload = new byte[24];
-        probePayload[0] = MessageType.PROBE;
+        // Probes are ordinary generated records with a PROBE header, so they
+        // are valid records of the topic's schema.
+        DatasetGenerator dataset = requireDataset();
         // Transactional producers cannot send outside a transaction once
         // initTransactions has put them in READY state — every probe send
         // must be wrapped in begin/commit. Probes are issued before startLoad
         // (see BaseEngine.run), so there is no race with the per-producer
         // runProducer threads that drive the actual workload.
         producers.forEach(producer -> {
+            byte[] probePayload = dataset.newRowGenerator(producer.clientName(), producer.producerIdx())
+                    .next(PROBE_HEADER);
             if (producer.isTransactional()) {
                 producer.beginTransaction();
                 producer.sendAsync("key", probePayload);
@@ -384,11 +413,17 @@ public class LocalWorker implements Worker {
         });
     }
 
-    private void runProducer(KafkaProducerWrapper producer, MessageDistributor messageDistributor,
-                             List<byte[]> payloads, int producerId, long producerGeneration) {
-        int payloadCount = payloads.size();
-        ThreadLocalRandom r = ThreadLocalRandom.current();
+    /** The current dataset; setDataset must have been called for this test point. */
+    private DatasetGenerator requireDataset() {
+        DatasetGenerator dataset = datasetGenerator;
+        if (dataset == null) {
+            throw new IllegalStateException("setDataset must be called before producers send");
+        }
+        return dataset;
+    }
 
+    private void runProducer(KafkaProducerWrapper producer, MessageDistributor messageDistributor,
+                             int producerId, long producerGeneration) {
         // Correctness state for this producer
         boolean correctness = correctnessEnabled;
         boolean crc = enableCrc;
@@ -398,6 +433,10 @@ public class LocalWorker implements Worker {
                 ? producerSequences.computeIfAbsent(producerId,
                         k -> new java.util.concurrent.atomic.AtomicLong(0))
                 : null;
+
+        // Every record is a generated row; KEY_COLUMN takes the key from it.
+        RowGenerator rowGen = requireDataset().newRowGenerator(producer.clientName(), producer.producerIdx());
+        boolean keyFromRow = messageDistributor instanceof KeyColumnDistributor;
 
         // Transaction state: when transactional, group sends into batches and
         // call commitTransaction when EITHER trigger fires (OR semantics):
@@ -436,19 +475,17 @@ public class LocalWorker implements Worker {
                     continue;
                 }
 
-                byte[] payloadData;
+                // The correctness fields become the record's _dimster header.
                 final long seq;
-
+                final byte[] header;
                 if (correctness) {
                     seq = sequenceCounter.getAndIncrement();
-                    long timestampMs = System.currentTimeMillis();
-                    byte[] template = payloads.get(r.nextInt(payloadCount));
-                    payloadData = java.util.Arrays.copyOf(template, template.length);
-                    CorrectnessPayload.encode(payloadData, producerId, seq, timestampMs, crc);
+                    header = CorrectnessPayload.header(producerId, seq, System.currentTimeMillis(), crc);
                 } else {
                     seq = -1;
-                    payloadData = payloads.get(r.nextInt(payloadCount));
+                    header = NORMAL_HEADER;
                 }
+                byte[] payloadData = rowGen.next(header);
 
                 final long intendedSendTime = acquireNextSendTime();
                 if (!sleepUntilSendTimeOrProducerStopped(intendedSendTime, producerName)) {
@@ -471,9 +508,15 @@ public class LocalWorker implements Worker {
                     txnStartNanos = System.nanoTime();
                 }
 
+                // The record key is either generated from the MessageDistributor itself,
+                // or from the row itself. When MessageDistributor is KEY_COLUMN the key
+                // is taken from the key column of the row, else it is generated by
+                // the non-KEY_COLUMN MessageDistributor to satisfy the specified distribution.
                 MessageDistributor.Target target = messageDistributor.next();
+                String key = keyFromRow ? rowGen.key() : target.key();
+
                 CompletableFuture<KafkaProducerWrapper.SendResult> f = producer.sendAsync(
-                        target.key(), target.partition(), payloadData);
+                        key, target.partition(), payloadData);
                 if (transactional) sentInTxn++;
 
                 stats.recordScheduleLatency(
@@ -482,12 +525,14 @@ public class LocalWorker implements Worker {
                 final int pSize = payloadData.length;
                 final boolean print = printMessages;
                 final String topicForLog = producer.getTopic();
+                // Rendered now, while the record is at hand; empty unless printContents is on.
+                final String contents = print ? RecordPrinter.logSuffix(recordPrinter, key, payloadData) : "";
                 f.thenAccept((sendResult) -> {
                     stats.recordSendSuccess(sendTime, pSize, sendResult.topicPartition());
-                    if (print && log.isDebugEnabled()) {
-                        log.debug("PRODUCED topic={} partition={} offset={} timestamp={}",
+                    if (print) {
+                        log.info("PRODUCED topic={} partition={} offset={} timestamp={}{}",
                                 topicForLog, sendResult.partition(),
-                                sendResult.offset(), sendResult.timestamp());
+                                sendResult.offset(), sendResult.timestamp(), contents);
                     }
                     if (checker != null) {
                         checker.messageSent(producerId, seq, producer.getTopic());
@@ -532,11 +577,11 @@ public class LocalWorker implements Worker {
      * restart: the KafkaProducer is closed only after its owning loop exits.
      */
     private void submitProducerTask(KafkaProducerWrapper producer, MessageDistributor messageDistributor,
-                                    List<byte[]> payloads, int producerId) {
+                                    int producerId) {
         long generation = activeProducerGenerations.computeIfAbsent(producer.clientName(),
                 name -> producerGenerationCounter.incrementAndGet());
         Future<?> task = executor.submit(() -> runProducer(
-                producer, messageDistributor, payloads, producerId, generation));
+                producer, messageDistributor, producerId, generation));
         producerTasks.put(producer.clientName(), task);
     }
 
@@ -901,9 +946,37 @@ public class LocalWorker implements Worker {
     }
 
     @Override
+    public void setDataset(ResolvedDataset dataset) {
+        if (dataset == null) {
+            throw new IllegalArgumentException("dataset is required; workloads without one use the payload dataset");
+        }
+        this.datasetGenerator = new DatasetGenerator(dataset);
+        this.recordFormat = dataset.format();
+        updateRecordPrinter();
+        log.info("Dataset: preset={} format={} columns={} keyColumn={}",
+                dataset.preset(), dataset.format(), dataset.columns().size(), dataset.keyColumn());
+    }
+
+    @Override
     public void setPrintMessages(boolean enabled) {
         this.printMessages = enabled;
         log.info("Per-message printing {}", enabled ? "enabled" : "disabled");
+    }
+
+    @Override
+    public void setPrintContents(boolean enabled) {
+        this.printContents = enabled;
+        updateRecordPrinter();
+        log.info("Printing of record contents {}", enabled ? "enabled" : "disabled");
+    }
+
+    /**
+     * Rebuilds the printer, which depends on both the printContents flag and
+     * the current dataset (Avro records are decoded with its schema).
+     */
+    private void updateRecordPrinter() {
+        DatasetGenerator dataset = datasetGenerator;
+        recordPrinter = printContents && dataset != null ? new RecordPrinter(dataset.dataset()) : null;
     }
 
     @Override
@@ -969,7 +1042,7 @@ public class LocalWorker implements Worker {
             stoppedProducerNames.remove(vp.name());
             var kafkaProducer = KafkaSpi.factory().<String, byte[]>newProducer(perProducerProps);
             var wrapper = new KafkaProducerWrapper(kafkaProducer, vp.topic(), vp.name(),
-                    vp.pinnedPartitions(), transactional);
+                    vp.producerIdx(), vp.pinnedPartitions(), transactional);
             initTransactionsTimed(wrapper, perProducerProps);
             registerProducerInstance(vp.name());
             producers.add(wrapper);
@@ -977,11 +1050,11 @@ public class LocalWorker implements Worker {
                     vp.name(), vp.topic(), Arrays.toString(vp.pinnedPartitions()));
             // If startLoad has already fired, spin up the runProducer task
             // right away so the new producer joins the load immediately. It
-            // captures the current payload pool, which is why messageSize
-            // changes push payloads before restarting producers.
-            if (activeMessageDistributor != null && activePayloads != null) {
+            // captures the current dataset, which is why messageSize changes
+            // set the new payload dataset before restarting producers.
+            if (activeMessageDistributor != null) {
                 int producerId = producerIdCounter.getAndIncrement();
-                submitProducerTask(wrapper, activeMessageDistributor, activePayloads, producerId);
+                submitProducerTask(wrapper, activeMessageDistributor, producerId);
             }
         }
         updateKafkaMetricsSources();
@@ -1174,19 +1247,6 @@ public class LocalWorker implements Worker {
         addConsumers(toRestart);
     }
 
-    @Override
-    public void updatePayloads(List<byte[]> payloads) throws IOException {
-        if (payloads == null || payloads.isEmpty()) {
-            throw new IOException("updatePayloads requires a non-empty payload list");
-        }
-        // Volatile write for lifecycle operations only: add/restart captures
-        // this pool when it submits the producer task. The hot send loop does
-        // not reread this field per message.
-        this.activePayloads = payloads;
-        log.info("UPDATE-PAYLOADS: {} payloads, size={} bytes",
-                payloads.size(), payloads.get(0).length);
-    }
-
     /** Look up a consumer wrapper's stable name (returns null for unknown wrapper types). */
     private static String consumerName(AutoCloseable c) {
         if (c instanceof KafkaConsumerWrapper kc) return kc.getName();
@@ -1300,7 +1360,7 @@ public class LocalWorker implements Worker {
             return new KafkaShareConsumerWrapper(kafkaConsumer, allProps, consumerCallback, vc.topic(),
                     vc.name(),
                     consumerSet.consumerProcMsMin(), consumerSet.consumerProcMsMax(), consumerSet.consumerProcParallelism(),
-                    printMessages);
+                    printMessages, recordPrinter, recordFormat);
         } else {
             var consumerProps = kafkaConfig.classicConsumerProperties();
             var clientProps = new Properties();
@@ -1326,7 +1386,7 @@ public class LocalWorker implements Worker {
             return new KafkaConsumerWrapper(kafkaConsumer, allProps, consumerCallback, vc.topic(),
                     vc.name(),
                     consumerSet.consumerProcMsMin(), consumerSet.consumerProcMsMax(), consumerSet.consumerProcParallelism(),
-                    staticPartitions, printMessages,
+                    staticPartitions, printMessages, recordPrinter, recordFormat,
                     consumerSet.consumerProcMode(), consumerSet.consumerProcCapacity());
         }
     }

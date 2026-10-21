@@ -20,6 +20,17 @@ public class EngineConfig {
      *  engine (where rate is dynamic). */
     public boolean printMessages = false;
 
+    /** When true, the printed lines also show each record's key and contents
+     *  (dataset records as JSON; payload dataset records as type, size and
+     *  first bytes). Turns printing on by itself, under the same rate
+     *  limit as {@link #printMessages}. */
+    public boolean printContents = false;
+
+    /** Whether either printing option is set. */
+    public boolean printingRequested() {
+        return printMessages || printContents;
+    }
+
     /** When true, the planned VirtualTopology for each test point is dumped to
      *  the coordinator log at the start of that test point — workers and the
      *  producers/consumers assigned to them, with topic and pinned-partition

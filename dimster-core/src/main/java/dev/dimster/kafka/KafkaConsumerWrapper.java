@@ -20,6 +20,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import dev.dimster.ConsumerProcMode;
 import dev.dimster.MessageType;
+import dev.dimster.datagen.RecordFormat;
+import dev.dimster.datagen.RecordPrinter;
 import dev.dimster.spi.kafka.RawConsumer;
 import dev.dimster.utils.Sleeper;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -78,6 +80,12 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
      *  Wired in from {@code engineConfig.printMessages}; the upstream
      *  coordinator already enforces the rate guard, so this wrapper just obeys. */
     private final boolean printMessages;
+    /** Renders record contents for those lines (engineConfig.printContents),
+     *  or null to print none. */
+    private final RecordPrinter recordPrinter;
+    /** Layout of the consumed values (RAW for the payload dataset, else the
+     *  dataset's format), used to find each record's message type. */
+    private final RecordFormat recordFormat;
 
     // CONTINUOUS mode state
     private final ConsumerProcMode procMode;
@@ -95,12 +103,16 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
                                 int procParallelism,
                                 List<TopicPartition> staticPartitions,
                                 boolean printMessages,
+                                RecordPrinter recordPrinter,
+                                RecordFormat recordFormat,
                                 ConsumerProcMode procMode,
                                 int procCapacity) {
         this.consumer = consumer;
         this.callback = callback;
         this.name = name;
         this.printMessages = printMessages;
+        this.recordPrinter = recordPrinter;
+        this.recordFormat = recordFormat;
         this.procMode = procMode;
 
         this.manualCommitLingerMs = Long.parseLong(
@@ -219,21 +231,23 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
                             recordList,
                             closing,
                             callback,
+                            recordFormat,
                             deliveryTime,
                             (messageIdx, simulatedProcessingStartTime) -> {
                                 // Process single message with its simulated processing start time
                                 var record = recordList.get(messageIdx);
 
-                                if (printMessages && log.isDebugEnabled()) {
+                                if (printMessages) {
                                     long e2eLatencyMs = simulatedProcessingStartTime.toEpochMilli() - record.timestamp();
                                     byte[] value = record.value();
-                                    String msgType = MessageType.nameOf(value != null && value.length > 0 ? value[0] : -1);
-                                    log.debug("PROCESSED client={} topic={} partition={} offset={} timestamp={} e2eLatencyMs={} type={}",
+                                    String msgType = MessageType.nameOf(recordFormat.typeOf(value));
+                                    log.info("PROCESSED client={} topic={} partition={} offset={} timestamp={} e2eLatencyMs={} type={}{}",
                                             this.name, record.topic(), record.partition(),
-                                            record.offset(), record.timestamp(), e2eLatencyMs, msgType);
+                                            record.offset(), record.timestamp(), e2eLatencyMs, msgType,
+                                            RecordPrinter.logSuffix(recordPrinter, record.key(), value));
                                 }
 
-                                callback.messageReceived(record.value(), record.topic(),
+                                callback.messageReceived(record.value(), recordFormat, record.topic(),
                                         record.partition(), record.timestamp(),
                                         deliveryTime, simulatedProcessingStartTime);
                             }
@@ -317,7 +331,7 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
 
                             // Offer to simulator - returns CompletedRecord if processed immediately
                             ProcessingTimeSimulator.CompletedRecord immediateResult =
-                                processingTimeSimulator.offerAsync(record, deliveryTime);
+                                processingTimeSimulator.offerAsync(record, deliveryTime, recordFormat);
 
                             // Handle immediate completion (procMs==0 and queue empty)
                             if (immediateResult != null) {
@@ -376,19 +390,19 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
         var record = cr.record();
 
         // Print if configured
-        if (printMessages && log.isDebugEnabled()) {
+        if (printMessages) {
             long e2eMs = cr.simulatedStartTime().toEpochMilli() - record.timestamp();
             byte[] value = record.value();
-            String msgType = MessageType.nameOf(value != null && value.length > 0
-                ? value[0] : -1);
-            log.debug("PROCESSED client={} topic={} partition={} offset={} timestamp={} " +
-                    "e2eLatencyMs={} type={}",
+            String msgType = MessageType.nameOf(recordFormat.typeOf(value));
+            log.info("PROCESSED client={} topic={} partition={} offset={} timestamp={} " +
+                    "e2eLatencyMs={} type={}{}",
                     this.name, record.topic(), record.partition(), record.offset(),
-                    record.timestamp(), e2eMs, msgType);
+                    record.timestamp(), e2eMs, msgType,
+                    RecordPrinter.logSuffix(recordPrinter, record.key(), value));
         }
 
         // Record metrics
-        callback.messageReceived(record.value(), record.topic(),
+        callback.messageReceived(record.value(), recordFormat, record.topic(),
                 record.partition(), record.timestamp(),
                 cr.deliveryTime(), cr.simulatedStartTime());
     }

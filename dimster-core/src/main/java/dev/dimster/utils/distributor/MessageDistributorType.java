@@ -74,4 +74,13 @@ public enum MessageDistributorType {
      * partition pinning used by correctness mode.
      */
     PINNED_PARTITIONS,
+
+    /**
+     * Use the value of the dataset's {@code keyColumn} as the record key, so
+     * that key (and partition) skew follows that column's distribution. Only
+     * valid with a {@code dataset} that sets {@code keyColumn}. Like
+     * {@link #PINNED_PARTITIONS} the distributor itself is a no-op: the
+     * producer loop takes the key from the generated row.
+     */
+    KEY_COLUMN,
 }

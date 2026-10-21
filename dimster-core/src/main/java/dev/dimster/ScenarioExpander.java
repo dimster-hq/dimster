@@ -1,5 +1,9 @@
 package dev.dimster;
 
+import dev.dimster.datagen.DatasetGenerator;
+import dev.dimster.datagen.DatasetResolver;
+import dev.dimster.datagen.DatasetSpec;
+import dev.dimster.datagen.ResolvedDataset;
 import dev.dimster.engines.drainbacklog.DrainBacklogConfig;
 import dev.dimster.engines.drainbacklog.DrainBacklogDimensions;
 import dev.dimster.engines.explore.ExploreDimensions;
@@ -8,8 +12,10 @@ import dev.dimster.engines.run.RunConfig;
 import dev.dimster.engines.run.RunDimensions;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.utils.distributor.MessageDistributorType;
+import dev.dimster.utils.payload.FilePayloadReader;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -45,7 +51,9 @@ public class ScenarioExpander {
             int consumerProcCapacity,
             DrainBacklogConfig drainBacklogConfig,
             ExploreConfig exploreConfig,
-            RunConfig runConfig
+            RunConfig runConfig,
+            /* The dataset records are generated from: the workload's, or the payload dataset. */
+            ResolvedDataset dataset
     ) {
         public String toLogString() {
             var sb = new StringBuilder();
@@ -54,9 +62,15 @@ public class ScenarioExpander {
               .append(", producers=").append(producersPerTopic)
               .append(", consumerGroups=").append(consumerGroupsPerTopic)
               .append(", consumersPerGroup=").append(consumersPerGroup);
-            sb.append("\n    Producer: rate=").append(producerRate)
-              .append(", messageSize=").append(messageSize)
-              .append(", messageDistributor=").append(messageDistributor);
+            sb.append("\n    Producer: rate=").append(producerRate);
+            if (dataset == null || dataset.isPayloadDataset()) {
+                sb.append(", messageSize=").append(messageSize);
+            } else {
+                sb.append(", dataset=").append(dataset.preset() != null ? dataset.preset() : "custom")
+                  .append("/").append(dataset.format())
+                  .append(" (").append(dataset.columns().size()).append(" columns)");
+            }
+            sb.append(", messageDistributor=").append(messageDistributor);
             if (producerRateSchedule != null) {
                 sb.append(", producerRateSchedule=").append(producerRateSchedule.type);
             }
@@ -280,6 +294,7 @@ public class ScenarioExpander {
         List<Double> rate = resolveDouble(scenario.producerRate, base.producerRate);
         List<ProducerRateSchedule> rateSchedule = resolveNullable(
                 scenario.producerRateSchedule, base.producerRateSchedule);
+        List<DatasetSpec> datasets = resolveNullable(scenario.dataset, base.dataset);
         List<MessageDistributorType> keyDist = resolve(scenario.messageDistributor, base.messageDistributor);
         List<Double> keyDistSkew = resolveDouble(scenario.messageDistributorSkew, base.messageDistributorSkew);
         List<ConsumerType> consType = resolve(scenario.consumerType, base.consumerType);
@@ -374,7 +389,8 @@ public class ScenarioExpander {
 
         // Find the number of test points (max array length among multi-element lists)
         int n = maxLength(topics, partitions, producers, consumerGroups, consumers,
-                msgSize, rate, rateSchedule, keyDist, keyDistSkew, consType, procMsMin, procMsMax, procParallelism);
+                msgSize, rate, rateSchedule, datasets, keyDist, keyDistSkew, consType, procMsMin, procMsMax,
+                procParallelism);
         if (drainDefaults != null) {
             n = maxLength(n, drainBacklogSize, drainProducerRate, drainBuildRate, drainSampleRate, drainTimeout);
         }
@@ -405,6 +421,7 @@ public class ScenarioExpander {
         validate(effectiveName, n, "messageSize", msgSize);
         validate(effectiveName, n, "producerRate", rate);
         validate(effectiveName, n, "producerRateSchedule", rateSchedule);
+        validate(effectiveName, n, "dataset", datasets);
         validate(effectiveName, n, "messageDistributor", keyDist);
         validate(effectiveName, n, "messageDistributorSkew", keyDistSkew);
         validate(effectiveName, n, "consumerType", consType);
@@ -488,6 +505,8 @@ public class ScenarioExpander {
             double pointProducerRate = pointRateSchedule == null
                     ? get(rate, i)
                     : pointRateSchedule.maxConfiguredRate();
+            ResolvedDataset pointDataset = resolveDataset(effectiveName, base, get(datasets, i),
+                    get(msgSize, i), get(keyDist, i), scenario.messageSize != null);
 
             // Build a fully resolved DrainBacklogConfig for this test point
             DrainBacklogConfig pointDrainConfig = null;
@@ -545,7 +564,7 @@ public class ScenarioExpander {
                     get(producers, i),
                     get(consumerGroups, i),
                     get(consumers, i),
-                    get(msgSize, i),
+                    messageSize(pointDataset, get(msgSize, i)),
                     pointProducerRate,
                     pointRateSchedule,
                     get(keyDist, i),
@@ -559,7 +578,8 @@ public class ScenarioExpander {
                     get(procCapacity, i),
                     pointDrainConfig,
                     pointExploreConfig,
-                    pointRunConfig
+                    pointRunConfig,
+                    pointDataset
             ));
         }
         return points;
@@ -571,6 +591,8 @@ public class ScenarioExpander {
                                        RunConfig runDefaults) {
         String label = base.label != null ? base.label : "default";
         KafkaConfig merged = KafkaConfig.merge(fileConfig, base.kafkaConfig);
+        ResolvedDataset dataset = resolveDataset("default", base, base.dataset, base.messageSize,
+                base.messageDistributor, false);
         if (base.producerRateSchedule != null) {
             base.producerRateSchedule.validate();
         }
@@ -581,7 +603,7 @@ public class ScenarioExpander {
                 "default", 0, 1, label, 0, 1,
                 base.topics, base.partitionsPerTopic, base.producersPerTopic,
                 base.consumerGroupsPerTopic, base.consumersPerGroup,
-                base.messageSize, producerRate,
+                messageSize(dataset, base.messageSize), producerRate,
                 base.producerRateSchedule,
                 base.messageDistributor, base.messageDistributorSkew, base.consumerType,
                 merged,
@@ -590,8 +612,91 @@ public class ScenarioExpander {
                 base.consumerProcCapacity,
                 drainDefaults,
                 exploreDefaults,
-                runDefaults
+                runDefaults,
+                dataset
         );
+    }
+
+    /** Rows sampled to estimate a dataset's average record size. */
+    private static final int RECORD_SIZE_SAMPLE_ROWS = 2000;
+
+    /**
+     * A test point's messageSize: the configured size for the payload
+     * dataset, whose normal records are exactly that size, or a workload
+     * dataset's estimated average record size, so that everything that
+     * converts message counts to bytes (backlog targets, MB/s figures, result
+     * charts) stays approximately right. Measured byte rates are reported
+     * alongside.
+     */
+    private static int messageSize(ResolvedDataset dataset, int configuredSize) {
+        return dataset.isPayloadDataset()
+                ? configuredSize
+                : DatasetGenerator.estimateAverageRecordSize(dataset, RECORD_SIZE_SAMPLE_ROWS);
+    }
+
+    /**
+     * The payload dataset for workloads without a {@code dataset}: a record
+     * is the header and a payload of messageSize - 1 bytes, built from the
+     * workload's payload settings (useRandomizedPayloads, randomBytesRatio,
+     * randomizedPayloadPoolSize, payloadFile). A payload file must be exactly
+     * messageSize bytes; as before, its first byte is replaced by the header.
+     */
+    public static ResolvedDataset payloadDataset(BaseWorkload base, int messageSize) {
+        byte[] fixedValue = null;
+        if (!base.useRandomizedPayloads) {
+            if (base.payloadFile == null) {
+                throw new IllegalArgumentException(
+                        "payloadFile must be set when useRandomizedPayloads is false");
+            }
+            byte[] file = new FilePayloadReader(messageSize).load(base.payloadFile);
+            fixedValue = Arrays.copyOfRange(file, 1, file.length);
+        }
+        return DatasetResolver.payloadDataset(messageSize - 1, base.randomBytesRatio,
+                base.randomizedPayloadPoolSize, fixedValue);
+    }
+
+    /**
+     * Resolves and validates one test point's dataset, including the rules
+     * that tie it to other workload fields. Without a dataset spec this is the
+     * payload dataset at the point's messageSize. Running at expansion time
+     * means a bad dataset fails the run up front.
+     *
+     * @param messageSizeSwept whether the scenario lists messageSize, which
+     *                         a dataset makes meaningless
+     */
+    static ResolvedDataset resolveDataset(String scenarioName, BaseWorkload base, DatasetSpec spec,
+                                          int messageSize, MessageDistributorType distributor,
+                                          boolean messageSizeSwept) {
+        if (spec == null) {
+            if (distributor == MessageDistributorType.KEY_COLUMN) {
+                throw new IllegalArgumentException(
+                        "Scenario '%s': messageDistributor KEY_COLUMN requires a dataset with a keyColumn"
+                                .formatted(scenarioName));
+            }
+            try {
+                return payloadDataset(base, messageSize);
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Scenario '%s': %s".formatted(scenarioName, e.getMessage()), e);
+            }
+        }
+        ResolvedDataset dataset;
+        try {
+            dataset = DatasetResolver.resolve(spec);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Scenario '%s': %s".formatted(scenarioName, e.getMessage()), e);
+        }
+        if (messageSizeSwept) {
+            throw new IllegalArgumentException(
+                    "Scenario '%s': messageSize does not apply when a dataset is set (record sizes follow from the data)"
+                            .formatted(scenarioName));
+        }
+        boolean keyColumn = dataset.keyColumn() != null;
+        if (keyColumn != (distributor == MessageDistributorType.KEY_COLUMN)) {
+            throw new IllegalArgumentException(
+                    "Scenario '%s': dataset keyColumn and messageDistributor KEY_COLUMN must be used together"
+                            .formatted(scenarioName));
+        }
+        return dataset;
     }
 
     private static <T> List<T> resolve(List<T> scenarioValue, T baseDefault) {

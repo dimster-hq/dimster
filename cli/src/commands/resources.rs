@@ -405,6 +405,9 @@ fn calculate_resources(tp: TestPoint, broker_count: Option<u32>) -> ResourceEsti
     }
 
     let rate = tp.producer_rate as u64; // truncate to whole msg/s for resource estimation
+    // With a generated `dataset` the workload's messageSize does not apply
+    // (record sizes follow from the data, typically 100-500 bytes), so this
+    // estimate uses messageSize regardless; good enough for sizing.
     let msg = tp.message_size as u64;
     let rf = tp.replication_factor as u64;
     let cg = tp.consumer_groups_per_topic as u64;

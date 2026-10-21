@@ -15,6 +15,7 @@ import org.HdrHistogram.Histogram;
 import org.HdrHistogram.Recorder;
 
 import dev.dimster.MessageType;
+import dev.dimster.datagen.RecordFormat;
 import dev.dimster.kafka.ConsumerCallback;
 import dev.dimster.worker.commands.CountersStats;
 import dev.dimster.worker.commands.PerPartitionStats;
@@ -29,11 +30,7 @@ public class StatsCollector implements ConsumerCallback {
      * Precision of the main latency histograms: 4 significant digits, so a
      * recorded value is accurate to 1 part in 10,000 (0.01%), e.g. within
      * 4 us at 100 ms and 32 us at 1 s. Reports show milliseconds to two
-     * decimals, so this is invisible below roughly 250 ms. It was 5 digits,
-     * which made each histogram 14-21 MB: every period snapshot then copied
-     * ~100 MB and cost about a CPU-second per sample, slowing period-stats
-     * calls to seconds on CPU-limited workers. At 4 digits they are 2-3 MB.
-     * Recorders, period stats and aggregates must all use the same value.
+     * decimals, so this is invisible below roughly 250 ms.
      */
     public static final int LATENCY_SIG_DIGITS = 4;
 
@@ -207,9 +204,9 @@ public class StatsCollector implements ConsumerCallback {
     }
 
     @Override
-    public void messageReceived(byte[] payload, String topic, int partition,
+    public void messageReceived(byte[] payload, RecordFormat format, String topic, int partition,
                                 long publishTimestampMillis, Instant deliveryTime, Instant processingStartTime) {
-        if (payload.length > 0 && payload[0] == MessageType.PROBE) {
+        if (format.typeOf(payload) == MessageType.PROBE) {
             probesReceived.increment();
             return;
         }

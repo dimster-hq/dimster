@@ -2,6 +2,7 @@ package dev.dimster;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+import dev.dimster.datagen.DatasetSpec;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.utils.distributor.MessageDistributorType;
 
@@ -31,15 +32,26 @@ public class BaseWorkload {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public ProducerRateSchedule producerRateSchedule;
 
-    // Payload source. Precedence: useRandomizedPayloads wins. When true, payloads are
-    // generated in-process using randomBytesRatio + randomizedPayloadPoolSize and
-    // payloadFile is ignored. When false, payloadFile must be set and is loaded from disk.
+    // Payloads of the default payload dataset, used when no dataset is set: each
+    // record is the header followed by messageSize - 1 payload bytes. Precedence:
+    // useRandomizedPayloads wins. When true, randomizedPayloadPoolSize distinct
+    // payloads are generated, each randomBytesRatio random and the rest zeros, and
+    // payloadFile is ignored. When false, payloadFile must be set, is loaded from
+    // disk and must be messageSize bytes; its first byte is replaced by the header.
     public boolean useRandomizedPayloads = true;
     public double randomBytesRatio = 0.5;
     public int randomizedPayloadPoolSize = 100;
     /** Only used when useRandomizedPayloads is false. Null otherwise so it's omitted from result JSON. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public String payloadFile = null;
+
+    /**
+     * Optional generated dataset. When set, producers send schema-encoded rows
+     * of this dataset instead of the payload dataset above, and messageSize
+     * does not apply (record sizes follow from the data). Null by default.
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public DatasetSpec dataset = null;
 
     public MessageDistributorType messageDistributor = MessageDistributorType.NO_KEY;
     /**

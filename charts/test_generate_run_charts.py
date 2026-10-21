@@ -59,6 +59,36 @@ class GenerateRunChartsTest(unittest.TestCase):
         self.assertIn("Dimension brokers", html)
         self.assertNotIn(">None<", html)
 
+    def test_avg_mbs_prefers_measured_byte_rates(self):
+        """Generated datasets have variable record sizes, so measured MB/s wins."""
+        test = {
+            "workloadConfig": {"messageSize": 1000},
+            "results": {
+                "publishRate": [1000.0, 3000.0],
+                "consumeRate": [1000.0, 3000.0],
+                "publishBytesRate": [0.5, 1.5],
+                "consumeBytesRate": [0.25, 0.75],
+            },
+        }
+        self.assertEqual(1.0, generate_run_charts.avg_mbs(test, "publish"))
+        self.assertEqual(0.5, generate_run_charts.avg_mbs(test, "consume"))
+
+    def test_avg_mbs_falls_back_to_rate_times_message_size(self):
+        """Results written before measured byte rates existed still chart."""
+        test = {
+            "workloadConfig": {"messageSize": 500},
+            "results": {"publishRate": [2000.0], "consumeRate": [4000.0]},
+        }
+        self.assertEqual(1.0, generate_run_charts.avg_mbs(test, "publish"))
+        self.assertEqual(2.0, generate_run_charts.avg_mbs(test, "consume"))
+
+    def test_message_size_cell_marks_dataset_estimates(self):
+        self.assertEqual(1000, generate_run_charts.message_size_cell({"messageSize": 1000}))
+        self.assertEqual(1000, generate_run_charts.message_size_cell(
+            {"messageSize": 1000, "datasetPreset": "payload", "datasetFormat": "RAW"}))
+        self.assertEqual("~281 (clicks/AVRO)", generate_run_charts.message_size_cell(
+            {"messageSize": 281, "datasetPreset": "clicks", "datasetFormat": "AVRO"}))
+
 
 if __name__ == "__main__":
     unittest.main()

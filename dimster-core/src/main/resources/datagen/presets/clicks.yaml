@@ -1,0 +1,23 @@
+# Web clickstream events: one record per page view, click or purchase.
+# Skewed users and pages, a few dominant devices and countries, and a
+# frequently-null referrer. About 280 bytes per record as AVRO and 480 as
+# JSON.
+columns:
+  event_id:    {type: SEQUENCE}
+  event_time:  {type: TIMESTAMP, jitterMs: 2000}
+  user_id:     {type: LONG, min: 1, max: 99999999, cardinality: 1000000, distribution: ZIPF, skew: 0.9}
+  session_id:  {type: STRING, kind: UUID, cardinality: 5000000}
+  event_type:
+    type: STRING
+    values:  [page_view, click, scroll, add_to_cart, purchase]
+    weights: [60, 25, 10, 4, 1]
+  url:         {type: STRING, kind: URL, cardinality: 50000, distribution: ZIPF, skew: 1.1}
+  referrer:    {type: STRING, kind: URL, cardinality: 10000, distribution: ZIPF, skew: 1.2, nullRate: 0.35}
+  user_agent:  {type: STRING, kind: USER_AGENT, distribution: ZIPF, skew: 1.0}
+  ip_address:  {type: STRING, kind: IP, cardinality: 500000}
+  country:     {type: STRING, kind: COUNTRY, distribution: ZIPF, skew: 1.1}
+  device:
+    type: STRING
+    values:  [mobile, desktop, tablet]
+    weights: [58, 38, 4]
+  duration_ms: {type: INT, min: 0, max: 60000, distribution: NORMAL}

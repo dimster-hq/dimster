@@ -18,6 +18,7 @@ import org.junit.Test;
 import dev.dimster.ConsumerProcMode;
 import dev.dimster.ConsumerType;
 import dev.dimster.ScenarioExpander.TestPoint;
+import dev.dimster.datagen.DatasetResolver;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.utils.distributor.MessageDistributorType;
 import dev.dimster.worker.topology.TopologyPlanner;
@@ -133,7 +134,8 @@ public class TestPointMutatorRestartTest {
     private TestPointMutator mutator() {
         // Restart plans do not build payloads, but using a real deterministic
         // builder keeps this fixture valid for the mutator's architectural API.
-        return new TestPointMutator(planner, size -> List.of(new byte[size]));
+        return new TestPointMutator(planner,
+                size -> DatasetResolver.payloadDataset(size - 1, 0.0, 1, null));
     }
 
     private TestPoint testPoint() {
@@ -144,7 +146,8 @@ public class TestPointMutatorRestartTest {
                 MessageDistributorType.NO_KEY, 1.0,
                 ConsumerType.CONSUMER_GROUP, new KafkaConfig(),
                 0, 0, 1, ConsumerProcMode.BLOCKING, 10_000,
-                null, null, new RunConfig());
+                null, null, new RunConfig(),
+                DatasetResolver.payloadDataset(100 - 1, 0.0, 1, null));
     }
 
     private VirtualTopology topology() {

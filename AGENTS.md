@@ -9,10 +9,11 @@
 
 ## 2. Coding
 
-- Always add plenty of code comments to explain behavior.
+- Always add code comments to explain behavior but try to keep it terse.
 - Always add comments explaining the reason a class exists and how it fits into the wider architecture.
 - Aim to keep state to a minimum.
 - Always evaluate if code should be shared via a base class or helpers. Do not pull implementation details up into abstract base classes unless the logic is truly identical across all subclasses with no foreseeable divergence. Shared helpers are better than shared template methods when subclasses may need different control flow.
+- Always aim for clean separation of concerns. Avoid spaghetti dependencies across classes and modules.
 
 ## 3. Docs
 

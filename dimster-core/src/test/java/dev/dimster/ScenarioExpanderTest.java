@@ -524,4 +524,104 @@ public class ScenarioExpanderTest {
         schedule.periodSeconds = 60;
         return schedule;
     }
+
+    // ─── Datasets ─────────────────────────────────────────────────────
+
+    private static dev.dimster.datagen.DatasetSpec dataset(String preset,
+                                                           dev.dimster.datagen.RecordFormat format) {
+        var spec = new dev.dimster.datagen.DatasetSpec();
+        spec.preset = preset;
+        spec.format = format;
+        return spec;
+    }
+
+    @Test
+    public void datasetIsAPerTestPointDimensionAndSetsTheEstimatedMessageSize() {
+        BaseWorkload base = baseWorkloadWithoutKafkaConfig();
+        Scenario s = emptyScenario("formats");
+        s.dataset = List.of(dataset("taxi", dev.dimster.datagen.RecordFormat.AVRO),
+                dataset("taxi", dev.dimster.datagen.RecordFormat.JSON));
+
+        List<TestPoint> points = ScenarioExpander.expand(base, List.of(s), null);
+
+        assertEquals(2, points.size());
+        assertEquals(dev.dimster.datagen.RecordFormat.AVRO, points.get(0).dataset().format());
+        assertEquals(dev.dimster.datagen.RecordFormat.JSON, points.get(1).dataset().format());
+        // messageSize is the estimated average record size, not the base 1024.
+        int avro = points.get(0).messageSize();
+        int json = points.get(1).messageSize();
+        assertTrue("avro " + avro, avro > 50 && avro < 200);
+        assertTrue("json " + json + " vs avro " + avro, json > 2 * avro);
+    }
+
+    @Test
+    public void baseDatasetAppliesWithoutScenariosAndDefaultsToThePayloadDataset() {
+        BaseWorkload base = baseWorkloadWithoutKafkaConfig();
+        TestPoint payload = ScenarioExpander.expand(base, null, null).get(0);
+        assertTrue(payload.dataset().isPayloadDataset());
+        assertEquals(dev.dimster.datagen.RecordFormat.RAW, payload.dataset().format());
+        // A 1-byte header plus 1023 payload bytes: normal records are messageSize bytes.
+        assertEquals(1023, payload.dataset().columns().get(0).maxLength());
+        assertEquals(1024, payload.messageSize());
+
+        base.dataset = dataset("clicks", null);
+        TestPoint point = ScenarioExpander.expand(base, null, null).get(0);
+        assertEquals("clicks", point.dataset().preset());
+        assertEquals(dev.dimster.datagen.RecordFormat.AVRO, point.dataset().format());
+    }
+
+    @Test
+    public void invalidDatasetCombinationsAreRejectedWithTheScenarioName() {
+        BaseWorkload base = baseWorkloadWithoutKafkaConfig();
+
+        Scenario sizes = emptyScenario("sizes");
+        sizes.dataset = List.of(dataset("clicks", null));
+        sizes.messageSize = List.of(100, 200);
+        assertRejected(base, sizes, "messageSize does not apply");
+
+        Scenario keyWithoutDataset = emptyScenario("keys");
+        keyWithoutDataset.messageDistributor = List.of(MessageDistributorType.KEY_COLUMN);
+        assertRejected(base, keyWithoutDataset, "requires a dataset");
+
+        Scenario keyColumnUnused = emptyScenario("unused");
+        var withKey = dataset("clicks", null);
+        withKey.keyColumn = "user_id";
+        keyColumnUnused.dataset = List.of(withKey);
+        assertRejected(base, keyColumnUnused, "must be used together");
+
+        Scenario badColumn = emptyScenario("bad");
+        var bad = dataset("clicks", null);
+        bad.columns = new java.util.LinkedHashMap<>();
+        var col = new dev.dimster.datagen.ColumnSpec();
+        col.cardinality = 0L;
+        bad.columns.put("country", col);
+        badColumn.dataset = List.of(bad);
+        assertRejected(base, badColumn, "dataset column 'country'");
+
+        Scenario mismatched = emptyScenario("mismatched");
+        mismatched.dataset = List.of(dataset("clicks", null), dataset("taxi", null));
+        mismatched.partitionsPerTopic = List.of(1, 2, 3);
+        assertRejected(base, mismatched, "dataset has 2 elements");
+    }
+
+    @Test
+    public void keyColumnWithKeyColumnDistributorIsAccepted() {
+        BaseWorkload base = baseWorkloadWithoutKafkaConfig();
+        Scenario s = emptyScenario("keys");
+        var withKey = dataset("clicks", null);
+        withKey.keyColumn = "user_id";
+        s.dataset = List.of(withKey);
+        s.messageDistributor = List.of(MessageDistributorType.KEY_COLUMN);
+        assertEquals("user_id", ScenarioExpander.expand(base, List.of(s), null).get(0).dataset().keyColumn());
+    }
+
+    private static void assertRejected(BaseWorkload base, Scenario s, String message) {
+        try {
+            ScenarioExpander.expand(base, List.of(s), null);
+            fail("expected rejection: " + message);
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains(message));
+            assertTrue(e.getMessage(), e.getMessage().contains("'" + s.name + "'"));
+        }
+    }
 }
