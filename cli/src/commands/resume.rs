@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::commands::find_coordinator;
 use crate::commands::results;
 use crate::commands::run::stream_and_wait;
+use crate::config::MetricsOutput;
 use crate::kubectl::Kubectl;
 
 #[derive(Serialize)]
@@ -21,6 +22,7 @@ pub fn run(
     script_dir: &Path,
     stop: Arc<AtomicBool>,
     environment: &str,
+    metrics_outputs: &[MetricsOutput],
 ) -> Result<()> {
     // Check coordinator status
     println!("==> Checking coordinator...");
@@ -118,6 +120,6 @@ pub fn run(
     }
 
     // Collect results
-    results::collect_results(kubectl, output_dir, script_dir, &stop)?;
+    results::collect_results(kubectl, output_dir, script_dir, metrics_outputs, &stop)?;
     Ok(())
 }

@@ -17,6 +17,7 @@ All results are shareable assets:
 - Charts as a single interactive html file
 - Logs of all Kafka brokers, workers and the coordinator
 - Grafana dashboards converted to HTML files
+- Optionally, a Prometheus snapshot of the run to reopen in Grafana later, without the cluster
 
 Latency charts examples:
 
@@ -161,6 +162,7 @@ Every run writes a single timestamped folder containing everything you need to r
 - **Captured config** — the broker config, the client configs, the workload file, the hardware shape (instance type, CPU, memory, storage class). No "what version was that on?" later.
 - **Charts** — interactive HTML, all test points overlaid.
 - **Grafana snapshots** — broker, client, and system dashboards exported to static HTML at the moment the run finished.
+- **Prometheus snapshot** (opt-in) — the raw metrics behind those dashboards, reopened in a local Grafana with `dimster dashboard --snapshot`.
 - **Logs** — coordinator, every worker, every Kafka broker.
 
 If you can ship the folder, someone else can read the result. If you have the workload YAML, you can re-run it.

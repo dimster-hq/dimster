@@ -47,7 +47,7 @@ Workers are stateless and identical — scale them by changing `workers.replicas
 
 ### 4. Monitoring
 
-Prometheus and Grafana are deployed alongside the benchmark components. Prometheus scrapes the coordinator, workers, Kafka, node exporter. Grafana comes with three dashboards (Client metrics, Kafka metrics and System metrics). At the end of the run the coordinator converts these dashboards into html files to include in the results.
+Prometheus and Grafana are deployed alongside the benchmark components. Prometheus scrapes the coordinator, workers, Kafka, node exporter. Grafana comes with three dashboards (Client metrics, Kafka metrics and System metrics). At the end of the run the CLI starts a short-lived pod that queries Prometheus and saves the run's metrics into the results: the dashboards rendered as HTML files and, optionally, a Prometheus snapshot that can be reopened in Grafana later with `dimster dashboard --snapshot` (see [Results and Charts](results-and-charts.md#saving-metrics-after-a-run)).
 
 > The coordinator gathers metrics from workers and writes them out to the results JSON file at the end of a run. This is a separate process to Prometheus scraping.
 

@@ -83,6 +83,7 @@ Use the `--env-override` argument to override specific environment field values.
 |-----------------|----------|------------------------------------------------------------------------------------------------------------------------|
 | `-m`, `--metadata` | Optional | Pass arbitrary metadata to pass through to the result JSON. Additionally `-m series=val -m instance=val` are special values for infrastructure dimensions |
 | `-d`, `--extra-dimension` | Optional | Pass infrastructure dimensions, as pass-through metadata that lands in the result JSON file |
+| `--metrics-output <outputs>` | Optional | Metrics to save after the run: a comma-separated list of `html` and `snapshot`, or `none`. Overrides the environment's `metricsOutput` (default `html`). Also accepted by `resume` and `reattach`. See [results](#results). |
 
 ### run
 
@@ -208,6 +209,24 @@ dimster results <env> [output_dir]
 |----------|----------|-------------|
 | `env` | Yes | Environment name. |
 | `output_dir` | No | Local output directory. Defaults to the `results.dir` value from config. |
+| `--data` | No | Only download the result JSON files. |
+| `--logs` | No | Only download coordinator, worker and Kafka logs. |
+| `--metrics-output [outputs]` | No | Only export metrics. With no value, uses the environment's `metricsOutput`; otherwise a comma-separated list of `html` and `snapshot`, or `none`. `--dashboards` is an alias for `--metrics-output html`. |
+| `--charts` | No | Only generate charts and CSVs from the local result JSON. |
+| `--full` | No | Capture full coordinator/worker log files without the per-run time filter. |
+
+With no step flags, every step runs.
+
+#### Metrics outputs
+
+Which metrics are saved is set per environment with `metricsOutput` in `dimster-config.yaml`, and can be overridden per command with `--metrics-output`:
+
+| Output | Written to | Contents |
+|--------|------------|----------|
+| `html` | `dashboards/*.html` | Static Chart.js pages of the Grafana dashboards. |
+| `snapshot` | `prometheus-snapshot/` | Raw samples of every metric the dashboards query, for the run window (plus 10 minutes either side), as gzipped OpenMetrics, together with the dashboard JSON. View it with `dimster dashboard --snapshot`. |
+
+Leaving `metricsOutput` out means `[html]`; `[]` saves no metrics. A snapshot can be taken after the fact with `dimster results <env> --metrics-output snapshot`, as long as the cluster's Prometheus still holds the run (it keeps 7 days).
 
 ---
 
@@ -311,19 +330,23 @@ This removes Kafka, workers, the coordinator, and the results PVC while leaving 
 
 ### dashboard
 
-Port-forward Grafana and Prometheus to localhost for live monitoring.
+Port-forward Grafana and Prometheus to localhost for live monitoring, or view a saved run's Prometheus snapshot.
 
 ```
 dimster dashboard <env> [grafana_port] [prometheus_port]
+dimster dashboard --snapshot <result-dir>
 ```
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `env` | Yes | -- | Environment name. |
-| `grafana_port` | No | `3000` | Local port for Grafana. |
-| `prometheus_port` | No | `9090` | Local port for Prometheus. |
+| `env` | Yes, unless `--snapshot` | -- | Environment name. |
+| `--snapshot <result-dir>` | No | -- | View the `prometheus-snapshot/` saved in a result directory instead of the live cluster. |
+| `grafana_port` | No | `3000` | Local port for Grafana. Not used with `--snapshot`. |
+| `prometheus_port` | No | `9090` | Local port for Prometheus. Not used with `--snapshot`. |
 
 Runs until interrupted with Ctrl+C.
+
+With `--snapshot`, no cluster is needed, only Docker. The CLI loads the snapshot into a temporary Prometheus container, starts Grafana with the dashboards the snapshot was taken with, and prints a link to each dashboard set to the run's time range. It uses ports 3000 and 9090 when they're free, and otherwise picks free ports, so it can run alongside `dimster dashboard <env>`. Ctrl+C removes the containers and temporary data. Snapshots are saved when `snapshot` is in the environment's `metricsOutput` or passed with `--metrics-output` (see [results](#results)).
 
 ---
 

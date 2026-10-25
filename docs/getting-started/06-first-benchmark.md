@@ -126,6 +126,7 @@ At the end of a test campaign, the results and pod logs are downloaded into the 
 - `logs/coordinator.log`, `worker-*.log`, `kafka-*.log` — full component logs.
 - `dashboards/*.html` — Grafana dashboard snapshots rendered at the end of
   the run (great for sharing).
+- `prometheus-snapshot/` — only if you asked for it with `metricsOutput: [html, snapshot]` in the environment or `--metrics-output html,snapshot` on the run. It holds the raw Prometheus data behind the dashboards for this run. `./dimster dashboard --snapshot results/<run-dir>` opens it in a local Grafana (needs Docker), even after the cluster is gone.
 - `chart/*.html` — a detailed set of charts visualizing the performance results.
 
 Results are downloaded at the end of a test campaign. However, if an error occurred and the campaign halted you can execute `dimster results <env>` to download the results and logs for any test points that did complete. If you pressed Ctrl+C to detach from the workload then stopped the test with `dimster stop <env>` you can also run `dimster results <env>` to download the results and logs.

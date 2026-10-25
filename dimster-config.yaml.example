@@ -50,6 +50,13 @@ environments:
     context: minikube
     # namespace: dimster            # Optional per-env override; falls back to kubernetes.namespace.
     distro: minikube                # Options: minikube | k3d | kind | docker-desktop
+    # Metrics saved into the result dir after each run (override per run
+    # with --metrics-output):
+    #   html      static HTML pages of the Grafana dashboards
+    #   snapshot  raw Prometheus samples for the run window, viewable later
+    #             in Grafana with `dimster dashboard --snapshot <result-dir>`
+    # Omitted means [html]; [] saves no metrics.
+    # metricsOutput: [html, snapshot]
     kafka:
       version: "4.2.0"
     #   replicas: 1          # default: 1

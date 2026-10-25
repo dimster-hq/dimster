@@ -13,6 +13,7 @@ All results are shareable assets:
 - Charts as a single interactive html file
 - Logs of all Kafka brokers, workers and the coordinator
 - Grafana dashboards converted to HTML files
+- Optionally, a Prometheus snapshot of the run to reopen in Grafana later, without the cluster
 
 ## The problem in one paragraph
 

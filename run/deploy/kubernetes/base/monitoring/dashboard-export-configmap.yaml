@@ -6,26 +6,34 @@ metadata:
 data:
   export.py: |
     #!/usr/bin/env python3
-    """Export Grafana dashboard data as self-contained HTML from Prometheus.
+    """Export a run's Grafana dashboard metrics from Prometheus.
 
-    Reads Grafana dashboard JSON files, queries Prometheus for the given time
-    range, and generates static HTML files with Chart.js time-series charts.
-    Dashboards that define an 'instance' template variable get rendered once
-    with all instances aggregated, then once per discovered instance.
+    Reads Grafana dashboard JSON files and queries Prometheus for the given
+    time range. Writes any of these outputs (--outputs):
+
+    html      static HTML files with Chart.js time-series charts. Dashboards
+              that define an 'instance' template variable get rendered once
+              with all instances aggregated, then once per discovered instance.
+    snapshot  raw samples of every metric the dashboards reference, as
+              gzipped OpenMetrics in --snapshot-dir, plus the dashboard JSON.
 
     Usage:
         python3 export.py --prometheus-url http://prometheus:9090 \
             --start 1711900000 --end 1711903600 \
             --dashboard-dirs /dashboards/main,/dashboards/system \
-            --output-dir /results/2026-03-31/dashboards
+            --output-dir /results/2026-03-31/dashboards \
+            --snapshot-dir /results/2026-03-31/prometheus-snapshot \
+            --outputs html,snapshot
     """
 
     import argparse
+    import gzip
     import html as html_mod
     import json
     import math
     import os
     import re
+    import shutil
     import sys
     import urllib.error
     import urllib.parse
@@ -851,6 +859,127 @@ data:
         return f"-w{idx}-of-{tot}-{s}-to-{e}"
 
     # -----------------------------------------------------------------------
+    # Prometheus snapshot
+    # -----------------------------------------------------------------------
+    # A snapshot keeps the raw samples of every metric the dashboards query,
+    # limited to the run window, as gzipped OpenMetrics. `dimster dashboard
+    # --snapshot` later loads it into a local Prometheus with promtool so the
+    # run can be explored in real Grafana. Unlike a TSDB snapshot it holds
+    # only this run's data, which keeps it small.
+    SNAPSHOT_FILE = 'metrics.om.gz'
+    # Width of each raw-sample query; bounds per-request response size.
+    SNAPSHOT_CHUNK_SECONDS = 3600
+    _METRIC_TOKEN = re.compile(r'[a-zA-Z_:][a-zA-Z0-9_:]*')
+    _STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
+
+    def collect_dashboard_exprs(dashboard):
+        """Every PromQL expression a dashboard evaluates: panel targets plus
+        label_values() template-variable definitions."""
+        exprs = []
+        for panel in extract_panels(dashboard):
+            for tgt in panel.get('targets', []):
+                if tgt.get('expr'):
+                    exprs.append(tgt['expr'])
+        for _name, definition in find_template_variables(dashboard):
+            exprs.append(definition)
+        return exprs
+
+    def referenced_metric_names(exprs, known_names):
+        """Metric names referenced by the expressions.
+
+        Strips string literals, label matchers and range durations, then keeps
+        identifier tokens that are real metric names in Prometheus. Checking
+        against known_names filters out functions, keywords and label names
+        without needing a PromQL parser.
+        """
+        names = set()
+        for expr in exprs:
+            stripped = _STRING_LITERAL.sub(' ', expr)
+            stripped = re.sub(r'\{[^}]*\}', ' ', stripped)
+            stripped = re.sub(r'\[[^\]]*\]', ' ', stripped)
+            for token in _METRIC_TOKEN.findall(stripped):
+                if token in known_names:
+                    names.add(token)
+        return sorted(names)
+
+    def fetch_raw_series(prom_url, metric, start, end,
+                         chunk_s=SNAPSHOT_CHUNK_SECONDS):
+        """Raw samples of one metric in [start, end], as
+        {label_tuple: {timestamp: value}}.
+
+        Uses range-vector instant queries so samples come back exactly as
+        scraped rather than resampled to a step. Range selectors include both
+        ends, so a sample on a chunk boundary is returned twice; keying by
+        timestamp drops the duplicate.
+        """
+        series = {}
+        t = start
+        while t < end:
+            chunk_end = min(t + chunk_s, end)
+            result = prom_query_instant(
+                prom_url, f'{{__name__="{metric}"}}[{chunk_end - t}s]', chunk_end)
+            if result and result.get('status') == 'success':
+                for item in result.get('data', {}).get('result', []):
+                    key = tuple(sorted(item.get('metric', {}).items()))
+                    samples = series.setdefault(key, {})
+                    for ts, value in item.get('values', []):
+                        samples[ts] = value
+            t = chunk_end
+        return series
+
+    def _escape_label_value(value):
+        return (value.replace('\\', '\\\\')
+                     .replace('"', '\\"')
+                     .replace('\n', '\\n'))
+
+    def write_openmetrics(fh, metric, series):
+        """Write one metric family in the OpenMetrics text format promtool
+        backfills from: a TYPE line, then each series' samples in time order."""
+        fh.write(f'# TYPE {metric} unknown\n')
+        for key in sorted(series):
+            labels = ','.join(f'{k}="{_escape_label_value(v)}"'
+                              for k, v in key if k != '__name__')
+            selector = f'{metric}{{{labels}}}' if labels else metric
+            for ts in sorted(series[key]):
+                fh.write(f'{selector} {series[key][ts]} {ts}\n')
+
+    def write_snapshot(prom_url, start, end, dashboard_files, snapshot_dir):
+        """Write the snapshot for [start, end] into snapshot_dir: the gzipped
+        OpenMetrics data plus a copy of each dashboard JSON it covers.
+        Returns the number of series written."""
+        dashboards_out = os.path.join(snapshot_dir, 'dashboards')
+        os.makedirs(dashboards_out, exist_ok=True)
+
+        exprs = []
+        for filepath, basename in dashboard_files:
+            with open(filepath) as f:
+                exprs.extend(collect_dashboard_exprs(json.load(f)))
+            shutil.copyfile(filepath, os.path.join(dashboards_out, f'{basename}.json'))
+
+        known = prom_get(prom_url, '/api/v1/label/__name__/values',
+                         {'start': start, 'end': end})
+        if not known or known.get('status') != 'success':
+            print('    Warning: could not list metric names; skipping snapshot',
+                  file=sys.stderr)
+            return 0
+        names = referenced_metric_names(exprs, set(known.get('data', [])))
+        print(f'  Snapshot: {len(names)} metric(s) referenced by the dashboards')
+
+        out_path = os.path.join(snapshot_dir, SNAPSHOT_FILE)
+        total_series = 0
+        # One metric at a time keeps memory bounded by the largest metric.
+        with gzip.open(out_path, 'wt') as fh:
+            for metric in names:
+                series = fetch_raw_series(prom_url, metric, start, end)
+                if series:
+                    write_openmetrics(fh, metric, series)
+                    total_series += len(series)
+            fh.write('# EOF\n')
+        size_kb = os.path.getsize(out_path) / 1024
+        print(f'    Wrote {out_path} ({total_series} series, {size_kb:.0f} KiB)')
+        return total_series
+
+    # -----------------------------------------------------------------------
     # Main
     # -----------------------------------------------------------------------
     def process_dashboard_file(filepath, prom_url, start, end, step, js_libs,
@@ -933,6 +1062,12 @@ data:
                             help='Comma-separated dirs containing Grafana JSON files')
         parser.add_argument('--output-dir', required=True,
                             help='Output directory for HTML files')
+        parser.add_argument('--snapshot-dir', default='',
+                            help='Output directory for the Prometheus snapshot '
+                                 '(default: prometheus-snapshot next to --output-dir)')
+        # Defaults to html only so older callers keep their behaviour.
+        parser.add_argument('--outputs', default='html',
+                            help='Comma-separated outputs to write: html, snapshot')
         # Windowing: long campaigns produce huge HTML files that are slow
         # to load. When the campaign duration exceeds --window-hours we
         # split into multiple files, one per window per dashboard, with
@@ -955,6 +1090,44 @@ data:
                                  'boundaries instead of even time slices')
         args = parser.parse_args()
 
+        outputs = {o.strip() for o in args.outputs.split(',') if o.strip()}
+        unknown = outputs - {'html', 'snapshot'}
+        if unknown:
+            parser.error(f'unknown output(s): {", ".join(sorted(unknown))}')
+
+        dashboard_files = find_dashboard_files(args.dashboard_dirs)
+
+        if 'html' in outputs:
+            write_html_dashboards(args, dashboard_files)
+        if 'snapshot' in outputs:
+            buffer_s = int(args.window_buffer_minutes * 60)
+            snapshot_dir = args.snapshot_dir or os.path.join(
+                os.path.dirname(os.path.normpath(args.output_dir)),
+                'prometheus-snapshot')
+            write_snapshot(args.prometheus_url, args.start - buffer_s,
+                           args.end + buffer_s, dashboard_files, snapshot_dir)
+
+    def find_dashboard_files(dashboard_dirs):
+        """(path, basename) of every dashboard JSON in the comma-separated
+        dirs, scanned once and shared by all outputs."""
+        dashboard_files = []
+        for dashboard_dir in dashboard_dirs.split(','):
+            dashboard_dir = dashboard_dir.strip()
+            if not os.path.isdir(dashboard_dir):
+                print(f'    Warning: {dashboard_dir} is not a directory, skipping',
+                      file=sys.stderr)
+                continue
+            for filename in sorted(os.listdir(dashboard_dir)):
+                if not filename.endswith('.json'):
+                    continue
+                dashboard_files.append((
+                    os.path.join(dashboard_dir, filename),
+                    filename.replace('.json', ''),
+                ))
+        return dashboard_files
+
+    def write_html_dashboards(args, dashboard_files):
+        """Render every dashboard to static HTML, split into time windows."""
         scenarios = []
         if args.scenario_boundaries:
             try:
@@ -982,23 +1155,6 @@ data:
         # Fetch JS libraries once across all windows and dashboards.
         os.makedirs(args.output_dir, exist_ok=True)
         js_libs = fetch_js_libraries()
-
-        # Build the list of dashboard files once so we don't re-scan dirs
-        # for every window.
-        dashboard_files = []
-        for dashboard_dir in args.dashboard_dirs.split(','):
-            dashboard_dir = dashboard_dir.strip()
-            if not os.path.isdir(dashboard_dir):
-                print(f'    Warning: {dashboard_dir} is not a directory, skipping',
-                      file=sys.stderr)
-                continue
-            for filename in sorted(os.listdir(dashboard_dir)):
-                if not filename.endswith('.json'):
-                    continue
-                dashboard_files.append((
-                    os.path.join(dashboard_dir, filename),
-                    filename.replace('.json', ''),
-                ))
 
         total = 0
         for window in windows:

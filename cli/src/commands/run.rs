@@ -14,7 +14,7 @@ use crate::commands::find_coordinator;
 use crate::commands::kafka_tls;
 use crate::commands::results;
 use crate::commands::run_configs;
-use crate::config::{ConnectionConfig, KafkaTlsConfig};
+use crate::config::{ConnectionConfig, KafkaTlsConfig, MetricsOutput};
 use crate::kubectl::Kubectl;
 
 const COORDINATOR_LOG_FILE: &str = "/benchmark/results/.dimster-logs/coordinator.log";
@@ -122,6 +122,9 @@ pub struct RunArgs {
     pub tls_config: Option<KafkaTlsConfig>,
     pub metadata: Vec<String>,
     pub extra_dimensions: Vec<String>,
+    // Metrics outputs to save once the run completes, already resolved from
+    // `--metrics-output` and the env's `metricsOutput`.
+    pub metrics_output: Vec<MetricsOutput>,
 }
 
 pub fn run(
@@ -492,7 +495,7 @@ pub fn run(
     }
 
     // Collect results, generate charts, and print summary
-    results::collect_results(kubectl, output_dir, script_dir, &stop)?;
+    results::collect_results(kubectl, output_dir, script_dir, &args.metrics_output, &stop)?;
     Ok(())
 }
 

@@ -154,6 +154,82 @@ pub enum DeployMode {
     External,
 }
 
+/// One way of saving a run's Prometheus metrics into its result directory.
+/// An env lists the outputs it wants under `metricsOutput`; the end-of-run
+/// export (results.rs `export_metrics`) writes each listed output.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum MetricsOutput {
+    /// Static Chart.js HTML rendering of each Grafana dashboard.
+    Html,
+    /// Raw samples of every metric the dashboards reference, as gzipped
+    /// OpenMetrics, viewable later with `dimster dashboard --snapshot`.
+    Snapshot,
+}
+
+impl MetricsOutput {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MetricsOutput::Html => "html",
+            MetricsOutput::Snapshot => "snapshot",
+        }
+    }
+}
+
+impl std::str::FromStr for MetricsOutput {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim() {
+            "html" => Ok(MetricsOutput::Html),
+            "snapshot" => Ok(MetricsOutput::Snapshot),
+            other => bail!(
+                "unknown metrics output '{}' (expected html, snapshot or none)",
+                other
+            ),
+        }
+    }
+}
+
+/// Parse a `--metrics-output` value: a comma-separated list of outputs, or
+/// `none` for no metrics at all. `none` can't be combined with other values.
+pub fn parse_metrics_output_arg(s: &str) -> Result<Vec<MetricsOutput>> {
+    if s.trim() == "none" {
+        return Ok(Vec::new());
+    }
+    let mut outputs = Vec::new();
+    for item in s.split(',') {
+        if item.trim().is_empty() {
+            bail!("empty item in metrics output list '{}'", s);
+        }
+        if item.trim() == "none" {
+            bail!("'none' cannot be combined with other metrics outputs");
+        }
+        outputs.push(item.parse()?);
+    }
+    Ok(outputs)
+}
+
+/// Resolve which metrics outputs to write: the CLI flag wins, then the env's
+/// `metricsOutput`, then the default of HTML only. An explicitly empty list
+/// (from either source) means no metrics are saved.
+pub fn resolve_metrics_output(
+    cli: Option<Vec<MetricsOutput>>,
+    env: Option<&Environment>,
+) -> Vec<MetricsOutput> {
+    let chosen = cli
+        .or_else(|| env.and_then(|e| e.metrics_output.clone()))
+        .unwrap_or_else(|| vec![MetricsOutput::Html]);
+    // Dedupe while keeping the listed order.
+    let mut outputs = Vec::new();
+    for o in chosen {
+        if !outputs.contains(&o) {
+            outputs.push(o);
+        }
+    }
+    outputs
+}
+
 /// Kubelet CPU Manager mode that a Dimster environment expects its target
 /// nodes to be running with. This is cluster/node configuration, not a
 /// namespaced Kubernetes object, so Dimster validates it during deploy rather
@@ -261,6 +337,11 @@ pub struct Environment {
     pub coordinator: Option<CoordinatorEnvConfig>,
     #[serde(default)]
     pub monitoring: Option<MonitoringEnvConfig>,
+    /// Which metrics outputs to save after a run. `None` (key absent) means
+    /// the default of `[html]`; an explicit `[]` saves no metrics. Overridden
+    /// by `--metrics-output` on the CLI (see `resolve_metrics_output`).
+    #[serde(default, rename = "metricsOutput")]
+    pub metrics_output: Option<Vec<MetricsOutput>>,
 }
 
 /// Kubernetes resource requests (cpu and memory) for a pod.
@@ -732,6 +813,83 @@ mod tests {
         // make_kubectl resilient when called early in command dispatch
         // before env validation runs.
         assert_eq!(cfg.kubectl_namespace("unknown"), "dimster");
+    }
+
+    fn env_from_yaml(yaml: &str) -> Result<Environment> {
+        Ok(serde_yaml::from_str(yaml)?)
+    }
+
+    /// Absent key keeps today's behaviour (HTML only); an explicit empty
+    /// list is a distinct "save nothing" setting, not the default.
+    #[test]
+    fn metrics_output_unset_vs_empty_vs_both() {
+        let unset = env_from_yaml("image: dimster").unwrap();
+        assert_eq!(unset.metrics_output, None);
+        assert_eq!(
+            resolve_metrics_output(None, Some(&unset)),
+            vec![MetricsOutput::Html]
+        );
+
+        let empty = env_from_yaml("metricsOutput: []").unwrap();
+        assert_eq!(empty.metrics_output, Some(vec![]));
+        assert!(resolve_metrics_output(None, Some(&empty)).is_empty());
+
+        let both = env_from_yaml("metricsOutput: [html, snapshot]").unwrap();
+        assert_eq!(
+            resolve_metrics_output(None, Some(&both)),
+            vec![MetricsOutput::Html, MetricsOutput::Snapshot]
+        );
+    }
+
+    #[test]
+    fn metrics_output_rejects_unknown_value_in_config() {
+        assert!(env_from_yaml("metricsOutput: [html, pdf]").is_err());
+    }
+
+    #[test]
+    fn metrics_output_cli_overrides_env_including_none() {
+        let both = env_from_yaml("metricsOutput: [html, snapshot]").unwrap();
+        assert!(resolve_metrics_output(Some(vec![]), Some(&both)).is_empty());
+        assert_eq!(
+            resolve_metrics_output(Some(vec![MetricsOutput::Snapshot]), Some(&both)),
+            vec![MetricsOutput::Snapshot]
+        );
+        // No env at all (e.g. unknown env in a pure-local command) still
+        // falls back to the default.
+        assert_eq!(
+            resolve_metrics_output(None, None),
+            vec![MetricsOutput::Html]
+        );
+    }
+
+    #[test]
+    fn metrics_output_resolution_dedupes_in_order() {
+        let dup = vec![
+            MetricsOutput::Snapshot,
+            MetricsOutput::Html,
+            MetricsOutput::Snapshot,
+        ];
+        assert_eq!(
+            resolve_metrics_output(Some(dup), None),
+            vec![MetricsOutput::Snapshot, MetricsOutput::Html]
+        );
+    }
+
+    #[test]
+    fn parse_metrics_output_arg_handles_lists_and_none() {
+        assert!(parse_metrics_output_arg("none").unwrap().is_empty());
+        assert_eq!(
+            parse_metrics_output_arg("html,snapshot").unwrap(),
+            vec![MetricsOutput::Html, MetricsOutput::Snapshot]
+        );
+        assert_eq!(
+            parse_metrics_output_arg(" snapshot ").unwrap(),
+            vec![MetricsOutput::Snapshot]
+        );
+        assert!(parse_metrics_output_arg("none,html").is_err());
+        assert!(parse_metrics_output_arg("html,").is_err());
+        assert!(parse_metrics_output_arg("").is_err());
+        assert!(parse_metrics_output_arg("pdf").is_err());
     }
 
     #[test]

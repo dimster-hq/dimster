@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
-use config::{DimsterConfig, Distro};
+use config::{DimsterConfig, Distro, MetricsOutput};
 use kubectl::Kubectl;
 
 #[derive(Parser)]
@@ -20,6 +20,39 @@ use kubectl::Kubectl;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Parsed `--metrics-output` value. A newtype so clap treats the whole
+/// comma-separated list as one value; it would otherwise read
+/// `Option<Vec<_>>` as a repeatable multi-value flag.
+#[derive(Clone, Debug)]
+struct MetricsOutputArg(Vec<MetricsOutput>);
+
+fn parse_metrics_output(s: &str) -> std::result::Result<MetricsOutputArg, String> {
+    config::parse_metrics_output_arg(s)
+        .map(MetricsOutputArg)
+        .map_err(|e| e.to_string())
+}
+
+/// `--metrics-output`, shared by every command that ends by collecting a
+/// run's results.
+#[derive(Args, Debug)]
+struct MetricsOutputOpt {
+    /// Metrics to save after the run: comma-separated list of html and
+    /// snapshot, or none. Overrides the environment's metricsOutput
+    /// (default: html).
+    #[arg(long = "metrics-output", value_parser = parse_metrics_output, value_name = "OUTPUTS")]
+    metrics_output: Option<MetricsOutputArg>,
+}
+
+impl MetricsOutputOpt {
+    /// Resolve against the env config: flag > env `metricsOutput` > [html].
+    fn resolve(self, config: &DimsterConfig, env: &str) -> Vec<MetricsOutput> {
+        config::resolve_metrics_output(
+            self.metrics_output.map(|a| a.0),
+            config.environments.get(env),
+        )
+    }
 }
 
 #[derive(Subcommand)]
@@ -88,6 +121,9 @@ enum Commands {
         /// Extra infrastructure dimension as key=value, e.g. brokers=5
         #[arg(short = 'd', long = "extra-dimension")]
         extra_dimensions: Vec<String>,
+
+        #[command(flatten)]
+        metrics: MetricsOutputOpt,
     },
 
     /// Explore performance limits of the Kafka cluster
@@ -110,6 +146,9 @@ enum Commands {
         /// Extra infrastructure dimension as key=value, e.g. brokers=5
         #[arg(short = 'd', long = "extra-dimension")]
         extra_dimensions: Vec<String>,
+
+        #[command(flatten)]
+        metrics: MetricsOutputOpt,
     },
 
     /// Run a correctness check
@@ -132,6 +171,9 @@ enum Commands {
         /// Extra infrastructure dimension as key=value, e.g. brokers=5
         #[arg(short = 'd', long = "extra-dimension")]
         extra_dimensions: Vec<String>,
+
+        #[command(flatten)]
+        metrics: MetricsOutputOpt,
     },
 
     /// Measure backlog drain time
@@ -154,18 +196,27 @@ enum Commands {
         /// Extra infrastructure dimension as key=value, e.g. brokers=5
         #[arg(short = 'd', long = "extra-dimension")]
         extra_dimensions: Vec<String>,
+
+        #[command(flatten)]
+        metrics: MetricsOutputOpt,
     },
 
     /// Resume a benchmark from the last checkpoint
     Resume {
         /// Environment name
         env: String,
+
+        #[command(flatten)]
+        metrics: MetricsOutputOpt,
     },
 
     /// Reattach to a running benchmark
     Reattach {
         /// Environment name
         env: String,
+
+        #[command(flatten)]
+        metrics: MetricsOutputOpt,
     },
 
     /// Show theoretical resource requirements for workloads
@@ -205,8 +256,19 @@ enum Commands {
         #[arg(long)]
         logs: bool,
 
-        /// Export Grafana dashboard snapshots as HTML
-        #[arg(long)]
+        /// Export the run's metrics. Without a value, uses the environment's
+        /// metricsOutput (default: html); otherwise a comma-separated list of
+        /// html and snapshot, or none.
+        #[arg(
+            long = "metrics-output",
+            value_parser = parse_metrics_output,
+            value_name = "OUTPUTS",
+            num_args = 0..=1
+        )]
+        metrics_output: Option<Option<MetricsOutputArg>>,
+
+        /// Deprecated alias for `--metrics-output html`
+        #[arg(long, hide = true, conflicts_with = "metrics_output")]
         dashboards: bool,
 
         /// Generate charts from result JSON
@@ -280,12 +342,19 @@ enum Commands {
         scenarios: Option<String>,
     },
 
-    /// Port-forward Grafana + Prometheus
+    /// Port-forward Grafana + Prometheus, or with --snapshot, view a saved
+    /// run's Prometheus snapshot in a local Grafana (needs Docker, no cluster)
     Dashboard {
-        /// Environment name
-        env: String,
+        /// Environment name (not used with --snapshot)
+        #[arg(required_unless_present = "snapshot")]
+        env: Option<String>,
 
-        /// Grafana local port (default: 3000)
+        /// Result directory containing a prometheus-snapshot/ to view locally
+        #[arg(long, value_name = "RESULT_DIR", conflicts_with = "env")]
+        snapshot: Option<PathBuf>,
+
+        /// Grafana local port (default: 3000). Not used with --snapshot,
+        /// which uses 3000/9090 when free and otherwise any free ports.
         #[arg(default_value = "3000")]
         grafana_port: u16,
 
@@ -477,6 +546,7 @@ fn run_command(cli: Cli) -> Result<()> {
             workloads,
             metadata,
             extra_dimensions,
+            metrics,
         } => {
             let kubectl = require_kubectl(&config, &env)?;
             // The --modify branch is intercepted BEFORE clap runs (see
@@ -519,6 +589,7 @@ fn run_command(cli: Cli) -> Result<()> {
                 tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
+                metrics_output: metrics.resolve(&config, &env),
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -537,6 +608,7 @@ fn run_command(cli: Cli) -> Result<()> {
             workload,
             metadata,
             extra_dimensions,
+            metrics,
         } => {
             let kubectl = require_kubectl(&config, &env)?;
             if !std::path::Path::new(&workload).exists() {
@@ -567,6 +639,7 @@ fn run_command(cli: Cli) -> Result<()> {
                 tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
+                metrics_output: metrics.resolve(&config, &env),
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -585,6 +658,7 @@ fn run_command(cli: Cli) -> Result<()> {
             workload,
             metadata,
             extra_dimensions,
+            metrics,
         } => {
             let kubectl = require_kubectl(&config, &env)?;
             if !std::path::Path::new(&workload).exists() {
@@ -615,6 +689,7 @@ fn run_command(cli: Cli) -> Result<()> {
                 tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
+                metrics_output: metrics.resolve(&config, &env),
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -633,6 +708,7 @@ fn run_command(cli: Cli) -> Result<()> {
             workload,
             metadata,
             extra_dimensions,
+            metrics,
         } => {
             let kubectl = require_kubectl(&config, &env)?;
             if !std::path::Path::new(&workload).exists() {
@@ -663,6 +739,7 @@ fn run_command(cli: Cli) -> Result<()> {
                 tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
+                metrics_output: metrics.resolve(&config, &env),
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -675,16 +752,18 @@ fn run_command(cli: Cli) -> Result<()> {
             )?;
         }
 
-        Commands::Resume { env } => {
+        Commands::Resume { env, metrics } => {
             let kubectl = require_kubectl(&config, &env)?;
             let output_dir = config.results.dir.clone();
-            commands::resume::run(&kubectl, &output_dir, &script_dir, stop, &env)?;
+            let outputs = metrics.resolve(&config, &env);
+            commands::resume::run(&kubectl, &output_dir, &script_dir, stop, &env, &outputs)?;
         }
 
-        Commands::Reattach { env } => {
+        Commands::Reattach { env, metrics } => {
             let kubectl = require_kubectl(&config, &env)?;
             let output_dir = config.results.dir.clone();
-            commands::reattach::run(&kubectl, &output_dir, &script_dir, stop, &env)?;
+            let outputs = metrics.resolve(&config, &env);
+            commands::reattach::run(&kubectl, &output_dir, &script_dir, stop, &env, &outputs)?;
         }
 
         Commands::Resources {
@@ -705,19 +784,26 @@ fn run_command(cli: Cli) -> Result<()> {
             output_dir,
             data,
             logs,
+            metrics_output,
             dashboards,
             charts,
             full,
         } => {
             let kubectl = require_kubectl(&config, &env)?;
             let dir = output_dir.unwrap_or_else(|| config.results.dir.clone());
+            let (metrics_requested, explicit) = results_metrics_request(metrics_output, dashboards);
+            let outputs = MetricsOutputOpt {
+                metrics_output: explicit,
+            }
+            .resolve(&config, &env);
             commands::results::run(
                 &kubectl,
                 &dir,
                 &script_dir,
                 data,
                 logs,
-                dashboards,
+                metrics_requested,
+                &outputs,
                 charts,
                 full,
                 &stop,
@@ -769,12 +855,22 @@ fn run_command(cli: Cli) -> Result<()> {
 
         Commands::Dashboard {
             env,
+            snapshot,
             grafana_port,
             prometheus_port,
-        } => {
-            let kubectl = require_kubectl(&config, &env)?;
-            commands::dashboard::run(&kubectl, grafana_port, prometheus_port, stop)?;
-        }
+        } => match (snapshot, env) {
+            // Snapshot mode picks its own ports: the positionals would be
+            // parsed into `env`, which conflicts with --snapshot.
+            (Some(result_dir), _) => {
+                commands::snapshot_viewer::run(&result_dir, stop)?;
+            }
+            (None, Some(env)) => {
+                let kubectl = require_kubectl(&config, &env)?;
+                commands::dashboard::run(&kubectl, grafana_port, prometheus_port, stop)?;
+            }
+            // clap's required_unless_present guarantees one of the two.
+            (None, None) => unreachable!("dashboard needs an env or --snapshot"),
+        },
 
         Commands::Logs {
             env,
@@ -912,6 +1008,20 @@ fn find_script_dir() -> Result<PathBuf> {
     Ok(std::env::current_dir()?)
 }
 
+/// Interpret `dimster results`' metrics flags as (run the metrics step?,
+/// explicit outputs). `--metrics-output` with no value runs the step with the
+/// env's outputs; the hidden `--dashboards` alias means `--metrics-output html`.
+fn results_metrics_request(
+    metrics_output: Option<Option<MetricsOutputArg>>,
+    dashboards: bool,
+) -> (bool, Option<MetricsOutputArg>) {
+    match metrics_output {
+        Some(explicit) => (true, explicit),
+        None if dashboards => (true, Some(MetricsOutputArg(vec![MetricsOutput::Html]))),
+        None => (false, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,5 +1109,177 @@ mod tests {
             }
             _ => panic!("expected run command"),
         }
+    }
+
+    fn metrics_of(args: &[&str]) -> Option<Vec<MetricsOutput>> {
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Run { metrics, .. }
+            | Commands::Explore { metrics, .. }
+            | Commands::Correctness { metrics, .. }
+            | Commands::DrainBacklog { metrics, .. }
+            | Commands::Resume { metrics, .. }
+            | Commands::Reattach { metrics, .. } => metrics.metrics_output.map(|a| a.0),
+            _ => panic!("expected a command that collects results"),
+        }
+    }
+
+    #[test]
+    fn run_type_commands_accept_metrics_output() {
+        use MetricsOutput::{Html, Snapshot};
+        assert_eq!(
+            metrics_of(&[
+                "dimster",
+                "run",
+                "local",
+                "-w",
+                "w.yaml",
+                "--metrics-output",
+                "html,snapshot"
+            ]),
+            Some(vec![Html, Snapshot])
+        );
+        assert_eq!(
+            metrics_of(&[
+                "dimster",
+                "run",
+                "local",
+                "-w",
+                "w.yaml",
+                "--metrics-output",
+                "none"
+            ]),
+            Some(vec![])
+        );
+        assert_eq!(
+            metrics_of(&["dimster", "run", "local", "-w", "w.yaml"]),
+            None
+        );
+        assert_eq!(
+            metrics_of(&[
+                "dimster",
+                "explore",
+                "local",
+                "-w",
+                "w.yaml",
+                "--metrics-output",
+                "snapshot"
+            ]),
+            Some(vec![Snapshot])
+        );
+        assert_eq!(
+            metrics_of(&[
+                "dimster",
+                "reattach",
+                "local",
+                "--metrics-output",
+                "snapshot"
+            ]),
+            Some(vec![Snapshot])
+        );
+        assert_eq!(
+            metrics_of(&["dimster", "resume", "local", "--metrics-output", "html"]),
+            Some(vec![Html])
+        );
+    }
+
+    #[test]
+    fn metrics_output_rejects_bad_values() {
+        for bad in ["none,html", "pdf", ""] {
+            assert!(
+                Cli::try_parse_from([
+                    "dimster",
+                    "run",
+                    "local",
+                    "-w",
+                    "w.yaml",
+                    "--metrics-output",
+                    bad
+                ])
+                .is_err(),
+                "expected '{}' to be rejected",
+                bad
+            );
+        }
+    }
+
+    fn results_request(args: &[&str]) -> (bool, Option<Vec<MetricsOutput>>) {
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Results {
+                metrics_output,
+                dashboards,
+                ..
+            } => {
+                let (requested, explicit) = results_metrics_request(metrics_output, dashboards);
+                (requested, explicit.map(|a| a.0))
+            }
+            _ => panic!("expected results command"),
+        }
+    }
+
+    #[test]
+    fn results_metrics_flag_forms() {
+        use MetricsOutput::{Html, Snapshot};
+        // No flag: step not requested on its own (runs only as part of "all").
+        assert_eq!(
+            results_request(&["dimster", "results", "local"]),
+            (false, None)
+        );
+        // Bare flag: run the step with the env's outputs.
+        assert_eq!(
+            results_request(&["dimster", "results", "local", "--metrics-output"]),
+            (true, None)
+        );
+        assert_eq!(
+            results_request(&[
+                "dimster",
+                "results",
+                "local",
+                "--metrics-output",
+                "snapshot"
+            ]),
+            (true, Some(vec![Snapshot]))
+        );
+        // Deprecated alias keeps its old meaning.
+        assert_eq!(
+            results_request(&["dimster", "results", "local", "--dashboards"]),
+            (true, Some(vec![Html]))
+        );
+        assert!(
+            Cli::try_parse_from([
+                "dimster",
+                "results",
+                "local",
+                "--dashboards",
+                "--metrics-output",
+                "html"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn dashboard_snapshot_mode_needs_no_env() {
+        let cli = Cli::try_parse_from(["dimster", "dashboard", "--snapshot", "results/x"]).unwrap();
+        match cli.command {
+            Commands::Dashboard {
+                env,
+                snapshot,
+                grafana_port,
+                ..
+            } => {
+                assert_eq!(env, None);
+                assert_eq!(snapshot, Some(PathBuf::from("results/x")));
+                assert_eq!(grafana_port, 3000);
+            }
+            _ => panic!("expected dashboard command"),
+        }
+        assert!(
+            Cli::try_parse_from(["dimster", "dashboard", "local", "--snapshot", "results/x"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["dimster", "dashboard"]).is_err());
+        assert!(Cli::try_parse_from(["dimster", "dashboard", "local"]).is_ok());
     }
 }

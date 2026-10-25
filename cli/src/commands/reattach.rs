@@ -7,6 +7,7 @@ use anyhow::Result;
 use crate::commands::find_coordinator;
 use crate::commands::results;
 use crate::commands::run::stream_and_wait;
+use crate::config::MetricsOutput;
 use crate::kubectl::Kubectl;
 
 pub fn run(
@@ -15,6 +16,7 @@ pub fn run(
     script_dir: &Path,
     stop: Arc<AtomicBool>,
     environment: &str,
+    metrics_outputs: &[MetricsOutput],
 ) -> Result<()> {
     let coord_pod = find_coordinator(kubectl)?;
 
@@ -37,6 +39,6 @@ pub fn run(
         println!("==> Coordinator is idle. Copying latest results...");
     }
 
-    results::collect_results(kubectl, output_dir, script_dir, &stop)?;
+    results::collect_results(kubectl, output_dir, script_dir, metrics_outputs, &stop)?;
     Ok(())
 }

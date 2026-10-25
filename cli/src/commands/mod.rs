@@ -19,6 +19,7 @@ pub mod results;
 pub mod resume;
 pub mod run;
 pub mod run_configs;
+pub mod snapshot_viewer;
 pub mod stop;
 pub mod teardown;
 

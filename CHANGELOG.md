@@ -71,9 +71,12 @@ Initial public release.
 - The `KEY_COLUMN` message distributor, which keys records by a dataset column.
 - `engineConfig.printContents`, which adds each record's key and readable contents to the printed message lines.
 - Measured byte rates in results (`publishBytesRate`, `consumeBytesRate`, `avgRecordBytes`); charts and `dimster csv` use them when present.
+- Prometheus snapshots: the `metricsOutput` env setting (and `--metrics-output` on `run`, `explore`, `correctness`, `drain-backlog`, `resume`, `reattach` and `results`) chooses which metrics to save after a run: `html` (the existing dashboard pages), `snapshot` (raw samples of every metric the dashboards use, for the run window only, in `prometheus-snapshot/`), both, or none. Defaults to `html`.
+- `dimster dashboard --snapshot <result-dir>` opens a saved snapshot in a throwaway local Prometheus + Grafana in Docker, with no cluster needed.
 
 ### Changed
 
+- `dimster results --dashboards` is replaced by `--metrics-output [OUTPUTS]`; `--dashboards` still works as an alias for `--metrics-output html`.
 - `--restart-consumers <N>` now selects exactly N consumers uniformly from the full topology instead of filtering by per-group consumer index. Random producer and consumer selections are recorded in coordinator logs and result JSON.
 - Correctness consumer restart attempts are recorded in each test outcome, and a failed worker dispatch invalidates that outcome.
 - Every record now has a schema. Normal records are still exactly `messageSize` bytes but "dataset" based records depend on the schema, values and format.

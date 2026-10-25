@@ -32,6 +32,7 @@ environments:
     cpuManager:               # Experimental kubelet CPU Manager validation
       policy: <string>        # none|static (default: none)
       fullPcpusOnly: <bool>   # Require full physical cores when policy is static
+    metricsOutput: [<string>] # Metrics saved after a run: html, snapshot (default: [html])
 
     connection:               # Required when deploy is "external"
       bootstrap.servers: <string>
@@ -128,6 +129,7 @@ Each entry under `environments` defines a named deployment target.
 | `hardware` | string | -- | Hardware description recorded in result metadata (e.g. `"3x m7i.2xlarge"`). |
 | `kafka_client_version` | string | `4.2.0` | Concrete `kafka-clients` version the worker and coordinator pods are built against (e.g. `"3.7.2"`, `"3.9.0"`, `"4.1.0"`, `"4.2.0"`). The CLI maps the version to the matching impl module and passes it through to Maven as `-Dkafka.version=<version>`, so the bundled jar is exactly what you ask for. Independent of `kafka.version` (the broker image tag). See [Kafka Versioning](../concepts/kafka-versioning.md) for the supported versions and the cross-version compatibility matrix. |
 | `deploy` | string | `full` | Deploy mode. `full` deploys Kafka brokers alongside workers. `external` connects to an existing Kafka cluster via the `connection` section. |
+| `metricsOutput` | list of strings | `[html]` | Prometheus metrics saved into the result directory after each run. `html` renders the Grafana dashboards as static HTML; `snapshot` saves the raw Prometheus data for the run, viewable later with `dimster dashboard --snapshot`. `[]` saves no metrics. Overridden per command by `--metrics-output`. See [Results and Charts](../concepts/results-and-charts.md#saving-metrics-after-a-run). |
 | `cpuManager.policy` | string | `none` | Experimental, validation-only kubelet CPU Manager requirement. `none` disables the check. `static` makes `dimster deploy` verify benchmark nodes are running kubelet `cpuManagerPolicy: static` before applying manifests. |
 | `cpuManager.fullPcpusOnly` | boolean | `false` | Experimental. When `policy: static`, require kubelet `cpuManagerPolicyOptions.full-pcpus-only: true` so whole physical cores are allocated on SMT systems. |
 

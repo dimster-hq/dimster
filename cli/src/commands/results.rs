@@ -6,7 +6,15 @@ use anyhow::{Result, bail};
 use crate::commands::chart;
 use crate::commands::csv;
 use crate::commands::run_configs;
+use crate::config::MetricsOutput;
 use crate::kubectl::Kubectl;
+
+/// Result-dir subdirectory holding the Prometheus snapshot (gzipped
+/// OpenMetrics plus the dashboard JSON it was taken for). Shared with the
+/// local snapshot viewer, which reads it back.
+pub const SNAPSHOT_DIR: &str = "prometheus-snapshot";
+/// Snapshot data file inside `SNAPSHOT_DIR`.
+pub const SNAPSHOT_FILE: &str = "metrics.om.gz";
 
 // Shell snippet that prints the basename of the most-recently-modified
 // *directory* under /results. The trailing-slash glob (`*/`) is the POSIX
@@ -47,16 +55,18 @@ pub fn run(
     script_dir: &Path,
     data: bool,
     logs: bool,
-    dashboards: bool,
+    metrics: bool,
+    metrics_outputs: &[MetricsOutput],
     charts: bool,
     full: bool,
     stop: &AtomicBool,
 ) -> Result<()> {
-    // No flags = run everything
-    let all = !data && !logs && !dashboards && !charts;
+    // No flags = run everything. `metrics_outputs` is already resolved
+    // (flag > env > default) so it applies whether or not `metrics` was set.
+    let all = !data && !logs && !metrics && !charts;
     let do_data = data || all;
     let do_logs = logs || all;
-    let do_dashboards = dashboards || all;
+    let do_metrics = metrics || all;
     let do_charts = charts || all;
 
     // Resolve the result directory. When downloading data, copy_results_from_pvc
@@ -65,7 +75,7 @@ pub fn run(
     let result_dir = if do_data {
         copy_results_from_pvc(kubectl, output_dir, stop)?
     } else {
-        let needs_cluster = do_logs || do_dashboards;
+        let needs_cluster = do_logs || do_metrics;
         let subdir = if needs_cluster {
             find_latest_pvc_subdir(kubectl, stop)?
         } else {
@@ -82,9 +92,9 @@ pub fn run(
         if do_logs && !stop.load(Ordering::Relaxed) {
             save_logs(kubectl, dir, full)?;
         }
-        if do_dashboards && !stop.load(Ordering::Relaxed) {
-            if let Err(e) = export_dashboards(kubectl, dir, stop) {
-                eprintln!("    Warning: dashboard export failed: {}", e);
+        if do_metrics && !stop.load(Ordering::Relaxed) {
+            if let Err(e) = export_metrics(kubectl, dir, metrics_outputs, stop) {
+                eprintln!("    Warning: metrics export failed: {}", e);
             }
         }
         if do_charts && !stop.load(Ordering::Relaxed) {
@@ -107,7 +117,7 @@ pub fn run(
 
 /// Look up the latest timestamped subdirectory on the results PVC by spinning
 /// up a short-lived busybox pod. The local result directory uses the same name
-/// so that export_dashboards can derive the PVC path from the local path.
+/// so that export_metrics can derive the PVC path from the local path.
 fn find_latest_pvc_subdir(kubectl: &Kubectl, stop: &AtomicBool) -> Result<String> {
     println!("==> Looking up latest result directory on PVC...");
 
@@ -966,10 +976,23 @@ fn format_rfc3339(unix_ts: i64) -> String {
     )
 }
 
-/// Export Grafana dashboards as static HTML by running a short-lived pod
-/// that queries Prometheus and generates Chart.js pages.
-pub fn export_dashboards(kubectl: &Kubectl, result_dir: &str, stop: &AtomicBool) -> Result<()> {
-    println!("==> Exporting dashboard snapshots...");
+/// Save the run's Prometheus metrics in each requested output format by
+/// running a short-lived pod that queries Prometheus with export.py: `html`
+/// renders the Grafana dashboards as static Chart.js pages, `snapshot` dumps
+/// the raw samples behind them (see `SNAPSHOT_DIR`). An empty list skips the
+/// export entirely, without starting the pod.
+pub fn export_metrics(
+    kubectl: &Kubectl,
+    result_dir: &str,
+    outputs: &[MetricsOutput],
+    stop: &AtomicBool,
+) -> Result<()> {
+    if outputs.is_empty() {
+        println!("==> Metrics output disabled (none selected)");
+        return Ok(());
+    }
+    let outputs_arg = outputs_arg(outputs);
+    println!("==> Exporting metrics ({})...", outputs_arg);
 
     // Extract begin/end timestamps from the result JSON. Buffering and
     // window splitting are both handled by export.py (see --window-hours
@@ -1077,6 +1100,7 @@ spec:
     // --scenario-boundaries lets export.py align cuts with scenario
     // transitions, keeping a scenario's test points in the same file.
     let output_path = format!("/results/{}/dashboards", pvc_subdir);
+    let snapshot_path = format!("/results/{}/{}", pvc_subdir, SNAPSHOT_DIR);
     let boundaries_json =
         serde_json::to_string(&scenario_boundaries).unwrap_or_else(|_| "[]".to_string());
     let raw_start_str = raw_start.to_string();
@@ -1097,6 +1121,10 @@ spec:
         "/dashboards/main,/dashboards/system",
         "--output-dir",
         &output_path,
+        "--snapshot-dir",
+        &snapshot_path,
+        "--outputs",
+        &outputs_arg,
         "--window-hours",
         "3",
         "--window-buffer-minutes",
@@ -1110,19 +1138,106 @@ spec:
         Err(e) => eprintln!("    Warning: export script returned error: {}", e),
     }
 
-    // Copy dashboard HTML files to local directory
-    let local_dashboards = format!("{}/dashboards", result_dir);
-    std::fs::create_dir_all(&local_dashboards)?;
+    if outputs.contains(&MetricsOutput::Html) {
+        copy_html_dashboards(kubectl, &helper_name, &output_path, result_dir)?;
+    }
+    if outputs.contains(&MetricsOutput::Snapshot) {
+        copy_prometheus_snapshot(kubectl, &helper_name, &snapshot_path, result_dir)?;
+    }
 
-    // List generated files
+    // Cleanup
+    let _ = kubectl.run(&["delete", "pod", &helper_name, "--ignore-not-found"]);
+    Ok(())
+}
+
+/// The `--outputs` value export.py expects, e.g. "html,snapshot".
+fn outputs_arg(outputs: &[MetricsOutput]) -> String {
+    outputs
+        .iter()
+        .map(|o| o.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Copy the generated dashboard HTML files to `<result_dir>/dashboards/`.
+fn copy_html_dashboards(
+    kubectl: &Kubectl,
+    helper_name: &str,
+    remote_dir: &str,
+    result_dir: &str,
+) -> Result<()> {
+    let local_dashboards = format!("{}/dashboards", result_dir);
+    let copied = copy_matching_files(
+        kubectl,
+        helper_name,
+        remote_dir,
+        "*.html",
+        &local_dashboards,
+    )?;
+    println!(
+        "    {} dashboard file(s) saved to {}/",
+        copied, local_dashboards
+    );
+    Ok(())
+}
+
+/// Copy the snapshot data file and the dashboard JSON it was taken for to
+/// `<result_dir>/prometheus-snapshot/`, keeping the remote layout so the
+/// snapshot viewer can find both.
+fn copy_prometheus_snapshot(
+    kubectl: &Kubectl,
+    helper_name: &str,
+    remote_dir: &str,
+    result_dir: &str,
+) -> Result<()> {
+    let local_snapshot = format!("{}/{}", result_dir, SNAPSHOT_DIR);
+    let data = copy_matching_files(
+        kubectl,
+        helper_name,
+        remote_dir,
+        SNAPSHOT_FILE,
+        &local_snapshot,
+    )?;
+    let dashboards = copy_matching_files(
+        kubectl,
+        helper_name,
+        &format!("{}/dashboards", remote_dir),
+        "*.json",
+        &format!("{}/dashboards", local_snapshot),
+    )?;
+    if data == 0 {
+        eprintln!("    Warning: no Prometheus snapshot was produced");
+    } else {
+        println!(
+            "    Prometheus snapshot ({} dashboard(s)) saved to {}/",
+            dashboards, local_snapshot
+        );
+    }
+    Ok(())
+}
+
+/// Copy every file directly under `remote_dir` in the helper pod whose name
+/// matches the shell glob `pattern` into `local_dir`. Returns the number of
+/// files copied; individual copy failures are warned about, not fatal.
+fn copy_matching_files(
+    kubectl: &Kubectl,
+    helper_name: &str,
+    remote_dir: &str,
+    pattern: &str,
+    local_dir: &str,
+) -> Result<usize> {
+    std::fs::create_dir_all(local_dir)?;
     let file_list = kubectl
         .run(&[
             "exec",
-            &helper_name,
+            helper_name,
             "--",
             "sh",
             "-c",
-            &format!("find {} -name '*.html' -type f 2>/dev/null", output_path),
+            &format!(
+                "find {} -maxdepth 1 -name '{}' -type f 2>/dev/null",
+                remote_dir, pattern
+            ),
         ])
         .unwrap_or_default();
 
@@ -1133,30 +1248,22 @@ spec:
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        let local_path = format!("{}/{}", local_dashboards, filename);
+        let local_path = format!("{}/{}", local_dir, filename);
 
-        if kubectl.copy_file_from_pod(&helper_name, remote_path, &local_path) {
+        if kubectl.copy_file_from_pod(helper_name, remote_path, &local_path) {
             copied_count += 1;
         } else {
             eprintln!("    Warning: failed to copy {}", filename);
         }
     }
-
-    println!(
-        "    {} dashboard file(s) saved to {}/",
-        copied_count, local_dashboards
-    );
-
-    // Cleanup
-    let _ = kubectl.run(&["delete", "pod", &helper_name, "--ignore-not-found"]);
-    Ok(())
+    Ok(copied_count)
 }
 
 /// Extract begin and end Unix timestamps from the first result JSON in a directory.
 /// When the benchmark is still running, endTime may be absent — in that case
 /// we fall back to the current wall-clock time so callers can still operate
 /// on the "start … now" range.
-fn extract_time_range(result_dir: &str) -> Result<(i64, i64)> {
+pub(crate) fn extract_time_range(result_dir: &str) -> Result<(i64, i64)> {
     let dir = std::fs::read_dir(result_dir)?;
     for entry in dir.flatten() {
         let path = entry.path();
@@ -1307,15 +1414,18 @@ fn is_leap_year(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
+/// Count result JSON files under a result dir. The Prometheus snapshot's
+/// dashboard JSON is skipped since it isn't a result.
 fn count_json_files(dir: &Path) -> usize {
-    walkdir(dir, "json")
+    walkdir(dir, "json", &[SNAPSHOT_DIR])
 }
 
-/// Copy results, save logs, export dashboards, generate charts, and print summary.
+/// Copy results, save logs, export metrics, generate charts, and print summary.
 pub fn collect_results(
     kubectl: &Kubectl,
     output_dir: &str,
     script_dir: &Path,
+    metrics_outputs: &[MetricsOutput],
     stop: &AtomicBool,
 ) -> Result<()> {
     let result_dir = copy_results_from_pvc(kubectl, output_dir, stop)?;
@@ -1327,8 +1437,8 @@ pub fn collect_results(
             save_logs(kubectl, dir, /*full=*/ false)?;
         }
         if !stop.load(Ordering::Relaxed) {
-            if let Err(e) = export_dashboards(kubectl, dir, stop) {
-                eprintln!("    Warning: dashboard export failed: {}", e);
+            if let Err(e) = export_metrics(kubectl, dir, metrics_outputs, stop) {
+                eprintln!("    Warning: metrics export failed: {}", e);
             }
         }
         if !stop.load(Ordering::Relaxed) {
@@ -1405,6 +1515,13 @@ fn print_result_summary(result_dir: &str) {
         }
     }
 
+    // Prometheus snapshot
+    let snapshot_file = dir.join(SNAPSHOT_DIR).join(SNAPSHOT_FILE);
+    if snapshot_file.is_file() {
+        println!("    Prometheus snapshot:");
+        println!("      {}/{}", SNAPSHOT_DIR, SNAPSHOT_FILE);
+    }
+
     // Logs
     let logs_dir = dir.join("logs");
     if logs_dir.is_dir() {
@@ -1467,13 +1584,15 @@ fn list_files_with_ext(dir: &Path, ext: &str) -> Vec<String> {
     files
 }
 
-fn walkdir(dir: &Path, ext: &str) -> usize {
+fn walkdir(dir: &Path, ext: &str, skip_dirs: &[&str]) -> usize {
     let mut count = 0;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                count += walkdir(&path, ext);
+                if !skip_dirs.iter().any(|d| entry.file_name() == *d) {
+                    count += walkdir(&path, ext, skip_dirs);
+                }
             } else if path.extension().is_some_and(|e| e == ext) {
                 count += 1;
             }
@@ -1694,5 +1813,30 @@ Caused by: java.lang.NullPointerException\n\
         assert!(out.contains("Aggregated Results"));
         assert!(out.contains("Publish Latency"));
         assert!(out.contains("Per-partition metrics recorded"));
+    }
+
+    #[test]
+    fn outputs_arg_joins_in_order() {
+        assert_eq!(outputs_arg(&[MetricsOutput::Html]), "html");
+        assert_eq!(
+            outputs_arg(&[MetricsOutput::Snapshot, MetricsOutput::Html]),
+            "snapshot,html"
+        );
+    }
+
+    /// The snapshot carries Grafana dashboard JSON; it must not be counted
+    /// as a result file, while result JSON in other subdirs still is.
+    #[test]
+    fn count_json_files_skips_snapshot_dashboards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("run-result.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/other.json"), "{}").unwrap();
+        let snap_dash = root.join(SNAPSHOT_DIR).join("dashboards");
+        std::fs::create_dir_all(&snap_dash).unwrap();
+        std::fs::write(snap_dash.join("kafka.json"), "{}").unwrap();
+        std::fs::write(snap_dash.join("system.json"), "{}").unwrap();
+        assert_eq!(count_json_files(root), 2);
     }
 }
