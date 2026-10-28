@@ -358,6 +358,10 @@ public abstract class BaseEngine implements AutoCloseable {
      * until it runs. Call after the topics exist and before consumers start.
      */
     protected void startFlink(ScenarioExpander.TestPoint point) throws IOException {
+        if (point.flink().sourceParallelism > point.partitionsPerTopic()) {
+            log.warn("flink.sourceParallelism {} exceeds the {} input partitions per topic: the extra source"
+                    + " subtasks will be idle", point.flink().sourceParallelism, point.partitionsPerTopic());
+        }
         flinkPipeline().start(point.flink(), point.dataset(), plannedTopology, point.kafkaConfig());
     }
 

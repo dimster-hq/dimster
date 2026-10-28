@@ -62,6 +62,8 @@ public class FlinkWorkloadTest {
         FlinkSpec flink = point.flink();
         assertEquals("SELECT * FROM source WHERE event_type = 'purchase'", flink.sql);
         assertEquals(1, flink.parallelism);
+        assertEquals(Integer.valueOf(1), flink.sourceParallelism);
+        assertEquals(Integer.valueOf(1), flink.sinkParallelism);
         assertEquals(10_000, flink.checkpointIntervalMs);
         assertEquals(FlinkSpec.DeliveryGuarantee.AT_LEAST_ONCE, flink.deliveryGuarantee);
         assertEquals(Integer.valueOf(3), flink.outputPartitionsPerTopic);
@@ -85,6 +87,40 @@ public class FlinkWorkloadTest {
         assertEquals(List.of(1, 2, 4), points.stream().map(p -> p.flink().parallelism).toList());
         assertTrue(points.stream().allMatch(p -> p.flink().outputPartitionsPerTopic == 6));
         assertTrue(points.stream().allMatch(p -> p.flink().sql.equals("SELECT * FROM source")));
+    }
+
+    @Test
+    public void sourceAndSinkParallelismDefaultToTheSweptParallelism() throws Exception {
+        List<TestPoint> points = expand(BASE + """
+                  flink:
+                    sql: SELECT * FROM source
+                    sourceParallelism: 1
+                scenarios:
+                  - name: fan-out
+                    flink:
+                      parallelism: [1, 2, 4]
+                      sinkParallelism: [4, 4, 8]
+                  - name: defaults
+                    flink:
+                      parallelism: 3
+                      sourceParallelism: 2
+                """);
+        assertEquals(4, points.size());
+        assertEquals(List.of(1, 1, 1, 2), points.stream().map(p -> p.flink().sourceParallelism).toList());
+        assertEquals(List.of(4, 4, 8, 3), points.stream().map(p -> p.flink().sinkParallelism).toList());
+        assertEquals(8, points.get(2).flink().slotsNeeded());
+    }
+
+    @Test
+    public void operatorParallelismIsValidatedAndOnlySetByItsFields() {
+        assertRejected(BASE + """
+                  flink: {sql: SELECT * FROM source, sinkParallelism: 0}
+                """, "flink.sinkParallelism must be at least 1");
+        assertRejected(BASE + """
+                  flink:
+                    sql: SELECT * FROM source
+                    sourceOptions: {scan.parallelism: 2}
+                """, "use flink.sourceParallelism or flink.sinkParallelism");
     }
 
     @Test
@@ -208,12 +244,17 @@ public class FlinkWorkloadTest {
     public void exampleWorkloadsExpand() throws Exception {
         var dir = new java.io.File("../run/workloads/flink-test");
         for (String name : List.of("quick-flink-filter-avro.yaml", "quick-flink-projection-json.yaml",
-                "flink-parallelism-sweep.yaml")) {
+                "flink-parallelism-sweep.yaml", "quick-flink-sink-fanout.yaml")) {
             Workload w = YAML.readValue(new java.io.File(dir, name), Workload.class);
             List<TestPoint> points = ScenarioExpander.expand(w.baseWorkload, w.scenarios, null, null, null,
                     w.runConfig);
             assertTrue(name, points.stream().allMatch(p -> p.flink() != null));
         }
+        Workload fanOut = YAML.readValue(new java.io.File(dir, "quick-flink-sink-fanout.yaml"), Workload.class);
+        FlinkSpec fanOutFlink = ScenarioExpander.expand(fanOut.baseWorkload, fanOut.scenarios, null, null, null,
+                fanOut.runConfig).getFirst().flink();
+        assertEquals(List.of(1, 1, 4, 4), List.of(fanOutFlink.parallelism, fanOutFlink.sourceParallelism,
+                fanOutFlink.sinkParallelism, fanOutFlink.outputPartitionsPerTopic));
         Workload sweep = YAML.readValue(new java.io.File(dir, "flink-parallelism-sweep.yaml"), Workload.class);
         assertEquals(List.of(1, 2, 4), ScenarioExpander.expand(sweep.baseWorkload, sweep.scenarios, null, null,
                 null, sweep.runConfig).stream().map(p -> p.flink().parallelism).toList());

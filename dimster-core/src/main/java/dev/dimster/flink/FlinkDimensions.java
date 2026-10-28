@@ -18,14 +18,16 @@ import java.util.List;
 public class FlinkDimensions {
     public List<String> sql;
     public List<Integer> parallelism;
+    public List<Integer> sourceParallelism;
+    public List<Integer> sinkParallelism;
     public List<Long> checkpointIntervalMs;
     public List<FlinkSpec.DeliveryGuarantee> deliveryGuarantee;
     public List<Integer> outputPartitionsPerTopic;
 
     /** Every list, in field order, for length checks. */
     public List<List<?>> lists() {
-        return java.util.Arrays.asList(sql, parallelism, checkpointIntervalMs, deliveryGuarantee,
-                outputPartitionsPerTopic);
+        return java.util.Arrays.asList(sql, parallelism, sourceParallelism, sinkParallelism,
+                checkpointIntervalMs, deliveryGuarantee, outputPartitionsPerTopic);
     }
 
     /**
@@ -34,8 +36,8 @@ public class FlinkDimensions {
      * singletons and mask a mismatch).
      */
     public void validate(String scenarioName) {
-        String[] names = {"sql", "parallelism", "checkpointIntervalMs", "deliveryGuarantee",
-                "outputPartitionsPerTopic"};
+        String[] names = {"sql", "parallelism", "sourceParallelism", "sinkParallelism",
+                "checkpointIntervalMs", "deliveryGuarantee", "outputPartitionsPerTopic"};
         List<List<?>> lists = lists();
         int n = -1;
         String first = null;
@@ -56,6 +58,12 @@ public class FlinkDimensions {
         FlinkSpec point = base != null ? base.copy() : new FlinkSpec();
         if (sql != null && !sql.isEmpty()) point.sql = at(sql, index);
         if (parallelism != null && !parallelism.isEmpty()) point.parallelism = at(parallelism, index);
+        if (sourceParallelism != null && !sourceParallelism.isEmpty()) {
+            point.sourceParallelism = at(sourceParallelism, index);
+        }
+        if (sinkParallelism != null && !sinkParallelism.isEmpty()) {
+            point.sinkParallelism = at(sinkParallelism, index);
+        }
         if (checkpointIntervalMs != null && !checkpointIntervalMs.isEmpty()) {
             point.checkpointIntervalMs = at(checkpointIntervalMs, index);
         }

@@ -33,10 +33,18 @@ public class FlinkSpec {
             "connector", "topic", "topic-pattern", "format",
             "properties.bootstrap.servers", "properties.group.id", "scan.startup.mode");
     private static final List<String> RESERVED_OPTION_PREFIXES = List.of("key.", "value.");
+    /** Table options set from {@link #sourceParallelism} and {@link #sinkParallelism}. */
+    static final String SCAN_PARALLELISM = "scan.parallelism";
+    static final String SINK_PARALLELISM = "sink.parallelism";
 
     /** A SELECT over the {@code source} table; must keep {@code _dimster} and {@code _dimster_ts}. */
     public String sql;
+    /** The job's default parallelism: the query's operators, and the source and sink unless set. */
     public int parallelism = 1;
+    /** Parallelism of the Kafka source. Null means {@link #parallelism}; resolved per test point. */
+    public Integer sourceParallelism;
+    /** Parallelism of the Kafka sink. Null means {@link #parallelism}; resolved per test point. */
+    public Integer sinkParallelism;
     /** 0 disables checkpointing. */
     public long checkpointIntervalMs = 10_000;
     public DeliveryGuarantee deliveryGuarantee = DeliveryGuarantee.AT_LEAST_ONCE;
@@ -53,6 +61,8 @@ public class FlinkSpec {
         FlinkSpec c = new FlinkSpec();
         c.sql = sql;
         c.parallelism = parallelism;
+        c.sourceParallelism = sourceParallelism;
+        c.sinkParallelism = sinkParallelism;
         c.checkpointIntervalMs = checkpointIntervalMs;
         c.deliveryGuarantee = deliveryGuarantee;
         c.outputPartitionsPerTopic = outputPartitionsPerTopic;
@@ -60,6 +70,24 @@ public class FlinkSpec {
         c.sourceOptions = sourceOptions == null ? new LinkedHashMap<>() : new LinkedHashMap<>(sourceOptions);
         c.sinkOptions = sinkOptions == null ? new LinkedHashMap<>() : new LinkedHashMap<>(sinkOptions);
         return c;
+    }
+
+    /**
+     * Task slots the job needs: with Flink's default slot sharing, one per
+     * subtask of its most parallel operator.
+     */
+    public int slotsNeeded() {
+        return Math.max(parallelism, Math.max(resolved(sourceParallelism), resolved(sinkParallelism)));
+    }
+
+    /** Sets an unset source or sink parallelism to {@link #parallelism}, once per test point. */
+    public void resolveOperatorParallelism() {
+        sourceParallelism = resolved(sourceParallelism);
+        sinkParallelism = resolved(sinkParallelism);
+    }
+
+    int resolved(Integer operatorParallelism) {
+        return operatorParallelism != null ? operatorParallelism : parallelism;
     }
 
     /**
@@ -106,6 +134,12 @@ public class FlinkSpec {
         if (parallelism < 1) {
             fail(scenarioName, "flink.parallelism must be at least 1 (got " + parallelism + ")");
         }
+        if (sourceParallelism != null && sourceParallelism < 1) {
+            fail(scenarioName, "flink.sourceParallelism must be at least 1 (got " + sourceParallelism + ")");
+        }
+        if (sinkParallelism != null && sinkParallelism < 1) {
+            fail(scenarioName, "flink.sinkParallelism must be at least 1 (got " + sinkParallelism + ")");
+        }
         if (checkpointIntervalMs < 0) {
             fail(scenarioName, "flink.checkpointIntervalMs cannot be negative");
         }
@@ -123,6 +157,10 @@ public class FlinkSpec {
     private static void checkOptions(String scenarioName, String field, Map<String, String> options) {
         if (options == null) return;
         for (String key : options.keySet()) {
+            if (key.equals(SCAN_PARALLELISM) || key.equals(SINK_PARALLELISM)) {
+                fail(scenarioName, "flink." + field + " cannot set '" + key
+                        + "': use flink.sourceParallelism or flink.sinkParallelism");
+            }
             if (RESERVED_OPTIONS.contains(key) || RESERVED_OPTION_PREFIXES.stream().anyMatch(key::startsWith)) {
                 fail(scenarioName, "flink." + field + " cannot set '" + key
                         + "': Dimster sets the connector, topics, formats, key and bootstrap servers");

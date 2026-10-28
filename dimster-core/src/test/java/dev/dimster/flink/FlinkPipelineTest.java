@@ -211,6 +211,16 @@ public class FlinkPipelineTest {
     }
 
     @Test
+    public void slotsAreCountedForTheMostParallelOperator() {
+        flink.slotsAvailable = 2;
+        FlinkSpec fanOut = spec(1);
+        fanOut.sinkParallelism = 4;
+        var e = assertThrows(IllegalStateException.class,
+                () -> pipeline.start(fanOut, clicks(), topology(), kafka()));
+        assertTrue(e.getMessage(), e.getMessage().contains("needs 4 free task slots"));
+    }
+
+    @Test
     public void jobThatFailsOnStartupReportsTheRootException() {
         flink.initialState = "FAILED";
         var e = assertThrows(IllegalStateException.class,

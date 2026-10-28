@@ -104,7 +104,7 @@ public class FlinkPipeline {
         if (topology.pipelineTopics().isEmpty()) {
             throw new IllegalArgumentException("The topology has no Flink pipelines");
         }
-        awaitSlots(flink.parallelism);
+        awaitSlots(flink.slotsNeeded());
 
         // Input topics are <prefix>-<suffix>-NNNN: name the job after the suffix.
         String firstTopic = topology.producerTopics().getFirst();
@@ -114,8 +114,9 @@ public class FlinkPipeline {
 
         FlinkJobSpec spec = FlinkJobSpec.build(jobName, flink, dataset, topology.pipelineTopics(), groupId,
                 kafkaConfig.commonProperties());
-        log.info("Submitting Flink job {} ({} pipelines, parallelism {}, {})", jobName,
-                spec.pipelines().size(), flink.parallelism, flink.deliveryGuarantee);
+        log.info("Submitting Flink job {} ({} pipelines, parallelism {}, source {}, sink {}, {})", jobName,
+                spec.pipelines().size(), flink.parallelism, flink.resolved(flink.sourceParallelism),
+                flink.resolved(flink.sinkParallelism), flink.deliveryGuarantee);
         jobId = client.submit(spec.toBase64());
         log.info("Flink job {} submitted as {}; waiting for it to be running", jobName, jobId);
         awaitRunning();
@@ -136,10 +137,11 @@ public class FlinkPipeline {
             overview = client.overview();
         }
         if (overview.slotsAvailable() < needed) {
-            throw new IllegalStateException(("Flink parallelism %d needs %d free task slots but the cluster has %d"
-                    + " of %d available. Lower flink.parallelism or add task managers/slots"
+            throw new IllegalStateException(("The Flink job needs %d free task slots (its highest parallelism of"
+                    + " flink.parallelism, sourceParallelism and sinkParallelism) but the cluster has %d of %d"
+                    + " available. Lower the parallelism or add task managers/slots"
                     + " (flink.taskmanagers in dimster-config.yaml).")
-                    .formatted(needed, needed, overview.slotsAvailable(), overview.slotsTotal()));
+                    .formatted(needed, overview.slotsAvailable(), overview.slotsTotal()));
         }
     }
 

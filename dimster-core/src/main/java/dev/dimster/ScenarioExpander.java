@@ -56,7 +56,7 @@ public class ScenarioExpander {
             RunConfig runConfig,
             /* The dataset records are generated from: the workload's, or the payload dataset. */
             ResolvedDataset dataset,
-            /* The Flink SQL stage, fully resolved (outputPartitionsPerTopic set), or null for none. */
+            /* The Flink SQL stage, fully resolved (source/sink parallelism and outputPartitionsPerTopic set), or null for none. */
             FlinkSpec flink
     ) {
         public String toLogString() {
@@ -118,6 +118,8 @@ public class ScenarioExpander {
             }
             if (flink != null) {
                 sb.append("\n    Flink: parallelism=").append(flink.parallelism)
+                  .append(", sourceParallelism=").append(flink.sourceParallelism)
+                  .append(", sinkParallelism=").append(flink.sinkParallelism)
                   .append(", deliveryGuarantee=").append(flink.deliveryGuarantee)
                   .append(", checkpointIntervalMs=").append(flink.checkpointIntervalMs)
                   .append(", outputPartitionsPerTopic=").append(flink.outputPartitionsPerTopic)
@@ -668,7 +670,9 @@ public class ScenarioExpander {
 
     /**
      * Resolves and validates one test point's Flink stage: a copy with the
-     * output partition count filled in, or null when the point has none. A
+     * source and sink parallelism (default: parallelism) and the output
+     * partition count (default: the input's) filled in, or null when the
+     * point has none. A
      * Flink stage needs a generated dataset, whose schema the Flink source
      * table mirrors; the payload dataset is opaque bytes.
      */
@@ -676,6 +680,7 @@ public class ScenarioExpander {
                                   int partitionsPerTopic) {
         if (spec == null) return null;
         FlinkSpec point = spec.copy();
+        point.resolveOperatorParallelism();
         if (point.outputPartitionsPerTopic == null) {
             point.outputPartitionsPerTopic = partitionsPerTopic;
         }

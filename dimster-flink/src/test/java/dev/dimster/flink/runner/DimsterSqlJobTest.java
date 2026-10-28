@@ -1,5 +1,8 @@
 package dev.dimster.flink.runner;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.table.api.ExplainDetail;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
 import org.junit.Test;
@@ -54,6 +57,29 @@ public class DimsterSqlJobTest {
         // Planned per row in the Calc that feeds the sink's headers metadata.
         assertTrue(plan, plan.contains("Calc(select=[_dimster, event_id"));
         assertTrue(plan, plan.contains("EmitTimeHeaders*() AS headers"));
+    }
+
+    @Test
+    public void sourceAndSinkRunAtTheirOwnParallelism() throws Exception {
+        var base = spec("AVRO", "SELECT * FROM source", 1);
+        var spec = new FlinkJobSpec(base.jobName(), base.sql(), base.format(), base.columns(), base.pipelines(),
+                base.sourceGroupId(), base.kafkaProperties(), 2, base.deliveryGuarantee(),
+                base.checkpointIntervalMs(), base.config(),
+                Map.of("scan.parallelism", "1"), Map.of("sink.parallelism", "4"));
+        TableEnvironment tEnv = TableEnvironment.create(DimsterSqlJob.settings(spec));
+        String plan = DimsterSqlJob.buildStatementSet(tEnv, spec).explain(ExplainDetail.JSON_EXECUTION_PLAN);
+        JsonNode nodes = new ObjectMapper()
+                .readTree(plan.substring(plan.indexOf('{', plan.indexOf("== Physical Execution Plan =="))))
+                .get("nodes");
+
+        // The query runs at the job's parallelism, between the two, with a
+        // rebalance on each side where the parallelism changes.
+        Map<String, Integer> parallelism = new java.util.HashMap<>();
+        nodes.forEach(n -> parallelism.put(n.get("type").asText().replaceAll("\\[\\d+]", ""),
+                n.get("parallelism").asInt()));
+        assertEquals(Integer.valueOf(1), parallelism.get("Source: source"));
+        assertEquals(Integer.valueOf(2), parallelism.get("Calc"));
+        assertEquals(Integer.valueOf(4), parallelism.get("sink: Writer"));
     }
 
     @Test

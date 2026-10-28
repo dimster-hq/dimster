@@ -113,4 +113,22 @@ public class FlinkJobSpecTest {
         assertEquals(Set.of("bootstrap.servers", "security.protocol"),
                 Set.copyOf(spec.kafkaProperties().keySet()));
     }
+
+    /** Source and sink parallelism reach the runner as the connector's own table options. */
+    @Test
+    public void operatorParallelismBecomesTableOptions() {
+        var flink = new FlinkSpec();
+        flink.sql = "SELECT * FROM source";
+        flink.parallelism = 2;
+        flink.sinkParallelism = 4;
+        flink.sinkOptions.put("properties.linger.ms", "5");
+        FlinkJobSpec spec = FlinkJobSpec.build("dimster-abc", flink, dataset("clicks", RecordFormat.AVRO),
+                new LinkedHashMap<>(java.util.Map.of("t", "t-out")), "g", new Properties());
+
+        assertEquals("2", spec.sourceOptions().get("scan.parallelism"));
+        assertEquals("4", spec.sinkOptions().get("sink.parallelism"));
+        assertEquals("5", spec.sinkOptions().get("properties.linger.ms"));
+        // The workload's own options are left as they were.
+        assertFalse(flink.sinkOptions.containsKey("sink.parallelism"));
+    }
 }

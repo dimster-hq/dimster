@@ -74,7 +74,20 @@ public record FlinkJobSpec(
                 .forEach(k -> kafka.put(k, kafkaCommon.getProperty(k)));
         return new FlinkJobSpec(jobName, flink.sql, dataset.format().name(), columns(dataset), pipelines,
                 sourceGroupId, kafka, flink.parallelism, flink.deliveryGuarantee.name(),
-                flink.checkpointIntervalMs, flink.config, flink.sourceOptions, flink.sinkOptions);
+                flink.checkpointIntervalMs, flink.config,
+                withParallelism(flink.sourceOptions, FlinkSpec.SCAN_PARALLELISM, flink.resolved(flink.sourceParallelism)),
+                withParallelism(flink.sinkOptions, FlinkSpec.SINK_PARALLELISM, flink.resolved(flink.sinkParallelism)));
+    }
+
+    /**
+     * The table options plus the operator's parallelism. Source and sink
+     * parallelism travel as the connector's own table options, so the runner
+     * needs no field of its own for them.
+     */
+    private static Map<String, String> withParallelism(Map<String, String> options, String key, int parallelism) {
+        Map<String, String> m = options == null ? new LinkedHashMap<>() : new LinkedHashMap<>(options);
+        m.put(key, Integer.toString(parallelism));
+        return m;
     }
 
     /**

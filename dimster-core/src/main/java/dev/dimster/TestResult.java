@@ -120,6 +120,10 @@ public class TestResult {
         @JsonInclude(JsonInclude.Include.NON_NULL)
         public Integer flinkParallelism;
         @JsonInclude(JsonInclude.Include.NON_NULL)
+        public Integer flinkSourceParallelism;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public Integer flinkSinkParallelism;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
         public String flinkDeliveryGuarantee;
         @JsonInclude(JsonInclude.Include.NON_NULL)
         public Integer flinkOutputPartitionsPerTopic;
@@ -128,6 +132,8 @@ public class TestResult {
         public void setFlink(FlinkSpec flink) {
             if (flink != null) {
                 flinkParallelism = flink.parallelism;
+                flinkSourceParallelism = flink.sourceParallelism;
+                flinkSinkParallelism = flink.sinkParallelism;
                 flinkDeliveryGuarantee = flink.deliveryGuarantee.name();
                 flinkOutputPartitionsPerTopic = flink.outputPartitionsPerTopic;
             }

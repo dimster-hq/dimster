@@ -1,0 +1,34 @@
+# One input partition read by one source subtask, fanned out to four sink
+# subtasks that write a four-partition output topic. The query runs at the
+# job's parallelism (1), chained to the source; the sink receives its records
+# round-robin. sinkOptions sink.partitioner: fixed would instead pin sink
+# subtask i to output partition i.
+#
+# Needs 4 free task slots (the highest of parallelism, sourceParallelism and
+# sinkParallelism).
+name: Quick Flink sink fan-out - clicks AVRO
+
+engineConfig:
+  cooldownMinutes: 0
+
+runConfig:
+  testDurationMinutes: 2
+  warmupDurationMinutes: 0
+  rampIntervals: 0
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 1
+  producersPerTopic: 1
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 4
+  producerRate: 5000
+  dataset:
+    preset: clicks
+    format: AVRO
+  flink:
+    sql: SELECT * FROM source
+    parallelism: 1
+    sourceParallelism: 1
+    sinkParallelism: 4
+    outputPartitionsPerTopic: 4
