@@ -131,7 +131,9 @@ public class RepeatMerger {
             // Average drain scalars
             m.drain.backlogSizeBytes = avgLong(outcomes, o -> o.drain.backlogSizeBytes);
             m.drain.backlogMessages = avgLong(outcomes, o -> o.drain.backlogMessages);
-            m.drain.buildDurationMs = avgLong(outcomes, o -> o.drain.buildDurationMs);
+            // Repeats that drained a reused backlog had no build: average the builds only.
+            var built = outcomes.stream().filter(o -> o.drain.reusedBacklogFrom == null).toList();
+            m.drain.buildDurationMs = built.isEmpty() ? 0 : avgLong(built, o -> o.drain.buildDurationMs);
             m.drain.drainDurationMs = avgLong(outcomes, o -> o.drain.drainDurationMs);
             m.drain.backlogProducerRate = outcomes.getFirst().drain.backlogProducerRate;
             // Time series left empty in merged result

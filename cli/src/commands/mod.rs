@@ -8,6 +8,7 @@ pub mod deploy;
 pub mod download_kafka_logs;
 pub mod flink;
 pub mod health;
+pub mod hooks;
 pub mod init;
 pub mod inspect;
 pub mod kafka;

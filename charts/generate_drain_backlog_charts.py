@@ -7,6 +7,10 @@ Usage:
 
 Scans --results dir recursively for JSON files where mode == "drain-backlog",
 generates one HTML file per result using Chart.js for visualization.
+
+Each drain's disk reads, which show whether it was served from disk or from
+the page cache, come from drain-disk-reads.json beside the result. The
+end-of-run metrics export measures them in Prometheus.
 """
 
 import argparse
@@ -55,6 +59,52 @@ def find_drain_backlog_json_files(results_dir):
             except IOError:
                 continue
     return found
+
+
+# Written beside the result JSON by the end-of-run metrics export (export.py).
+DISK_READS_FILE = "drain-disk-reads.json"
+
+
+def find_disk_reads_file(result_path, results_root):
+    """The disk reads measured for the run a result belongs to, or None: the
+    nearest file in the result's directory or a parent, up to results_root."""
+    root = os.path.abspath(results_root)
+    d = os.path.dirname(os.path.abspath(result_path))
+    while True:
+        candidate = os.path.join(d, DISK_READS_FILE)
+        if os.path.isfile(candidate):
+            return candidate
+        if d == root or os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
+def load_disk_reads(path):
+    """{(drainStartTime, drainEndTime): bytes read from disk} from a disk reads file."""
+    try:
+        with open(path) as fh:
+            drains = json.load(fh).get("drains", [])
+    except (IOError, json.JSONDecodeError, AttributeError) as e:
+        print(f"Warning: ignoring {path}: {e}", file=sys.stderr)
+        return {}
+    return {(d["drainStartTime"], d["drainEndTime"]): d["diskReadBytes"] for d in drains}
+
+
+def measure_disk_reads(data, reads_by_window):
+    """{(scenario index, test index): (bytes read, fraction of bytes drained)}
+    for each drain whose window has a measurement."""
+    reads = {}
+    if not reads_by_window:
+        return reads
+    for s_idx, scenario in enumerate(data.get("scenarioResults", [])):
+        for t_idx, test in enumerate(scenario.get("tests", [])):
+            drain = test.get("drain", {})
+            read = reads_by_window.get((drain.get("drainStartTime"), drain.get("drainEndTime")))
+            if read is None:
+                continue
+            drained = drain.get("backlogSizeBytes", 0)
+            reads[(s_idx, t_idx)] = (read, read / drained if drained > 0 else None)
+    return reads
 
 
 def avg(lst):
@@ -128,8 +178,10 @@ def line_options(title, y_label, x_label):
     }
 
 
-def build_chart_configs(data):
-    """Build all chart configs for a drain-backlog result."""
+def build_chart_configs(data, disk_reads=None):
+    """Build all chart configs for a drain-backlog result. disk_reads is
+    measure_disk_reads() output."""
+    disk_reads = disk_reads or {}
     config = data.get("config", {})
     drain_config = config.get("drainBacklogConfig", {})
     sample_rate_ms = drain_config.get("sampleRateMillis", 10000)
@@ -183,6 +235,29 @@ def build_chart_configs(data):
             },
         })
         chart_idx += 1
+
+        # --- 2b. Disk Read Fraction (bar), when the drains' disk reads were measured ---
+        # Disk reads during the drain / bytes drained: ~1 means served from
+        # disk (cold cache), ~0 from the page cache. Shows whether test points
+        # that drain a reused backlog started from the same cache state.
+        fractions = [disk_reads.get((s_idx, t_idx), (None, None))[1] for t_idx in range(len(tests))]
+        if any(f is not None for f in fractions):
+            chart_configs.append({
+                "id": f"chart-{s_idx}-{chart_idx}",
+                "config": {
+                    "type": "bar",
+                    "data": {
+                        "labels": labels,
+                        "datasets": [{
+                            "label": "Disk Reads / Bytes Drained",
+                            "data": [round(f, 3) if f is not None else None for f in fractions],
+                            "backgroundColor": COLORS[3],
+                        }],
+                    },
+                    "options": bar_options("Disk Read Fraction", "fraction of bytes drained"),
+                },
+            })
+            chart_idx += 1
 
         # --- 3. Backlog Messages over Time ---
         max_len = max((len(t.get("drain", {}).get("backlogMessagesOverTime", [])) for t in tests), default=0)
@@ -312,7 +387,25 @@ def build_config_section(data):
     """
 
 
-def build_scenario_sections(scenarios, chart_counts):
+def build_cell(drain):
+    """Build time, or which test point's backlog a reused test point drained."""
+    reused_from = drain.get("reusedBacklogFrom")
+    if reused_from is None:
+        return f'{round(drain.get("buildDurationMs", 0) / 1000, 1)}s'
+    return f"reused (test point {reused_from + 1})"
+
+
+def disk_cell(reading):
+    """Bytes read from disk during the drain and their share of the bytes drained."""
+    if reading is None:
+        return "-"
+    read, fraction = reading
+    share = f" ({fraction * 100:.0f}%)" if fraction is not None else ""
+    return f"{round(read / 1_000_000):,} MB{share}"
+
+
+def build_scenario_sections(scenarios, chart_counts, disk_reads=None):
+    disk_reads = disk_reads or {}
     sections = []
     for s_idx, scenario in enumerate(scenarios):
         name = scenario.get("name", f"Scenario {s_idx + 1}")
@@ -321,7 +414,7 @@ def build_scenario_sections(scenarios, chart_counts):
 
         # Summary table
         table_rows = []
-        for t in tests:
+        for t_idx, t in enumerate(tests):
             wc = t.get("workloadConfig", {})
             d = t.get("drain", {})
             table_rows.append(
@@ -329,9 +422,10 @@ def build_scenario_sections(scenarios, chart_counts):
                 f'<td>{t.get("label", "")}</td>'
                 f'<td>{d.get("backlogMessages", 0):,}</td>'
                 f'<td>{round(d.get("backlogSizeBytes", 0) / 1_000_000):,} MB</td>'
-                f'<td>{round(d.get("buildDurationMs", 0) / 1000, 1)}s</td>'
+                f'<td>{build_cell(d)}</td>'
                 f'<td>{round(d.get("drainDurationMs", 0) / 1000, 1)}s</td>'
-                f'<td>{"paused" if d.get("backlogProducerRate", -1) == -1 else str(d.get("backlogProducerRate")) + " msg/s"}</td>'
+                f'<td>{disk_cell(disk_reads.get((s_idx, t_idx)))}</td>'
+                f'<td>{"paused" if d.get("backlogProducerRate", 0) <= 0 else str(d.get("backlogProducerRate")) + " msg/s"}</td>'
                 f'<td>{wc.get("partitionsPerTopic", "")}</td>'
                 f'<td>{wc.get("consumersPerGroup", "")}</td>'
                 f'</tr>'
@@ -344,7 +438,7 @@ def build_scenario_sections(scenarios, chart_counts):
                 <table class="config-table">
                     <thead><tr>
                         <th>Label</th><th>Backlog Msgs</th><th>Backlog Size</th>
-                        <th>Build Time</th><th>Drain Time</th><th>Producer Rate (drain)</th>
+                        <th>Build Time</th><th>Drain Time</th><th>Disk Reads</th><th>Producer Rate (drain)</th>
                         <th>Partitions</th><th>Consumers/Group</th>
                     </tr></thead>
                     <tbody>{"".join(table_rows)}</tbody>
@@ -372,7 +466,7 @@ def build_scenario_sections(scenarios, chart_counts):
     return "\n".join(sections)
 
 
-def build_html(data, chart_configs, chart_counts):
+def build_html(data, chart_configs, chart_counts, disk_reads=None):
     metadata = data.get("metadata", {})
     config = data.get("config", {})
     drain_config = config.get("drainBacklogConfig", {})
@@ -391,7 +485,7 @@ def build_html(data, chart_configs, chart_counts):
 
     sidebar_html = build_sidebar_html(scenarios)
     config_section_html = build_config_section(data)
-    sections_html = build_scenario_sections(scenarios, chart_counts)
+    sections_html = build_scenario_sections(scenarios, chart_counts, disk_reads)
     configs_json = json.dumps(chart_configs)
 
     return f"""<!DOCTYPE html>
@@ -627,6 +721,7 @@ def main():
     if not files:
         sys.exit(0)
 
+    reads_by_file = {}
     for path, data in files:
         rel = os.path.relpath(path, args.results)
         out_name = os.path.splitext(rel)[0] + ".html"
@@ -634,8 +729,12 @@ def main():
 
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-        chart_configs, chart_counts = build_chart_configs(data)
-        html = build_html(data, chart_configs, chart_counts)
+        reads_file = find_disk_reads_file(path, args.results)
+        if reads_file and reads_file not in reads_by_file:
+            reads_by_file[reads_file] = load_disk_reads(reads_file)
+        disk_reads = measure_disk_reads(data, reads_by_file.get(reads_file))
+        chart_configs, chart_counts = build_chart_configs(data, disk_reads)
+        html = build_html(data, chart_configs, chart_counts, disk_reads)
 
         with open(out_path, "w") as fh:
             fh.write(html)

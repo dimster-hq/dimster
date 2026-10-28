@@ -18,6 +18,7 @@ import dev.dimster.worker.topology.TopologyPlanner;
 import dev.dimster.worker.commands.CountersStats;
 import dev.dimster.worker.commands.PeriodStats;
 import dev.dimster.worker.commands.ProducerWorkAssignment;
+import dev.dimster.hooks.HookPoint;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -155,6 +156,7 @@ public class ExploreEngine extends BaseEngine {
                 if (scenarioResult.beginTime == null) {
                     scenarioResult.beginTime = currentScenarioTimestamp();
                 }
+                runHooks(HookPoint.BEFORE_TEST_POINT, point, i, totalTests, List.of());
                 ExploreResult.TestOutcome outcome = runSingleTest(point);
                 scenarioResult.endTime = currentScenarioTimestamp();
                 scenarioResult.tests.add(outcome);
@@ -170,7 +172,7 @@ public class ExploreEngine extends BaseEngine {
                     checkpointCallback.onTestPointCompleted(i, result);
                 }
 
-                cooldownBetweenTests(exploreWorkload.engineConfig.cooldownMinutes, i, totalTests);
+                cooldownBetweenTests(exploreWorkload.engineConfig.cooldownMinutes, point, i, totalTests);
             }
         } catch (StopRequestedException e) {
             // Surface the stop to BenchmarkRunner so it does not treat the

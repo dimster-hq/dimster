@@ -17,6 +17,10 @@ data:
     snapshot  raw samples of every metric the dashboards reference, as
               gzipped OpenMetrics in --snapshot-dir, plus the dashboard JSON.
 
+    Independently of --outputs, --drain-windows (drain-backlog runs) writes
+    the bytes the nodes read from disk during each drain to --disk-reads-file,
+    for the drain charts.
+
     Usage:
         python3 export.py --prometheus-url http://prometheus:9090 \
             --start 1711900000 --end 1711903600 \
@@ -1098,6 +1102,13 @@ data:
                             help='JSON list of {name, start, end} per scenario; '
                                  'when provided, window cuts align with scenario '
                                  'boundaries instead of even time slices')
+        # Drain-backlog: the CLI passes each drain's window (list of
+        # {start, end} ISO-8601 instants) to measure its disk reads.
+        parser.add_argument('--drain-windows', default='',
+                            help='JSON list of {start, end} per drain; writes '
+                                 'each drain\'s disk reads to --disk-reads-file')
+        parser.add_argument('--disk-reads-file', default='',
+                            help='Output file for --drain-windows')
         args = parser.parse_args()
 
         outputs = {o.strip() for o in args.outputs.split(',') if o.strip()}
@@ -1116,6 +1127,16 @@ data:
                 'prometheus-snapshot')
             write_snapshot(args.prometheus_url, args.start - buffer_s,
                            args.end + buffer_s, dashboard_files, snapshot_dir)
+        if args.drain_windows and args.disk_reads_file:
+            try:
+                windows = json.loads(args.drain_windows)
+            except json.JSONDecodeError as e:
+                print(f'  Warning: could not parse --drain-windows ({e})',
+                      file=sys.stderr)
+                windows = []
+            if windows:
+                write_drain_disk_reads(args.prometheus_url, windows,
+                                       args.disk_reads_file)
 
     def find_dashboard_files(dashboard_dirs):
         """(path, basename) of every dashboard JSON in the comma-separated
@@ -1135,6 +1156,68 @@ data:
                     filename.replace('.json', ''),
                 ))
         return dashboard_files
+
+    # -----------------------------------------------------------------------
+    # Drain disk reads
+    # -----------------------------------------------------------------------
+    # Whole-disk device names: NVMe namespaces, SCSI, Xen and virtio disks.
+    # Partitions and md/dm devices are left out, as they would count reads twice.
+    WHOLE_DISK_DEVICES = 'nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+'
+
+    # How far past a drain's end to evaluate, so the scrape after the end
+    # (scrape interval 10s) is included; the extra seconds are idle.
+    DISK_READ_SCRAPE_SLACK_S = 15
+
+    def parse_instant(text):
+        """An ISO-8601 instant as written by Java's Instant.toString(), as a
+        Unix timestamp."""
+        return datetime.fromisoformat(text.replace('Z', '+00:00')).timestamp()
+
+    def disk_read_query(window_s):
+        """PromQL for the bytes read from disk over the window_s seconds
+        before the evaluation time: the counter then minus the counter
+        window_s earlier. Not increase(): over a window of a few scrapes it
+        only sees the samples inside the window, missing reads between the
+        last sample before the window and the first inside it, which for a
+        short drain is most of them. An offset reads the last sample at or
+        before the start."""
+        selector = f'node_disk_read_bytes_total{{device=~"{WHOLE_DISK_DEVICES}"}}'
+        return f'sum({selector}) - sum({selector} offset {window_s}s)'
+
+    def drain_disk_reads(prom_url, start, end):
+        """Bytes the nodes read from disk between two Unix timestamps, summed
+        over every scraped node's disks, or None when Prometheus has no
+        answer or a counter reset (node restart) in the window."""
+        eval_at = math.ceil(end) + DISK_READ_SCRAPE_SLACK_S
+        window_s = max(1, eval_at - math.floor(start))
+        result = prom_query_instant(prom_url, disk_read_query(window_s), eval_at)
+        if not result or result.get('status') != 'success':
+            return None
+        series = result.get('data', {}).get('result', [])
+        if not series:
+            return None
+        read = int(float(series[0]['value'][1]))
+        return read if read >= 0 else None
+
+    def write_drain_disk_reads(prom_url, windows, path):
+        """Writes {"drains": [{drainStartTime, drainEndTime, diskReadBytes}]}
+        for each drain window Prometheus could measure."""
+        drains = []
+        for w in windows:
+            try:
+                read = drain_disk_reads(prom_url, parse_instant(w['start']),
+                                        parse_instant(w['end']))
+            except (KeyError, ValueError) as e:
+                print(f'  Warning: skipping drain window {w}: {e}', file=sys.stderr)
+                continue
+            if read is not None:
+                drains.append({'drainStartTime': w['start'],
+                               'drainEndTime': w['end'],
+                               'diskReadBytes': read})
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump({'drains': drains}, f, indent=2)
+        print(f'  Disk reads of {len(drains)}/{len(windows)} drain(s) written to {path}')
 
     def write_html_dashboards(args, dashboard_files):
         """Render every dashboard to static HTML, split into time windows."""

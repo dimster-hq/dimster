@@ -219,21 +219,27 @@ def text_or_empty(value):
     return "" if value is None else value
 
 
+# Result metadata fields Dimster itself writes, so overview panels list only
+# user metadata as "Metadata <key>". "hooks" (hook executions) is long and
+# its configuration already appears in the config section.
+BUILTIN_METADATA_KEYS = {
+    "dimsterVersion",
+    "name",
+    "kafkaConfigName",
+    "environment",
+    "system",
+    "hardware",
+    "beginTime",
+    "endTime",
+    "extraDimensions",
+    "hooks",
+}
+
+
 def metadata_annotation_html(metadata):
     """Render user metadata and extraDimensions for overview panels."""
-    builtin = {
-        "dimsterVersion",
-        "name",
-        "kafkaConfigName",
-        "environment",
-        "system",
-        "hardware",
-        "beginTime",
-        "endTime",
-        "extraDimensions",
-    }
     items = []
-    for key in sorted(k for k in metadata.keys() if k not in builtin):
+    for key in sorted(k for k in metadata.keys() if k not in BUILTIN_METADATA_KEYS):
         items.append(meta_item(f"Metadata {key}", metadata.get(key)))
     dimensions = metadata.get("extraDimensions")
     if isinstance(dimensions, dict):

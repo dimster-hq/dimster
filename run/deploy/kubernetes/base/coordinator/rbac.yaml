@@ -1,0 +1,46 @@
+# Identity for workload hook scripts (engineConfig.hooks), which the
+# coordinator runs as local processes. The coordinator itself never calls
+# the Kubernetes API; this Role is what lets a hook script use kubectl, for
+# example to restart brokers or start a helper pod that evicts a topic's
+# page cache. Scoped to the Dimster namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: benchmark-coordinator
+  namespace: dimster
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: benchmark-coordinator-hooks
+  namespace: dimster
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: benchmark-coordinator-hooks
+  namespace: dimster
+subjects:
+  - kind: ServiceAccount
+    name: benchmark-coordinator
+    namespace: dimster
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: benchmark-coordinator-hooks

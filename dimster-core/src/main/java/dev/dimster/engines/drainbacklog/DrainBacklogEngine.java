@@ -17,6 +17,7 @@ import dev.dimster.worker.topology.TopologyPlanner;
 import dev.dimster.worker.commands.CountersStats;
 import dev.dimster.worker.commands.PeriodStats;
 import dev.dimster.worker.commands.ProducerWorkAssignment;
+import dev.dimster.hooks.HookPoint;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,8 +30,14 @@ import java.util.stream.Collectors;
 import org.apache.kafka.common.TopicPartition;
 
 /**
- * Orchestrates drain-backlog tests: builds a consumer backlog by pausing consumers,
- * then measures the time to drain the backlog with optional producer load.
+ * Orchestrates drain-backlog tests: builds a backlog with no consumers running,
+ * then measures the time to drain it, with optional producer load.
+ *
+ * With {@code drainBacklogConfig.reuseBacklog}, consecutive test points that
+ * differ only in drain-side settings drain the same backlog instead of each
+ * building their own (rules in {@link BacklogReuse}). Isolation between those
+ * drains (cache eviction, broker restarts) is left to beforeDrain hooks; the
+ * engine only waits for the cluster to settle afterwards.
  */
 public class DrainBacklogEngine extends BaseEngine {
 
@@ -42,10 +49,21 @@ public class DrainBacklogEngine extends BaseEngine {
     private static final long FIRST_RECEIVE_CHECK_INTERVAL_MS = 100;
     /** Backlog (messages) at or below which the drain is considered complete. */
     private static final long DRAINED_THRESHOLD_MSGS = 1000;
+    /**
+     * Quiet period before consumers start, after the build or reuse check,
+     * the beforeDrain hooks and the settle wait. Lets restarted brokers and
+     * just-elected leaders finish settling down, so each drain starts from a
+     * comparable state. Outside the measured drain, which starts at the first
+     * consumed message.
+     */
+    private static final long PRE_DRAIN_PAUSE_MS = 10_000;
 
     private final DrainBacklogWorkload workload;
     private final BaseWorkload base;
     private final KafkaConfig fileKafkaConfig;
+
+    /** With reuseBacklog: the backlog on the cluster that a test point may drain again, or null. */
+    private ReusableBacklog backlog;
 
     public DrainBacklogEngine(DrainBacklogWorkload workload, Worker worker, TopologyPlanner topologyPlanner,
                               KafkaConfig fileKafkaConfig, AtomicBoolean stopRequested) {
@@ -77,6 +95,17 @@ public class DrainBacklogEngine extends BaseEngine {
 
         applyPrintMessages(allPoints);
 
+        // With reuse, each point's build identity decides whether it can drain
+        // the previous point's backlog. A resumed run picks the backlog up from
+        // the partial result (and re-checks it is intact before using it).
+        boolean reuse = workload.drainBacklogConfig.reuseBacklog;
+        List<String> identities = null;
+        if (reuse) {
+            BacklogReuse.validate(allPoints);
+            identities = allPoints.stream().map(BacklogReuse::identity).toList();
+            backlog = result.reusableBacklog;
+        }
+
         try {
             for (int i = startTestPoint; i < allPoints.size(); i++) {
                 if (stopRequested.get()) break;
@@ -95,27 +124,46 @@ public class DrainBacklogEngine extends BaseEngine {
                 log.info("--- Drain-backlog test {}/{}: {} ---", i + 1, totalTests, point.label());
                 log.info("Merged workload:\n{}", point.toLogString());
 
+                // Unrecorded, and outside the scenario's time window.
+                if (point.drainBacklogConfig().warmup) {
+                    warmUp(point, i, totalTests, reuse ? identities.get(i) : null);
+                }
+
                 // Stamp the scenario boundary the first time we touch it, then
                 // refresh the end after every test so the exporter knows the
                 // exact time range this scenario occupies in Prometheus.
                 if (scenarioResult.beginTime == null) {
                     scenarioResult.beginTime = currentScenarioTimestamp();
                 }
-                DrainBacklogResult.TestOutcome outcome = runSingleTest(point);
+                runHooks(HookPoint.BEFORE_TEST_POINT, point, i, totalTests, List.of());
+                DrainBacklogResult.TestOutcome outcome = runSingleTest(point, i, totalTests,
+                        reuse ? identities.get(i) : null, false);
                 scenarioResult.endTime = currentScenarioTimestamp();
                 scenarioResult.tests.add(outcome);
 
-                log.info("    Result: built {}MB in {}s, drained in {}s (producer rate during drain: {})",
+                log.info("    Result: {} {}MB{}, drained in {}s (producer rate during drain: {})",
+                        outcome.drain.reusedBacklogFrom != null ? "reused" : "built",
                         outcome.drain.backlogSizeBytes / 1_000_000,
-                        outcome.drain.buildDurationMs / 1000,
+                        outcome.drain.reusedBacklogFrom != null
+                                ? " from test point " + (outcome.drain.reusedBacklogFrom + 1)
+                                : " in " + outcome.drain.buildDurationMs / 1000 + "s",
                         outcome.drain.drainDurationMs / 1000,
-                        outcome.drain.backlogProducerRate == -1 ? "paused" : outcome.drain.backlogProducerRate + " msg/s");
+                        outcome.drain.backlogProducerRate <= 0 ? "paused" : outcome.drain.backlogProducerRate + " msg/s");
+
+                // Keep the backlog only if the next point can drain it again.
+                Set<String> retain = Set.of();
+                if (backlog != null && i + 1 < totalTests && identities.get(i + 1).equals(backlog.identity)) {
+                    retain = Set.copyOf(backlog.topics);
+                } else {
+                    backlog = null;
+                }
+                result.reusableBacklog = backlog;
 
                 if (checkpointCallback != null) {
                     checkpointCallback.onTestPointCompleted(i, result);
                 }
 
-                cooldownBetweenTests(workload.engineConfig.cooldownMinutes, i, totalTests);
+                cooldownBetweenTests(workload.engineConfig.cooldownMinutes, point, i, totalTests, retain);
             }
         } catch (StopRequestedException e) {
             // Surface the stop to BenchmarkRunner so it does not treat the
@@ -126,13 +174,35 @@ public class DrainBacklogEngine extends BaseEngine {
             throw e;
         }
 
+        result.reusableBacklog = null;
         RepeatMerger.mergeDrainBacklogRepeats(result);
 
         return result;
     }
 
-    private DrainBacklogResult.TestOutcome runSingleTest(TestPoint point) throws Exception {
+    /**
+     * Runs the test point once without recording it, so the scenario's first
+     * recorded drain runs on warm worker and broker JVMs (e.g. right after a
+     * deploy). No hooks run: they prepare measured drains. With reuse, the
+     * backlog it builds is kept for the test point itself, so a warm-up costs
+     * one drain rather than a build.
+     */
+    private void warmUp(TestPoint point, int index, int totalTests, String identity) throws Exception {
+        log.info("--- Warm-up for drain-backlog test {}/{}: {} (not recorded) ---", index + 1, totalTests, point.label());
+        DrainBacklogResult.TestOutcome outcome = runSingleTest(point, index, totalTests, identity, true);
+        log.info("    Warm-up drained in {}s", outcome.drain.drainDurationMs / 1000);
+        releaseTestPointResources(backlog != null ? Set.copyOf(backlog.topics) : Set.of());
+        log.info("----- WARM-UP DRAIN COMPLETE -----");
+    }
+
+    /**
+     * @param identity the point's build identity when reuseBacklog is on, else null
+     * @param warmUp   an unrecorded warm-up run: no hooks
+     */
+    private DrainBacklogResult.TestOutcome runSingleTest(TestPoint point, int index, int totalTests,
+                                                         String identity, boolean warmUp) throws Exception {
         DrainBacklogConfig dbc = point.drainBacklogConfig();
+        String label = warmUp ? point.label() + " (warm-up)" : point.label();
 
         worker.stopAll();
         worker.awaitStopComplete(java.time.Duration.ofMinutes(10));
@@ -142,13 +212,20 @@ public class DrainBacklogEngine extends BaseEngine {
                 dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
                 pointConfig);
 
-        cluster.deleteTestTopics();
+        ReusableBacklog reused = identity != null ? reusableBacklogFor(identity) : null;
+        if (reused == null) {
+            backlog = null;
+        }
+        Set<String> existing = reused != null ? Set.copyOf(reused.topics) : Set.of();
+        cluster.deleteTestTopics(existing);
         cluster.deleteTestGroups();
         cancelLeftoverFlinkJobs(point);
 
         throwOnStopRequested(stopRequested);
 
-        // Plan first, then create the actual Kafka topics from the planned topic names.
+        // Plan first, then create the actual Kafka topics from the planned topic
+        // names. A reused backlog's topics already exist; the rest (Flink output
+        // topics) are created fresh. Reusable backlogs get unlimited retention.
         planTopology(point.topics(), point.partitionsPerTopic(),
                 point.producersPerTopic(), point.consumerGroupsPerTopic(), point.consumersPerGroup(),
                 point.consumerType(), point.consumerProcMsMin(), point.consumerProcMsMax(), point.consumerProcParallelism(),
@@ -156,89 +233,66 @@ public class DrainBacklogEngine extends BaseEngine {
                 point.messageDistributor(), point.messageDistributorSkew(),
                 false /* correctness off */,
                 false /* dynamic consumer assignment */,
-                outputPartitionsPerTopic(point));
-        recordPlannedTopology(point.label(), workload.engineConfig.printTopology);
-        createPlannedTopics();
+                outputPartitionsPerTopic(point),
+                reused != null ? reused.topics : null);
+        recordPlannedTopology(label, workload.engineConfig.printTopology);
+        List<String> allTopics = createPlannedTopics(existing,
+                identity != null ? BacklogReuse.RETENTION_OVERRIDES : Map.of());
+        List<String> backlogTopics = point.flink() != null
+                ? new ArrayList<>(plannedTopology.pipelineTopics().keySet())
+                : allTopics;
         // Set before producers: consumers, created after the backlog is
         // built, read the same dataset's record format.
         configureDataset(point);
-        createProducers();
-        waitForClientsReady("PRODUCER", 60);
-
-        // Enable per-partition/per-consumer metrics before producers start sending,
-        // so build-phase sends populate the per-partition counters for Prometheus.
-        if (workload.engineConfig.perPartitionMetrics) {
-            worker.enablePerPartitionMetrics();
-        }
-        if (workload.engineConfig.perConsumerMetrics) {
-            worker.enablePerConsumerMetrics();
-        }
-
-        // Start producers at build rate
-        double buildRate = dbc.buildRate > 0 ? dbc.buildRate : point.producerRate();
-        log.info("Starting producers at build rate: {} msg/s", buildRate);
-        worker.startLoad(new ProducerWorkAssignment(
-                buildRate, point.messageDistributor(),
-                point.partitionsPerTopic(), point.messageDistributorSkew()));
 
         var perf = new TestResult.PerformanceResults();
         var drainData = new DrainBacklogResult.DrainData();
-        long oldTime = resetSampleClock();
+        double buildRate = dbc.buildRate > 0 ? dbc.buildRate : point.producerRate();
+        long buildDuration = 0;
+        long backlogMessages;
+        long priorRecords; // records already in the backlog before this point's producers sent any
 
-        // === BUILD PHASE ===
-        throwOnStopRequested(stopRequested);
-        log.info("----- Building backlog (target: {} GB) -----", dbc.backlogSizeGB);
-        long buildStart = System.currentTimeMillis();
-
-        long requestedBacklogSize = (long) (dbc.backlogSizeGB * 1_000_000_000.0);
-        long backlogMessages = 0;
-
-        while (!stopRequested.get()) {
-            Sleeper.sleepOrStop(stopRequested, dbc.sampleRateMillis, true);
-
-            // Stamp before the call: stats are reset near the start of a
-            // (possibly slow) remote call, not when it returns.
-            long now = System.nanoTime();
-            PeriodStats stats = worker.getPeriodStats();
-            double elapsed = (now - oldTime) / 1e9;
-            double publishRate = stats.messagesSent / elapsed;
-            double consumeRate = stats.messagesReceived / elapsed;
-            oldTime = now;
-
-            CountersStats counters = worker.getCountersStats();
-            backlogMessages = Math.max(0,
-                    point.consumerGroupsPerTopic() * counters.messagesSent() - counters.messagesReceived());
-            long currentBacklogBytes = backlogMessages * point.messageSize();
-
-            long pct = requestedBacklogSize > 0 ? (currentBacklogBytes * 100) / requestedBacklogSize : 100;
-            log.info("    Building: pub={} msg/s, {} msgs, {}MB / {}MB ({}%)",
-                    (long) publishRate, backlogMessages, currentBacklogBytes / 1_000_000,
-                    requestedBacklogSize / 1_000_000, pct);
-
-            recordPeriodResults(perf, stats, publishRate, consumeRate);
-            drainData.backlogMessagesOverTime.add(backlogMessages);
-            drainData.backlogBytesOverTime.add(currentBacklogBytes);
-
-            if (currentBacklogBytes >= requestedBacklogSize) {
-                break;
-            }
+        if (reused != null) {
+            enableClientMetrics();
+            log.info("----- Reusing the backlog built by test point {} ({}): {} messages -----",
+                    reused.builtAtTestPoint + 1, reused.builtAtLabel, reused.records);
+            priorRecords = reused.records;
+            backlogMessages = point.consumerGroupsPerTopic() * reused.records;
+            drainData.reusedBacklogFrom = reused.builtAtTestPoint;
+        } else {
+            priorRecords = 0;
+            backlogMessages = buildBacklog(point, dbc, buildRate, perf, drainData);
+            buildDuration = drainData.buildDurationMs;
         }
-
-        throwOnStopRequested(stopRequested);
-
-        long buildDuration = System.currentTimeMillis() - buildStart;
         long backlogSizeBytes = backlogMessages * point.messageSize();
-        log.info("    Backlog built: {} messages, {}MB in {}s",
-                backlogMessages, backlogSizeBytes / 1_000_000, buildDuration / 1000);
 
         // === DRAIN PHASE ===
+        // A warm-up's drain is marked as such, ending with WARM-UP DRAIN COMPLETE (see warmUp).
         if (dbc.backlogProducerRate > 0) {
             worker.adjustPublishRate(dbc.backlogProducerRate);
-            log.info("----- Draining backlog (producer rate: {} msg/s) -----", dbc.backlogProducerRate);
+            if (warmUp) {
+                log.info("----- WARM-UP DRAIN START (producer rate: {} msg/s) -----", dbc.backlogProducerRate);
+            } else {
+                log.info("----- Draining backlog (producer rate: {} msg/s) -----", dbc.backlogProducerRate);
+            }
         } else {
-            worker.pauseProducers();
-            log.info("----- Draining backlog (producers paused) -----");
+            if (reused == null) worker.pauseProducers();
+            log.info(warmUp ? "----- WARM-UP DRAIN START -----" : "----- Draining backlog (producers paused) -----");
         }
+
+        // Hooks get the cluster to the state each drain should start from
+        // (e.g. a cold page cache), then the cluster must settle before
+        // consumers start: a hook may have restarted brokers.
+        if (!warmUp) {
+            runHooks(HookPoint.BEFORE_DRAIN, point, index, totalTests, backlogTopics);
+        }
+        if (identity != null || hasHooks(HookPoint.BEFORE_DRAIN)) {
+            cluster.awaitSettled(allTopics,
+                    java.time.Duration.ofMinutes(workload.drainBacklogConfig.settleTimeoutMinutes), stopRequested);
+        }
+
+        log.info("Pausing {}s before starting consumers", PRE_DRAIN_PAUSE_MS / 1000);
+        Sleeper.sleepOrStop(stopRequested, PRE_DRAIN_PAUSE_MS, true);
 
         // Create consumers now that backlog is built — topology was already planned upfront
         createConsumers();
@@ -283,12 +337,13 @@ public class DrainBacklogEngine extends BaseEngine {
             log.info("    First message received {}ms after consumers ready", drainStart - consumersReady);
         }
         // Restart the sample clock so the first drain sample excludes the join wait.
-        oldTime = resetSampleClock();
+        long oldTime = resetSampleClock();
 
         String lagDescription = isShareGroup
                 ? "broker-reported share group lag"
                 : "broker-reported consumer group lag (LogEndOffset - CommittedOffset)";
-        log.info("    'expect recv' = total sent x {} consumer group(s)", point.consumerGroupsPerTopic());
+        log.info("    'expect recv' = total sent x {} consumer group(s){}", point.consumerGroupsPerTopic(),
+                priorRecords > 0 ? " (total sent includes the " + priorRecords + " reused backlog records)" : "");
         log.info("    'lag' = {}, refreshed every {}s via admin API", lagDescription, lagRefreshIntervalMs / 1000);
         log.info(String.format("    %12s %12s %14s %14s %14s %12s %10s %14s",
                 "pub msg/s", "cons msg/s", "total sent", "expect recv", "total recv", "backlog", "backlog MB", "lag"));
@@ -305,7 +360,8 @@ public class DrainBacklogEngine extends BaseEngine {
             while ((remainingMs = (periodEndNanos - System.nanoTime()) / 1_000_000) > 0) {
                 Sleeper.sleepOrStop(stopRequested, Math.min(DRAIN_CHECK_INTERVAL_MS, remainingMs), true);
                 CountersStats counters = worker.getCountersStats();
-                long backlog = counters.messagesSent() * point.consumerGroupsPerTopic() - counters.messagesReceived();
+                long backlog = (priorRecords + counters.messagesSent()) * point.consumerGroupsPerTopic()
+                        - counters.messagesReceived();
                 if (backlog <= DRAINED_THRESHOLD_MSGS) {
                     drained = true;
                     break;
@@ -324,7 +380,7 @@ public class DrainBacklogEngine extends BaseEngine {
             oldTime = now;
 
             CountersStats counters = worker.getCountersStats();
-            long totalSent = counters.messagesSent();
+            long totalSent = priorRecords + counters.messagesSent();
             long expectedRecv = totalSent * point.consumerGroupsPerTopic();
             long totalRecv = counters.messagesReceived();
             long currentBacklog = Math.max(0, expectedRecv - totalRecv);
@@ -373,8 +429,19 @@ public class DrainBacklogEngine extends BaseEngine {
 
         throwOnStopRequested(stopRequested);
 
-        long drainDuration = (drainEnd > 0 ? drainEnd : System.currentTimeMillis()) - drainStart;
+        if (drainEnd == 0) drainEnd = System.currentTimeMillis();
+        long drainDuration = drainEnd - drainStart;
         log.info("    Backlog drained in {}s", drainDuration / 1000);
+
+        // A freshly built backlog becomes reusable once drained: producers
+        // were paused throughout, so the sent count is final.
+        if (identity != null && reused == null) {
+            backlog = recordBacklog(identity, index, label, backlogTopics);
+            // Report what was drained (producers send briefly after the last
+            // build sample), so it matches the test points that reuse it.
+            backlogMessages = point.consumerGroupsPerTopic() * backlog.records;
+            backlogSizeBytes = backlogMessages * point.messageSize();
+        }
 
         // Build outcome
         DrainBacklogResult.TestOutcome outcome = new DrainBacklogResult.TestOutcome();
@@ -385,6 +452,8 @@ public class DrainBacklogEngine extends BaseEngine {
         drainData.backlogMessages = backlogMessages;
         drainData.buildRate = (int) buildRate;
         drainData.buildDurationMs = buildDuration;
+        drainData.drainStartTime = java.time.Instant.ofEpochMilli(drainStart).toString();
+        drainData.drainEndTime = java.time.Instant.ofEpochMilli(drainEnd).toString();
         drainData.drainDurationMs = drainDuration;
         drainData.drainTimeoutMinutes = dbc.drainTimeoutMinutes;
         drainData.backlogProducerRate = dbc.backlogProducerRate;
@@ -394,6 +463,129 @@ public class DrainBacklogEngine extends BaseEngine {
         outcome.flink = flinkResult(point);
 
         return outcome;
+    }
+
+    /**
+     * Produces at the build rate until the backlog reaches backlogSizeGB,
+     * recording build samples into {@code perf} and {@code drainData}.
+     * Returns the backlog in messages (summed across consumer groups);
+     * producers keep running until the caller pauses them.
+     */
+    private long buildBacklog(TestPoint point, DrainBacklogConfig dbc, double buildRate,
+                              TestResult.PerformanceResults perf, DrainBacklogResult.DrainData drainData)
+            throws IOException {
+        createProducers();
+        waitForClientsReady("PRODUCER", 60);
+
+        // Enable per-partition/per-consumer metrics before producers start sending,
+        // so build-phase sends populate the per-partition counters for Prometheus.
+        enableClientMetrics();
+
+        log.info("Starting producers at build rate: {} msg/s", buildRate);
+        worker.startLoad(new ProducerWorkAssignment(
+                buildRate, point.messageDistributor(),
+                point.partitionsPerTopic(), point.messageDistributorSkew()));
+
+        long oldTime = resetSampleClock();
+
+        throwOnStopRequested(stopRequested);
+        log.info("----- Building backlog (target: {} GB) -----", dbc.backlogSizeGB);
+        long buildStart = System.currentTimeMillis();
+
+        long requestedBacklogSize = (long) (dbc.backlogSizeGB * 1_000_000_000.0);
+        long backlogMessages = 0;
+
+        while (!stopRequested.get()) {
+            Sleeper.sleepOrStop(stopRequested, dbc.sampleRateMillis, true);
+
+            // Stamp before the call: stats are reset near the start of a
+            // (possibly slow) remote call, not when it returns.
+            long now = System.nanoTime();
+            PeriodStats stats = worker.getPeriodStats();
+            double elapsed = (now - oldTime) / 1e9;
+            double publishRate = stats.messagesSent / elapsed;
+            double consumeRate = stats.messagesReceived / elapsed;
+            oldTime = now;
+
+            CountersStats counters = worker.getCountersStats();
+            backlogMessages = Math.max(0,
+                    point.consumerGroupsPerTopic() * counters.messagesSent() - counters.messagesReceived());
+            long currentBacklogBytes = backlogMessages * point.messageSize();
+
+            long pct = requestedBacklogSize > 0 ? (currentBacklogBytes * 100) / requestedBacklogSize : 100;
+            log.info("    Building: pub={} msg/s, {} msgs, {}MB / {}MB ({}%)",
+                    (long) publishRate, backlogMessages, currentBacklogBytes / 1_000_000,
+                    requestedBacklogSize / 1_000_000, pct);
+
+            recordPeriodResults(perf, stats, publishRate, consumeRate);
+            drainData.backlogMessagesOverTime.add(backlogMessages);
+            drainData.backlogBytesOverTime.add(currentBacklogBytes);
+
+            if (currentBacklogBytes >= requestedBacklogSize) {
+                break;
+            }
+        }
+
+        throwOnStopRequested(stopRequested);
+
+        drainData.buildDurationMs = System.currentTimeMillis() - buildStart;
+        log.info("    Backlog built: {} messages, {}MB in {}s",
+                backlogMessages, backlogMessages * point.messageSize() / 1_000_000,
+                drainData.buildDurationMs / 1000);
+        return backlogMessages;
+    }
+
+    private void enableClientMetrics() throws IOException {
+        if (workload.engineConfig.perPartitionMetrics) {
+            worker.enablePerPartitionMetrics();
+        }
+        if (workload.engineConfig.perConsumerMetrics) {
+            worker.enablePerConsumerMetrics();
+        }
+    }
+
+    /**
+     * The backlog on the cluster if this point can drain it again: built for
+     * the same identity and still intact. Otherwise null, logging why, and
+     * the point builds its own.
+     */
+    private ReusableBacklog reusableBacklogFor(String identity) {
+        if (backlog == null) return null;
+        if (!backlog.identity.equals(identity)) {
+            log.info("Build settings differ from the backlog built by test point {}: building a new backlog",
+                    backlog.builtAtTestPoint + 1);
+            return null;
+        }
+        Set<String> existingTopics = cluster.listTopicNames();
+        Optional<String> problem = existingTopics.containsAll(backlog.topics)
+                ? BacklogReuse.whyNotIntact(backlog, existingTopics,
+                        cluster.startOffsets(backlog.topics), cluster.endOffsets(backlog.topics))
+                : BacklogReuse.whyNotIntact(backlog, existingTopics, Map.of(), Map.of());
+        if (problem.isPresent()) {
+            log.warn("Cannot reuse the backlog built by test point {} ({}): building a new backlog",
+                    backlog.builtAtTestPoint + 1, problem.get());
+            return null;
+        }
+        return backlog;
+    }
+
+    /** Captures a just-built backlog so following test points can drain it again. */
+    private ReusableBacklog recordBacklog(String identity, int index, String label, List<String> topics)
+            throws IOException {
+        var b = new ReusableBacklog();
+        b.identity = identity;
+        b.builtAtTestPoint = index;
+        b.builtAtLabel = label;
+        b.topics = new ArrayList<>(topics);
+        b.records = worker.getCountersStats().messagesSent();
+        long offsetTotal = 0;
+        for (var e : cluster.endOffsets(topics).entrySet()) {
+            b.endOffsets.put(e.getKey().toString(), e.getValue());
+            offsetTotal += e.getValue();
+        }
+        // Equal unless producers are transactional (commit markers take offsets).
+        log.info("    Backlog kept for reuse: {} records sent, end offsets total {}", b.records, offsetTotal);
+        return b;
     }
 
     /** Discards period stats and returns the new sample start time. Unlike

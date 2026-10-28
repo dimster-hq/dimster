@@ -22,6 +22,7 @@ import dev.dimster.worker.commands.CumulativeLatencies;
 import dev.dimster.worker.commands.PeriodStats;
 import dev.dimster.worker.commands.ProducerWorkAssignment;
 import dev.dimster.utils.Sleeper;
+import dev.dimster.hooks.HookPoint;
 
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
@@ -112,6 +113,7 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
                 if (scenarioResult.beginTime == null) {
                     scenarioResult.beginTime = currentScenarioTimestamp();
                 }
+                runHooks(HookPoint.BEFORE_TEST_POINT, point, i, totalTests, List.of());
                 CorrectnessResult.TestOutcome outcome = runSingleTest(point);
                 scenarioResult.endTime = currentScenarioTimestamp();
                 scenarioResult.tests.add(outcome);
@@ -126,7 +128,7 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
                     checkpointCallback.onTestPointCompleted(i, result);
                 }
 
-                cooldownBetweenTests(workload.engineConfig.cooldownMinutes, i, totalTests);
+                cooldownBetweenTests(workload.engineConfig.cooldownMinutes, point, i, totalTests);
             }
         } catch (StopRequestedException e) {
             // Surface the stop to BenchmarkRunner so it does not treat the

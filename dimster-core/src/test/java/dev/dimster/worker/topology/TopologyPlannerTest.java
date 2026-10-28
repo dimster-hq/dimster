@@ -699,6 +699,30 @@ public class TopologyPlannerTest {
                 ConsumerProcMode.BLOCKING, 10000, MessageDistributorType.NO_KEY, 1.0, true, true, 1);
     }
 
+    @Test
+    public void planOverExistingInputsKeepsTheirNamesAndFreshensGroupsAndOutputs() {
+        var planner = newPlanner(List.of("w1", "w2"), WorkerMode.MIXED, new RatioSplit(1, 1));
+        List<String> inputs = List.of("dimster-reused-0000", "dimster-reused-0001");
+
+        VirtualTopology first = planner.plan(pipelinedSpec(2, 4, 6, 2, false), inputs);
+        VirtualTopology second = planner.plan(pipelinedSpec(2, 4, 6, 2, false), inputs);
+
+        assertEquals(inputs, List.copyOf(first.pipelineTopics().keySet()));
+        assertEquals(inputs, List.copyOf(second.pipelineTopics().keySet()));
+        // Output topics never repeat a name a previous test point may still be deleting.
+        for (String input : inputs) {
+            assertTrue(first.pipelineTopics().get(input).startsWith(input + "-out-"));
+            assertNotEquals(first.pipelineTopics().get(input), second.pipelineTopics().get(input));
+        }
+        assertNotEquals(first.consumers().getFirst().consumerGroup(), second.consumers().getFirst().consumerGroup());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void planOverExistingInputsRequiresOneNamePerTopic() {
+        var planner = newPlanner(List.of("w1"), WorkerMode.MIXED, new RatioSplit(1, 1));
+        planner.plan(spec("p", 2, 4, 1, 1, 1, false), List.of("only-one"));
+    }
+
     // =========================================================================
     // Helpers
     // =========================================================================

@@ -273,23 +273,44 @@ public class TopologyPlanner {
 
     /** Build the complete topology for the given spec. */
     public VirtualTopology plan(TopologySpec spec) {
+        return plan(spec, null);
+    }
+
+    /**
+     * Build the topology over existing input topics, e.g. a drain-backlog
+     * backlog reused from an earlier test point. Groups (and Flink output
+     * topics) are still freshly named, so nothing else carries over.
+     *
+     * @param inputTopicNames the input topics, or null to name fresh ones
+     */
+    public VirtualTopology plan(TopologySpec spec, List<String> inputTopicNames) {
+        if (inputTopicNames != null && inputTopicNames.size() != spec.numTopics()) {
+            throw new IllegalArgumentException("Expected %d input topics, got %d"
+                    .formatted(spec.numTopics(), inputTopicNames.size()));
+        }
         // 1. Generate topic names. One random suffix per topic preserves the legacy
         //    BaseEngine behavior where every topic in a run got a fresh suffix —
         //    cheap insurance against name collisions with leftover state on the cluster.
         Map<String, Integer> topicPartitionCounts = new LinkedHashMap<>();
         for (int i = 0; i < spec.numTopics(); i++) {
-            String name = String.format("%s-%s-%04d", spec.topicPrefix(), randomSuffix.get(), i);
+            String name = inputTopicNames != null
+                    ? inputTopicNames.get(i)
+                    : String.format("%s-%s-%04d", spec.topicPrefix(), randomSuffix.get(), i);
             topicPartitionCounts.put(name, spec.partitionsPerTopic());
         }
         List<String> topicNames = new ArrayList<>(topicPartitionCounts.keySet());
 
         // 1b. With a Flink stage, each input topic gets an output topic, which
         //     consumers read instead. The "-out" suffix keeps it under the topic
-        //     prefix, so test-topic cleanup removes it too.
+        //     prefix, so test-topic cleanup removes it too. Over existing inputs
+        //     the output also gets a fresh suffix: the previous test point's
+        //     output of the same input may still be being deleted.
         Map<String, String> pipelineTopics = new LinkedHashMap<>();
         if (spec.pipelined()) {
             for (String topic : topicNames) {
-                String output = topic + OUTPUT_TOPIC_SUFFIX;
+                String output = inputTopicNames != null
+                        ? topic + OUTPUT_TOPIC_SUFFIX + "-" + randomSuffix.get()
+                        : topic + OUTPUT_TOPIC_SUFFIX;
                 pipelineTopics.put(topic, output);
                 topicPartitionCounts.put(output, spec.outputPartitionsPerTopic());
             }

@@ -1,5 +1,7 @@
 package dev.dimster;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -7,6 +9,8 @@ import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+
+import dev.dimster.hooks.HookExecution;
 
 /**
  * Top-level "what produced this result" block, serialized as the
@@ -38,6 +42,7 @@ import com.fasterxml.jackson.annotation.JsonPropertyOrder;
         "beginTime",
         "endTime",
         "extraDimensions",
+        "hooks",
 })
 public class ResultMetadata {
 
@@ -65,6 +70,14 @@ public class ResultMetadata {
      */
     @JsonInclude(JsonInclude.Include.NON_EMPTY)
     public Map<String, Object> extraDimensions = new TreeMap<>();
+
+    /**
+     * Every hook execution of the workload, in order: what was done to the
+     * environment around the test points, and whether it worked. Empty (and
+     * omitted) when the workload configures no hooks.
+     */
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    public List<HookExecution> hooks = new ArrayList<>();
 
     private final Map<String, Object> userMetadata = new TreeMap<>();
 

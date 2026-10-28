@@ -236,8 +236,15 @@ public class ScenarioExpander {
                 String effectiveName = repeats > 1
                         ? scenario.name + " (run " + (r + 1) + ")"
                         : scenario.name;
-                points.addAll(expandScenario(base, scenario, effectiveName,
-                        effectiveIndex, effectiveTotal, fileConfig, drainDefaults, exploreDefaults, runDefaults));
+                List<TestPoint> scenarioPoints = expandScenario(base, scenario, effectiveName,
+                        effectiveIndex, effectiveTotal, fileConfig, drainDefaults, exploreDefaults, runDefaults);
+                // A drain-backlog warm-up runs once per scenario, not per repeat.
+                if (r > 0) {
+                    scenarioPoints.forEach(p -> {
+                        if (p.drainBacklogConfig() != null) p.drainBacklogConfig().warmup = false;
+                    });
+                }
+                points.addAll(scenarioPoints);
                 effectiveIndex++;
             }
         }
@@ -549,6 +556,9 @@ public class ScenarioExpander {
                 pointDrainConfig.buildRate = get(drainBuildRate, i);
                 pointDrainConfig.sampleRateMillis = get(drainSampleRate, i);
                 pointDrainConfig.drainTimeoutMinutes = get(drainTimeout, i);
+                // Only the scenario's first test point is warmed up before.
+                pointDrainConfig.warmup = i == 0 && (drainDims != null && drainDims.warmup != null
+                        ? drainDims.warmup : drainDefaults.warmup);
             }
 
             // Build a fully resolved RunConfig for this test point

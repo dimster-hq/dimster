@@ -17,6 +17,7 @@
 - [Results and Charts](concepts/results-and-charts.md) — what lands in your results directory and how the charts get generated.
 - [Data Generation](concepts/data-generation.md) — generated datasets (presets, cardinality, skew, clustering, Avro and JSON records) for format, compression experiments.
 - [Flink SQL Stage](concepts/flink.md) — put a Flink SQL job (filters, projections, transformations) between producers and consumers and measure end-to-end latency through it.
+- [Workload Hooks](concepts/hooks.md) — run your own scripts before/after workloads, test points and drains, e.g. to evict the page cache or restart brokers between drain-backlog test points.
 - [Live Workload Modification](concepts/live-modification.md) — change throughput or end a test point mid-run via `dimster run --modify`. Useful for exploratory throughput discovery without committing to a full Explore campaign.
 
 ## Benchmark Modes

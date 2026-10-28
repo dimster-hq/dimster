@@ -423,9 +423,27 @@ data:
           ]
         },
         {
+          "title": "Disk Read Ratio",
+          "description": "Bytes read from disk / log bytes the brokers served (to consumers and followers), cluster-wide: near 1 means fetches were served from disk, near 0 from the page cache. Counts whole disks of every scraped node, and only while brokers serve more than 1 MB/s. Ignores the instance filter, since broker and node metrics cannot be matched by instance.",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 64 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": false }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(rate(node_disk_read_bytes_total{device=~\"nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+\"}[1m])) / ((sum(rate(kafka_server_brokertopicmetrics_bytesoutpersec_count{topic=\"\"}[1m])) + sum(rate(kafka_server_brokertopicmetrics_replicationbytesoutpersec_count{topic=\"\"}[1m]))) > 1e6)", "legendFormat": "disk reads / bytes served" }
+          ]
+        },
+        {
           "title": "Disk IOPS",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 64 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 72 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -443,7 +461,7 @@ data:
           "title": "Disk I/O Time",
           "description": "Fraction of time the device was busy (io_time) and weighted I/O time",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 64 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 72 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -462,7 +480,7 @@ data:
           "title": "Avg I/O Latency (ms)",
           "description": "Average time per completed I/O operation",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 72 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 80 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -479,7 +497,7 @@ data:
         {
           "title": "Avg I/O Size (bytes)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 72 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 80 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -496,7 +514,7 @@ data:
         {
           "title": "Disk I/O Queue Depth",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 80 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 88 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -513,7 +531,7 @@ data:
           "title": "Discard Operations (rate/s)",
           "description": "TRIM/discard operations — relevant for SSDs",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 80 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 88 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -530,13 +548,13 @@ data:
         {
           "title": "Filesystem",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 88 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 96 },
           "collapsed": false
         },
         {
           "title": "Filesystem Usage",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 89 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 97 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -553,7 +571,7 @@ data:
         {
           "title": "Filesystem Available %",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 89 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 97 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -579,7 +597,7 @@ data:
         {
           "title": "Inodes Used %",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 97 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 105 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -596,7 +614,7 @@ data:
         {
           "title": "File Descriptors",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 97 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 105 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -614,13 +632,13 @@ data:
         {
           "title": "Network",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 105 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 113 },
           "collapsed": false
         },
         {
           "title": "Network Receive Throughput",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 106 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 114 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -636,7 +654,7 @@ data:
         {
           "title": "Network Transmit Throughput",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 106 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 114 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -652,7 +670,7 @@ data:
         {
           "title": "Network Packets (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 114 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 122 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -669,7 +687,7 @@ data:
         {
           "title": "Network Errors & Drops (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 114 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 122 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -690,13 +708,13 @@ data:
         {
           "title": "TCP/IP",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 122 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 130 },
           "collapsed": false
         },
         {
           "title": "TCP Connections",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 123 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 131 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -714,7 +732,7 @@ data:
         {
           "title": "TCP Errors (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 123 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 131 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -735,7 +753,7 @@ data:
         {
           "title": "TCP Segments (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 131 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 139 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -753,7 +771,7 @@ data:
         {
           "title": "Sockets",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 131 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 139 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -774,13 +792,13 @@ data:
         {
           "title": "Conntrack & Softnet",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 139 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 147 },
           "collapsed": false
         },
         {
           "title": "Conntrack",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 140 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 148 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -798,7 +816,7 @@ data:
           "title": "Softnet (rate/s per CPU)",
           "description": "Packets processed, dropped, and times squeezed per CPU",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 140 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 148 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {

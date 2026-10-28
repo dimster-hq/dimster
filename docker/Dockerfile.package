@@ -12,6 +12,14 @@
 # Dockerfile so the produced images are interchangeable.
 FROM dimster-base:latest
 
+# kubectl, for workload hook scripts (engineConfig.hooks) that act on the
+# cluster. The coordinator never calls it itself. Installed here rather than
+# in dimster-base so existing base images pick it up without a rebuild.
+ARG KUBECTL_VERSION=v1.31.4
+RUN curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/$(dpkg --print-architecture)/kubectl" \
+ && chmod +x /usr/local/bin/kubectl
+
 # Which per-flavor tarball to install. Set explicitly by the CLI via
 # `docker build --build-arg KAFKA_FLAVOR=<flavor>` once per flavor it
 # wants to ship. No default value: a default would make the Docker build

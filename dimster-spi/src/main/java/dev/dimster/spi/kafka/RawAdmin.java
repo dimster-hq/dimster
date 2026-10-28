@@ -13,8 +13,7 @@ import java.util.Set;
  *
  * <p>Narrowed to exactly the operations dimster-core performs today via
  * {@code KafkaCluster} and {@code ShareGroupLagMonitor}. Adding new admin
- * operations later (e.g. describeTopics) is cheap - add the method here, implement
- * in each impl module.
+ * operations later is cheap - add the method here, implement in each impl module.
  *
  * <p>{@link NewTopic}, {@link OffsetAndMetadata}, and {@link TopicPartition} are
  * stable Kafka types reused directly. The share-group methods at the bottom of the
@@ -46,6 +45,24 @@ public interface RawAdmin extends AutoCloseable {
 
     /** Returns the latest (high-watermark) offsets for the given partitions. */
     Map<TopicPartition, Long> endOffsets(Set<TopicPartition> partitions);
+
+    /**
+     * Returns the log start offsets for the given partitions. Above 0 once
+     * retention has deleted the head of a partition.
+     */
+    Map<TopicPartition, Long> startOffsets(Set<TopicPartition> partitions);
+
+    // --- Cluster health ------------------------------------------------------
+
+    /** Returns the leader, replicas and ISR of every partition of the named topics. */
+    Map<TopicPartition, PartitionState> describePartitions(Set<String> topicNames);
+
+    /**
+     * Moves leadership of the given partitions to their preferred replicas.
+     * Partitions already led by their preferred replica are skipped without
+     * error. Blocks until the elections complete.
+     */
+    void electPreferredLeaders(Set<TopicPartition> partitions);
 
     /**
      * Lists group ids of the given kind. {@link GroupKind#CLASSIC_OR_CONSUMER}

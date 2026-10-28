@@ -17,6 +17,8 @@ spec:
       labels:
         app: benchmark-coordinator
     spec:
+      # Hook scripts run with this identity; see rbac.yaml.
+      serviceAccountName: benchmark-coordinator
       terminationGracePeriodSeconds: 10
       containers:
         - name: coordinator

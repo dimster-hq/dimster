@@ -106,7 +106,7 @@ public class VersionTest {
 
         RunRequest request = new RunRequest(
                 null, "run", null, Map.of(), List.of(), null, null,
-                null, null, null, null, null, null, Map.<String, Object>of(), Map.<String, Object>of(), null);
+                null, null, null, null, null, null, Map.<String, Object>of(), Map.<String, Object>of(), null, null);
         JsonNode requestJson = mapper.readTree(mapper.writeValueAsString(request));
         assertEquals("dimster-run-request", requestJson.get("fileType").asText());
 

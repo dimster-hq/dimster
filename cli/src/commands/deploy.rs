@@ -649,6 +649,7 @@ fn build_component_resource_list(
     if components.contains(&Component::Coordinator) {
         resources.push("  - base/coordinator/deployment.yaml".into());
         resources.push("  - base/coordinator/service.yaml".into());
+        resources.push("  - base/coordinator/rbac.yaml".into());
         resources.push("  - base/results/pvc.yaml".into());
     }
 

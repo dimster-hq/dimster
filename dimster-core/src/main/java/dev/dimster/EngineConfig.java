@@ -1,5 +1,8 @@
 package dev.dimster;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import dev.dimster.hooks.HooksConfig;
+
 /**
  * Operational settings shared across all engine modes.
  * Parsed from the top-level "engineConfig:" section of workload YAML files.
@@ -38,4 +41,9 @@ public class EngineConfig {
      *  results directory regardless of this flag); this only controls log
      *  visibility. */
     public boolean printTopology = false;
+
+    /** Scripts to run at points in the workload's lifecycle (see {@link dev.dimster.hooks.Hooks}).
+     *  Null when the workload configures none, keeping result JSON unchanged. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public HooksConfig hooks;
 }

@@ -38,6 +38,7 @@ One pod, one replica. The coordinator owns the benchmark lifecycle: creating top
 - **It's long-lived.** It does not exit when a run finishes. You can start a multi-hour campaign, close your laptop, and reattach later with `dimster reattach <env>`.
 - **It's resumable.** Progress is checkpointed to its PVC, so if the pod is killed mid-campaign you can pick up where it left off with `dimster resume <env>`.
 - **Results as shareable files** Benchmark results are stored in a JSON file, with accompanying charts as well as log files and the workload/config files. These files can be shared among colleagues easily and are self-contained.
+- **It runs your hooks, but knows nothing about them.** A workload can name scripts to run before and after test points (for example to evict the page cache or restart brokers). The coordinator runs them in its pod, which has `kubectl` and a namespace-scoped ServiceAccount, and records the outcome. See [Workload Hooks](hooks.md).
 
 ### 3. Workers — the muscle
 

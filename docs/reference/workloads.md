@@ -56,6 +56,7 @@ Operational settings shared across all engine modes. Lives at the top level of t
 | `cooldownMinutes` | integer | `0` | Minutes to wait between test points before tearing down topics and consumer groups. Gives Kafka time to stabilise and metric scrapers time to collect final samples. |
 | `printMessages` | boolean | `false` | Log every successfully produced (`PRODUCED`) and consumed (`PROCESSED`) record at INFO level: topic, partition, offset, timestamp, and for consumers the end-to-end latency and message type. Intended for low-rate debugging only -- the coordinator forces this off for any test point with producer rate > 50 msg/s, and always off for the explore engine (where rate is dynamic). |
 | `printContents` | boolean | `false` | Also print each record's key and contents on those lines (`key=... value=...`). Generated [dataset](#generated-datasets) records are shown as JSON (Avro records are decoded with the dataset's schema); payload-pool records, which are mostly random bytes, as their message type, size and first 16 bytes. Turns printing on by itself, under the same rate limit as `printMessages`. |
+| `hooks` | object | none | Scripts to run at points in the workload's lifecycle: `beforeWorkload`, `afterWorkload`, `beforeTestPoint`, `afterTestPoint`, and `beforeDrain` (drain-backlog only). Each is a list of `{script, args, timeoutSeconds, onFailure}`. See [Workload Hooks](../concepts/hooks.md). |
 
 ### engineConfig Example
 
@@ -663,6 +664,9 @@ Measures how quickly consumers can drain a pre-built backlog. The engine first b
 | `backlogProducerRate` | integer | `0` | Producer rate during the drain phase. `0` means producers are paused (pure consumer drain). |
 | `sampleRateMillis` | integer | `10000` | Stats sampling interval in milliseconds. |
 | `drainTimeoutMinutes` | integer | `0` | Maximum minutes to wait for the drain to complete. `0` means no timeout (wait indefinitely). |
+| `warmup` | boolean | `false` | Run each scenario's first test point once, unrecorded and without hooks, before the scenario, so its first recorded drain runs on warm JVMs. Also settable per scenario (`scenarios[].drainBacklogConfig.warmup`), but not sweepable. See [Warm-up](../modes/drain-backlog.md#warm-up). |
+| `reuseBacklog` | boolean | `false` | Build a backlog once and drain it again in each following test point that differs only in drain-side settings. Requires `backlogProducerRate: 0`. Workload-level only. See [Reusing a backlog](../modes/drain-backlog.md#reusing-a-backlog). |
+| `settleTimeoutMinutes` | integer | `10` | Before a drain that follows a `beforeDrain` hook or reuses a backlog, the maximum minutes to wait for every partition to have a full ISR and its preferred leader. Workload-level only. |
 
 ### Drain Backlog Mode Example
 

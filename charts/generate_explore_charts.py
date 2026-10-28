@@ -17,7 +17,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from generate_run_charts import format_meta_value, is_result_of_mode
+from generate_run_charts import BUILTIN_METADATA_KEYS, format_meta_value, is_result_of_mode
 
 # ---------------------------------------------------------------------------
 # Metrics to chart: (extractor, title, y_axis_label)
@@ -301,9 +301,7 @@ def generate_html(json_path, data, output_dir):
         if val:
             meta_items.append(f'<div class="meta-item"><span class="meta-label">{label}</span>'
                               f'<span class="meta-value">{html.escape(str(val))}</span></div>')
-    builtin = {'dimsterVersion', 'name', 'kafkaConfigName', 'environment', 'system',
-               'hardware', 'beginTime', 'endTime', 'extraDimensions'}
-    for key in sorted(k for k in metadata.keys() if k not in builtin):
+    for key in sorted(k for k in metadata.keys() if k not in BUILTIN_METADATA_KEYS):
         val = format_meta_value(metadata.get(key))
         meta_items.append(f'<div class="meta-item"><span class="meta-label">Metadata {html.escape(key)}</span>'
                           f'<span class="meta-value">{html.escape(val)}</span></div>')

@@ -26,6 +26,8 @@ import dev.dimster.kafka.KafkaSpi;
 import dev.dimster.worker.topology.TopologyPlanner;
 import dev.dimster.worker.LocalWorker;
 import dev.dimster.worker.Worker;
+import dev.dimster.hooks.HookScripts;
+import dev.dimster.hooks.ScriptHookExecutor;
 
 /**
  * Single-process embedded-worker entry point for Dimster.
@@ -128,10 +130,15 @@ public class Dimster {
         log.info("Starting benchmark with config: {}", writer.writeValueAsString(arguments));
 
         Map<String, String> workloads = new TreeMap<>();
+        // Hook scripts the workloads reference, read from local files (there
+        // is no CLI here to ship them in a run request).
+        Map<String, String> hookScripts = new TreeMap<>();
         for (String path : arguments.workloads) {
             File file = new File(path);
             String name = file.getName().substring(0, file.getName().lastIndexOf('.'));
-            workloads.put(name, java.nio.file.Files.readString(file.toPath()));
+            String yaml = java.nio.file.Files.readString(file.toPath());
+            workloads.put(name, yaml);
+            hookScripts.putAll(HookScripts.load(yaml, file.getAbsoluteFile().toPath().getParent()));
         }
 
         log.info("Workloads: {}", workloads.keySet());
@@ -176,6 +183,7 @@ public class Dimster {
         BenchmarkRunner runner = new BenchmarkRunner(
                 arguments.mode, worker, topologyPlanner, kafkaConfigFile, workloads, resultsSubDir,
                 stopRequested, arguments.system, null, null);
+        runner.setHookExecutor(ScriptHookExecutor.install(hookScripts, new File(resultsSubDir, "hooks")));
 
         boolean success = false;
         try {

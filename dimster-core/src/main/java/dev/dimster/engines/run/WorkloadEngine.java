@@ -37,6 +37,7 @@ import dev.dimster.utils.PaddingDecimalFormat;
 import dev.dimster.worker.Worker;
 import dev.dimster.worker.topology.TopologyPlanner;
 import dev.dimster.worker.topology.VirtualTopology;
+import dev.dimster.hooks.HookPoint;
 
 public class WorkloadEngine extends BaseEngine implements ModificationTarget {
 
@@ -219,6 +220,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                 if (scenarioResult.beginTime == null) {
                     scenarioResult.beginTime = currentScenarioTimestamp();
                 }
+                runHooks(HookPoint.BEFORE_TEST_POINT, point, i, totalTests, List.of());
                 RunResult.TestEntry entry = runSingleTest(point);
                 scenarioResult.endTime = currentScenarioTimestamp();
                 scenarioResult.tests.add(entry);
@@ -227,7 +229,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                     checkpointCallback.onTestPointCompleted(i, result);
                 }
 
-                cooldownBetweenTests(workload.engineConfig.cooldownMinutes, i, totalTests);
+                cooldownBetweenTests(workload.engineConfig.cooldownMinutes, point, i, totalTests);
             }
         } catch (StopRequestedException e) {
             // Surface the stop to BenchmarkRunner so it does not treat the

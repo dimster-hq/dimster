@@ -19,6 +19,12 @@ public class DrainBacklogResult {
     public ResultMetadata metadata = new ResultMetadata();
     public DrainBacklogWorkload config;
     public List<ScenarioResult> scenarioResults = new ArrayList<>();
+    /**
+     * With reuseBacklog, the backlog the next test point may drain again.
+     * Only present in the in-progress result, so a resumed run can reuse it.
+     */
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    public ReusableBacklog reusableBacklog;
 
     @JsonPropertyOrder({"name", "beginTime", "endTime", "tests"})
     public static class ScenarioResult {
@@ -44,7 +50,8 @@ public class DrainBacklogResult {
     }
 
     @JsonPropertyOrder({"backlogSizeGB", "backlogSizeBytes", "backlogMessages",
-            "buildRate", "buildDurationMs",
+            "buildRate", "buildDurationMs", "reusedBacklogFrom",
+            "drainStartTime", "drainEndTime",
             "drainDurationMs", "drainTimeoutMinutes", "backlogProducerRate", "sampleRateMillis",
             "backlogMessagesOverTime", "backlogBytesOverTime"})
     public static class DrainData {
@@ -55,6 +62,17 @@ public class DrainBacklogResult {
         /** Producer rate used during build phase (from config). */
         public int buildRate;
         public long buildDurationMs;
+        /**
+         * Index of the test point that built the backlog this one drained
+         * again (reuseBacklog). Null when this test point built its own; a
+         * reused test point has no build phase, so buildDurationMs is 0 and
+         * the time series cover the drain only.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        public Integer reusedBacklogFrom;
+        /** ISO-8601 wall-clock bounds of the drain, for correlating with Prometheus. */
+        public String drainStartTime;
+        public String drainEndTime;
         public long drainDurationMs;
         /** Max drain duration from config (minutes). 0 means no limit. */
         public int drainTimeoutMinutes;

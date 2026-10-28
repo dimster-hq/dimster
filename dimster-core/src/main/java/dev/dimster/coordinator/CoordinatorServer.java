@@ -27,6 +27,7 @@ import com.sun.net.httpserver.HttpServer;
 
 import dev.dimster.BenchmarkRunner;
 import dev.dimster.Checkpoint;
+import dev.dimster.hooks.ScriptHookExecutor;
 import dev.dimster.kafka.KafkaSpi;
 import dev.dimster.worker.RemoteWorkerClient;
 import dev.dimster.worker.topology.TopologyPlanner;
@@ -241,7 +242,8 @@ public class CoordinatorServer {
                 savedRequest.hardware(),
                 savedRequest.metadata(),
                 savedRequest.extraDimensions(),
-                savedRequest.resultsSubdir()
+                savedRequest.resultsSubdir(),
+                savedRequest.hookScripts()
         );
 
         lastError = null;
@@ -396,6 +398,8 @@ public class CoordinatorServer {
                     stopRequested, request.system(), request.environment(), request.hardware(),
                     request.metadata(), request.extraDimensions(),
                     checkpoint, this::setActiveEngine);
+            runner.setHookExecutor(ScriptHookExecutor.install(
+                    request.hookScripts(), new File(resultsSubDir, "hooks")));
             boolean success = runner.run();
 
             if (kafkaConfigFile != null) kafkaConfigFile.delete();

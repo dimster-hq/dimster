@@ -1,0 +1,38 @@
+# Builds one backlog and drains it once per test point, varying only the
+# consumers. Before every drain (including the first, right after the build)
+# the evict-topic-cache hook drops the backlog's page cache on every broker,
+# so each drain starts cold. See docs/modes/drain-backlog.md#reusing-a-backlog.
+name: drain-backlog reuse across consumer counts
+
+engineConfig:
+  hooks:
+    beforeDrain:
+      # - script: rolling-restart-brokers.sh   # ~2 min for 3 brokers on minikube
+      #   timeoutSeconds: 1200
+      - script: evict-topic-cache.sh   # built-in: run/hooks/evict-topic-cache.sh
+      - script: pause.sh
+        args: ["20"]
+
+drainBacklogConfig:
+  backlogSizeGB: 5
+  buildRate: 50000
+  backlogProducerRate: 0
+  drainTimeoutMinutes: 10
+  sampleRateMillis: 5000
+  reuseBacklog: true
+  warmup: true
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 1
+  messageSize: 1000
+  producersPerTopic: 1
+  consumerType: CONSUMER_GROUP
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 1
+
+scenarios:
+  - name: consumers
+    repeat: 5
+    label: "1-consumer"
+    consumersPerGroup: 1

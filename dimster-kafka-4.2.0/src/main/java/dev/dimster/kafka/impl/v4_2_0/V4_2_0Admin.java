@@ -1,6 +1,7 @@
 package dev.dimster.kafka.impl.v4_2_0;
 
 import dev.dimster.spi.kafka.GroupKind;
+import dev.dimster.spi.kafka.PartitionState;
 import dev.dimster.spi.kafka.RawAdmin;
 import dev.dimster.spi.kafka.ShareGroupInfo;
 import dev.dimster.spi.kafka.ShareGroupMember;
@@ -15,6 +16,11 @@ import org.apache.kafka.clients.admin.ShareGroupDescription;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.GroupType;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.clients.admin.TopicDescription;
+import org.apache.kafka.common.ElectionType;
+import org.apache.kafka.common.Node;
+import org.apache.kafka.common.TopicPartitionInfo;
+import org.apache.kafka.common.errors.ElectionNotNeededException;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -22,6 +28,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
@@ -90,6 +97,52 @@ public class V4_2_0Admin implements RawAdmin {
             out.put(e.getKey(), e.getValue().offset());
         }
         return out;
+    }
+
+    @Override
+    public Map<TopicPartition, Long> startOffsets(Set<TopicPartition> partitions) {
+        Map<TopicPartition, OffsetSpec> request = new HashMap<>(partitions.size());
+        for (TopicPartition tp : partitions) {
+            request.put(tp, OffsetSpec.earliest());
+        }
+        Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> raw = unwrap(() ->
+                admin.listOffsets(request).all().get(ADMIN_OP_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        Map<TopicPartition, Long> out = new LinkedHashMap<>(raw.size());
+        for (var e : raw.entrySet()) {
+            out.put(e.getKey(), e.getValue().offset());
+        }
+        return out;
+    }
+
+    @Override
+    public Map<TopicPartition, PartitionState> describePartitions(Set<String> topicNames) {
+        Map<String, TopicDescription> topics = unwrap(() -> admin.describeTopics(topicNames)
+                .allTopicNames().get(ADMIN_OP_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        Map<TopicPartition, PartitionState> out = new LinkedHashMap<>();
+        for (TopicDescription topic : topics.values()) {
+            for (TopicPartitionInfo p : topic.partitions()) {
+                Node leader = p.leader();
+                out.put(new TopicPartition(topic.name(), p.partition()), new PartitionState(
+                        leader == null || leader.isEmpty() ? -1 : leader.id(),
+                        p.replicas().stream().map(Node::id).toList(),
+                        p.isr().stream().map(Node::id).toList()));
+            }
+        }
+        return out;
+    }
+
+    @Override
+    public void electPreferredLeaders(Set<TopicPartition> partitions) {
+        Map<TopicPartition, Optional<Throwable>> results = unwrap(() -> admin
+                .electLeaders(ElectionType.PREFERRED, partitions)
+                .partitions().get(ADMIN_OP_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        for (var e : results.entrySet()) {
+            // ElectionNotNeeded: the preferred replica already leads.
+            if (e.getValue().isPresent() && !(e.getValue().get() instanceof ElectionNotNeededException)) {
+                throw new RuntimeException("Preferred leader election failed for " + e.getKey()
+                        + ": " + e.getValue().get().getMessage(), e.getValue().get());
+            }
+        }
     }
 
     @Override

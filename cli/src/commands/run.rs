@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +11,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 
 use crate::commands::find_coordinator;
+use crate::commands::hooks;
 use crate::commands::kafka_tls;
 use crate::commands::results;
 use crate::commands::run_configs;
@@ -54,6 +55,10 @@ struct RunRequest {
     metadata: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     extra_dimensions: BTreeMap<String, serde_json::Value>,
+    // Contents of the hook scripts the workloads reference (engineConfig.hooks),
+    // keyed by the reference as written. See commands::hooks.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    hook_scripts: BTreeMap<String, String>,
     // CLI-chosen results subdirectory name (yyyy-MM-dd-HH-mm-ss). When set,
     // the coordinator writes results into {outputDir}/{resultsSubdir} instead
     // of generating its own timestamp. This lets the CLI create the local
@@ -286,6 +291,24 @@ pub fn run(
         raw_workloads.push((name, content));
     }
 
+    // Read the hook scripts the workloads reference now, so a missing script
+    // fails before anything is sent to the cluster.
+    let hook_scripts = hooks::collect(
+        &args
+            .workloads
+            .iter()
+            .map(PathBuf::from)
+            .zip(raw_workloads.iter().map(|(_, c)| c.clone()))
+            .collect::<Vec<_>>(),
+        &script_dir.join(hooks::BUILTIN_HOOKS_DIR),
+    )?;
+    if !hook_scripts.is_empty() {
+        println!(
+            "==> Shipping hook scripts: {}",
+            hook_scripts.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+    }
+
     // Workloads with a Flink stage need the env's Flink cluster. Checking
     // here fails fast with a deploy hint instead of mid-run in the coordinator.
     if let Some((name, _)) = raw_workloads
@@ -456,7 +479,7 @@ pub fn run(
     let annotations =
         run_configs::parse_result_annotations(&args.metadata, &args.extra_dimensions, &timestamp)?;
     let local_subdir = run_configs::local_result_subdir(&timestamp, &annotations.metadata)?;
-    run_configs::prepare_run_dir(
+    let local_run_dir = run_configs::prepare_run_dir(
         output_dir,
         &local_subdir,
         &args.workloads,
@@ -488,7 +511,9 @@ pub fn run(
         metadata: annotations.metadata,
         extra_dimensions: annotations.extra_dimensions,
         results_subdir: Some(timestamp),
+        hook_scripts,
     };
+    hooks::stage(&local_run_dir, &request.hook_scripts)?;
 
     let request_json = serde_json::to_string(&request)?;
 

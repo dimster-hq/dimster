@@ -95,6 +95,14 @@ RUN ./mvnw -q -B -ntp -pl package-${KAFKA_FLAVOR} -am clean install \
 # ---------------------------------------------------------------------------
 FROM dimster-base:latest
 
+# kubectl, for workload hook scripts (engineConfig.hooks) that act on the
+# cluster. The coordinator never calls it itself. Installed here rather than
+# in dimster-base so existing base images pick it up without a rebuild.
+ARG KUBECTL_VERSION=v1.31.4
+RUN curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/$(dpkg --print-architecture)/kubectl" \
+ && chmod +x /usr/local/bin/kubectl
+
 # Re-declare the build-arg so it's visible in this stage (ARGs don't
 # cross FROM boundaries). Only KAFKA_FLAVOR is needed in the runtime
 # stage — the version is already baked into the tarball produced upstream.

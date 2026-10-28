@@ -30,6 +30,9 @@ public class DrainBacklogDimensions {
     /** Maximum time to wait for drain to complete (minutes). 0 means no limit. */
     public List<Integer> drainTimeoutMinutes;
 
+    /** Warm up before this scenario (see {@link DrainBacklogConfig#warmup}). One value, not a sweep; null inherits. */
+    public Boolean warmup;
+
     /**
      * Validate that all non-null, multi-element lists have the same length.
      * Call this before resolving against defaults so that mismatches between

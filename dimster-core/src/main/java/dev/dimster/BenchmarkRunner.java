@@ -30,6 +30,11 @@ import dev.dimster.engines.run.RunResult;
 import dev.dimster.engines.run.Workload;
 import dev.dimster.engines.run.WorkloadEngine;
 import dev.dimster.coordinator.ModificationTarget;
+import dev.dimster.hooks.HookContext;
+import dev.dimster.hooks.HookExecutor;
+import dev.dimster.hooks.HookPoint;
+import dev.dimster.hooks.Hooks;
+import dev.dimster.hooks.ScriptHookExecutor;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.utils.StopRequestedException;
 import dev.dimster.worker.Worker;
@@ -75,6 +80,11 @@ public class BenchmarkRunner {
     // correctness modes publish their engines; explore and drain-backlog stay
     // unpublished. Null when constructed without a coordinator.
     private final Consumer<ModificationTarget> activeEngineSink;
+
+    // Runs the scripts named in workloads' engineConfig.hooks. Defaults to one
+    // with no scripts, so a workload that configures hooks without the run
+    // request shipping them fails validation up front.
+    private HookExecutor hookExecutor = new ScriptHookExecutor(Map.of());
 
     /**
      * A callback that engines call after each test point to persist progress.
@@ -126,6 +136,11 @@ public class BenchmarkRunner {
         this.extraDimensions = extraDimensions;
         this.checkpoint = checkpoint;
         this.activeEngineSink = activeEngineSink;
+    }
+
+    /** Set the executor for workload hooks; see {@link ScriptHookExecutor#install}. */
+    public void setHookExecutor(HookExecutor hookExecutor) {
+        this.hookExecutor = hookExecutor;
     }
 
     /**
@@ -224,14 +239,26 @@ public class BenchmarkRunner {
      * Keeping this in one helper prevents future result modes from recording
      * built-in metadata but silently dropping campaign-series annotations.
      */
-    private void stampMetadata(ResultMetadata metadata, String beginTime, String endTime) {
+    private void stampMetadata(ResultMetadata metadata, String beginTime, String endTime, Hooks hooks) {
         metadata.beginTime = beginTime;
+        metadata.hooks = new ArrayList<>(hooks.executions());
         metadata.endTime = endTime;
         metadata.environment = environment;
         metadata.system = system;
         metadata.hardware = hardware;
         metadata.putUserMetadata(userMetadata);
         metadata.putExtraDimensions(extraDimensions);
+    }
+
+    /**
+     * Build and validate the workload's hooks. On resume, executions from
+     * before the interruption are carried over from the partial result.
+     */
+    private Hooks makeHooks(EngineConfig engineConfig, String workloadName, ResultMetadata previous) {
+        Hooks hooks = new Hooks(engineConfig.hooks, hookExecutor, mode, workloadName, stopRequested,
+                previous != null ? previous.hooks : List.of());
+        hooks.validate();
+        return hooks;
     }
 
     // ─── Standard "run" mode ───────────────────────────────────────────
@@ -257,12 +284,15 @@ public class BenchmarkRunner {
                     ? partialResult.metadata.beginTime
                     : dateFormat.format(new Date());
 
+            Hooks hooks = makeHooks(workload.engineConfig, workloadName,
+                    partialResult != null ? partialResult.metadata : null);
+
             CheckpointCallback callback = (completedIndex, partial) -> {
                 // Stamp metadata on the partial so an interrupted run still has
                 // timestamps for downstream tooling (the final write below also
                 // sets these, but is skipped on StopRequestedException).
                 if (partial instanceof RunResult rr) {
-                    stampMetadata(rr.metadata, beginTime, dateFormat.format(new Date()));
+                    stampMetadata(rr.metadata, beginTime, dateFormat.format(new Date()), hooks);
                 }
                 savePartialResult(partialFileName, partial);
                 cp.currentWorkload = new Checkpoint.CurrentWorkload(
@@ -272,6 +302,7 @@ public class BenchmarkRunner {
 
             engine = new WorkloadEngine(workload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
+            engine.setHooks(hooks);
             // Publish the engine for the coordinator's /modify endpoint.
             // Cleared in the outer finally so an exception during run() can't
             // leave a stale engine reference visible.
@@ -280,8 +311,10 @@ public class BenchmarkRunner {
             }
             log.info("=============== WORKLOAD : {} ===============", workload.name);
 
+            hooks.run(HookPoint.BEFORE_WORKLOAD, HookContext.workload());
             RunResult result = engine.run(startTestPoint, partialResult, callback);
-            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()));
+            hooks.run(HookPoint.AFTER_WORKLOAD, HookContext.workload());
+            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()), hooks);
 
             var baseKafkaSummary = resolveBaseKafkaConfigSummary(workload.baseWorkload);
             if (baseKafkaSummary != null) {
@@ -327,9 +360,12 @@ public class BenchmarkRunner {
                     ? partialResult.metadata.beginTime
                     : dateFormat.format(new Date());
 
+            Hooks hooks = makeHooks(exploreWorkload.engineConfig, workloadName,
+                    partialResult != null ? partialResult.metadata : null);
+
             CheckpointCallback callback = (completedIndex, partial) -> {
                 if (partial instanceof ExploreResult er) {
-                    stampMetadata(er.metadata, beginTime, dateFormat.format(new Date()));
+                    stampMetadata(er.metadata, beginTime, dateFormat.format(new Date()), hooks);
                 }
                 savePartialResult(partialFileName, partial);
                 cp.currentWorkload = new Checkpoint.CurrentWorkload(
@@ -339,10 +375,13 @@ public class BenchmarkRunner {
 
             engine = new ExploreEngine(exploreWorkload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
+            engine.setHooks(hooks);
             log.info("=============== EXPLORE LIMITS : {} ===============", exploreWorkload.name);
 
+            hooks.run(HookPoint.BEFORE_WORKLOAD, HookContext.workload());
             ExploreResult result = engine.run(startTestPoint, partialResult, callback);
-            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()));
+            hooks.run(HookPoint.AFTER_WORKLOAD, HookContext.workload());
+            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()), hooks);
 
             var baseKafkaSummary = resolveBaseKafkaConfigSummary(exploreWorkload.baseWorkload);
             if (baseKafkaSummary != null) {
@@ -385,9 +424,12 @@ public class BenchmarkRunner {
                     ? partialResult.metadata.beginTime
                     : dateFormat.format(new Date());
 
+            Hooks hooks = makeHooks(correctnessWorkload.engineConfig, workloadName,
+                    partialResult != null ? partialResult.metadata : null);
+
             CheckpointCallback callback = (completedIndex, partial) -> {
                 if (partial instanceof CorrectnessResult cr) {
-                    stampMetadata(cr.metadata, beginTime, dateFormat.format(new Date()));
+                    stampMetadata(cr.metadata, beginTime, dateFormat.format(new Date()), hooks);
                 }
                 savePartialResult(partialFileName, partial);
                 cp.currentWorkload = new Checkpoint.CurrentWorkload(
@@ -397,6 +439,7 @@ public class BenchmarkRunner {
 
             engine = new CorrectnessEngine(correctnessWorkload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
+            engine.setHooks(hooks);
             // Correctness publishes for the whole engine run. Its internal
             // controller accepts requests only during the measured CONCURRENT
             // phase and supplies precise rejection reasons at other times.
@@ -405,8 +448,10 @@ public class BenchmarkRunner {
             }
             log.info("=============== CORRECTNESS : {} ===============", correctnessWorkload.name);
 
+            hooks.run(HookPoint.BEFORE_WORKLOAD, HookContext.workload());
             CorrectnessResult result = engine.run(startTestPoint, partialResult, callback);
-            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()));
+            hooks.run(HookPoint.AFTER_WORKLOAD, HookContext.workload());
+            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()), hooks);
 
             var baseKafkaSummary = resolveBaseKafkaConfigSummary(correctnessWorkload.baseWorkload);
             if (baseKafkaSummary != null) {
@@ -452,9 +497,12 @@ public class BenchmarkRunner {
                     ? partialResult.metadata.beginTime
                     : dateFormat.format(new Date());
 
+            Hooks hooks = makeHooks(drainWorkload.engineConfig, workloadName,
+                    partialResult != null ? partialResult.metadata : null);
+
             CheckpointCallback callback = (completedIndex, partial) -> {
                 if (partial instanceof DrainBacklogResult dr) {
-                    stampMetadata(dr.metadata, beginTime, dateFormat.format(new Date()));
+                    stampMetadata(dr.metadata, beginTime, dateFormat.format(new Date()), hooks);
                 }
                 savePartialResult(partialFileName, partial);
                 cp.currentWorkload = new Checkpoint.CurrentWorkload(
@@ -464,10 +512,13 @@ public class BenchmarkRunner {
 
             engine = new DrainBacklogEngine(drainWorkload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
+            engine.setHooks(hooks);
             log.info("=============== DRAIN-BACKLOG : {} ===============", drainWorkload.name);
 
+            hooks.run(HookPoint.BEFORE_WORKLOAD, HookContext.workload());
             DrainBacklogResult result = engine.run(startTestPoint, partialResult, callback);
-            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()));
+            hooks.run(HookPoint.AFTER_WORKLOAD, HookContext.workload());
+            stampMetadata(result.metadata, beginTime, dateFormat.format(new Date()), hooks);
 
             var baseKafkaSummary = resolveBaseKafkaConfigSummary(drainWorkload.baseWorkload);
             if (baseKafkaSummary != null) {

@@ -52,9 +52,18 @@ public class KafkaCluster implements AutoCloseable {
     }
 
     public void deleteTestTopics() {
+        deleteTestTopics(Set.of());
+    }
+
+    /**
+     * Deletes every test topic except those in {@code keep}, e.g. a
+     * drain-backlog backlog that the next test point reuses.
+     */
+    public void deleteTestTopics(Set<String> keep) {
         try {
             Set<String> topics = new HashSet<>();
             for (String name : admin.listTopicNames()) {
+                if (keep.contains(name)) continue;
                 if (name.startsWith(topicPrefix()) || name.equals(AVAIL_PROBE_TOPIC)) {
                     topics.add(name);
                 }
@@ -73,9 +82,16 @@ public class KafkaCluster implements AutoCloseable {
     }
 
     public void createTopic(String topic, int partitions) {
+        createTopic(topic, partitions, Map.of());
+    }
+
+    /** Creates a topic with the configured topic properties plus {@code overrides}, which win. */
+    public void createTopic(String topic, int partitions, Map<String, String> overrides) {
         try {
             var newTopic = new NewTopic(topic, partitions, config.replicationFactor);
-            newTopic.configs(config.topicProperties());
+            Map<String, String> configs = new HashMap<>(config.topicProperties());
+            configs.putAll(overrides);
+            newTopic.configs(configs);
             admin.createTopic(newTopic);
         } catch (Throwable t) {
             throw new RuntimeException("Failed to create topic: " + topic, t);
@@ -181,6 +197,59 @@ public class KafkaCluster implements AutoCloseable {
         } catch (Exception e) {
             log.warn("Failed to query share group lag for {}: {}", groupName, e.getMessage());
             return Map.of();
+        }
+    }
+
+    /** Names of every topic on the cluster. */
+    public Set<String> listTopicNames() {
+        return admin.listTopicNames();
+    }
+
+    /** Log start offsets of every partition of the given topics. */
+    public Map<TopicPartition, Long> startOffsets(Collection<String> topics) {
+        return admin.startOffsets(partitionsOf(topics));
+    }
+
+    /** Log end offsets of every partition of the given topics. */
+    public Map<TopicPartition, Long> endOffsets(Collection<String> topics) {
+        return admin.endOffsets(partitionsOf(topics));
+    }
+
+    private Set<TopicPartition> partitionsOf(Collection<String> topics) {
+        return admin.describePartitions(new HashSet<>(topics)).keySet();
+    }
+
+    /**
+     * Waits until every partition of the given topics has a leader and a full
+     * ISR, moving leadership back to preferred replicas along the way. Used
+     * before a measurement that a hook may have disturbed (e.g. by restarting
+     * brokers). Throws if the cluster has not settled within the timeout.
+     */
+    public void awaitSettled(Collection<String> topics, java.time.Duration timeout,
+                             java.util.concurrent.atomic.AtomicBoolean stopRequested) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        Set<String> topicSet = new HashSet<>(topics);
+        PartitionHealth health = PartitionHealth.assess(admin.describePartitions(topicSet));
+        if (health.settled()) {
+            log.info("Cluster settled: {}", health);
+            return;
+        }
+        log.info("Waiting for the cluster to settle: {}", health);
+        while (true) {
+            if (!health.notPreferred().isEmpty()) {
+                log.info("Electing preferred leaders for {} partition(s)", health.notPreferred().size());
+                admin.electPreferredLeaders(health.notPreferred());
+            }
+            dev.dimster.utils.Sleeper.sleepOrStop(stopRequested, 2000, true);
+            health = PartitionHealth.assess(admin.describePartitions(topicSet));
+            if (health.settled()) {
+                log.info("Cluster settled: {}", health);
+                return;
+            }
+            if (System.nanoTime() >= deadline) {
+                throw new IllegalStateException("Cluster did not settle within " + timeout + ": " + health);
+            }
+            log.info("    Still settling: {}", health);
         }
     }
 

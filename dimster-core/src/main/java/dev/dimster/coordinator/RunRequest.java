@@ -29,7 +29,11 @@ public record RunRequest(
     // will fill with result JSONs. Optional for backwards compatibility:
     // older clients that don't send this field still get the original
     // server-generated timestamp behavior.
-    String resultsSubdir
+    String resultsSubdir,
+    // Hook scripts the workloads reference (engineConfig.hooks), keyed by the
+    // name the workload uses, with the script's contents. The CLI reads them
+    // from the user's machine; the coordinator installs and runs only these.
+    Map<String, String> hookScripts
 ) {
     public RunRequest {
         if (fileType == null || fileType.isBlank()) {

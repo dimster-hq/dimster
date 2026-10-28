@@ -15,6 +15,9 @@ use crate::kubectl::Kubectl;
 pub const SNAPSHOT_DIR: &str = "prometheus-snapshot";
 /// Snapshot data file inside `SNAPSHOT_DIR`.
 pub const SNAPSHOT_FILE: &str = "metrics.om.gz";
+/// Result-dir file holding the bytes read from disk during each drain of a
+/// drain-backlog run, measured by export.py and read by the drain charts.
+pub const DISK_READS_FILE: &str = "drain-disk-reads.json";
 
 // Shell snippet that prints the basename of the most-recently-modified
 // *directory* under /results. The trailing-slash glob (`*/`) is the POSIX
@@ -1028,6 +1031,8 @@ pub fn export_metrics(
     // a single file. Empty when the result JSON predates per-scenario
     // timestamps — export.py then falls back to its even-split algorithm.
     let scenario_boundaries = extract_scenario_boundaries(result_dir).unwrap_or_default();
+    // Drain-backlog: each drain's window, for export.py to measure its disk reads.
+    let drain_windows = extract_drain_windows(result_dir).unwrap_or_default();
     if !scenario_boundaries.is_empty() {
         println!(
             "    Discovered {} scenario boundary range(s) for window alignment",
@@ -1123,7 +1128,10 @@ spec:
         serde_json::to_string(&scenario_boundaries).unwrap_or_else(|_| "[]".to_string());
     let raw_start_str = raw_start.to_string();
     let raw_end_str = raw_end.to_string();
-    let exec_result = kubectl.run(&[
+    let drain_windows_json =
+        serde_json::to_string(&drain_windows).unwrap_or_else(|_| "[]".to_string());
+    let disk_reads_path = format!("/results/{}/{}", pvc_subdir, DISK_READS_FILE);
+    let mut export_args = vec![
         "exec",
         &helper_name,
         "--",
@@ -1149,7 +1157,16 @@ spec:
         "10",
         "--scenario-boundaries",
         &boundaries_json,
-    ]);
+    ];
+    if !drain_windows.is_empty() {
+        export_args.extend([
+            "--drain-windows",
+            &drain_windows_json,
+            "--disk-reads-file",
+            &disk_reads_path,
+        ]);
+    }
+    let exec_result = kubectl.run(&export_args);
 
     match &exec_result {
         Ok(output) => println!("{}", output),
@@ -1161,6 +1178,15 @@ spec:
     }
     if outputs.contains(&MetricsOutput::Snapshot) {
         copy_prometheus_snapshot(kubectl, &helper_name, &snapshot_path, result_dir)?;
+    }
+    if !drain_windows.is_empty() {
+        copy_matching_files(
+            kubectl,
+            &helper_name,
+            &format!("/results/{}", pvc_subdir),
+            DISK_READS_FILE,
+            result_dir,
+        )?;
     }
 
     // Cleanup
@@ -1385,6 +1411,59 @@ fn extract_scenario_boundaries(result_dir: &str) -> Result<Vec<ScenarioBoundary>
     // without re-sorting (it does so defensively anyway, but ordered input keeps
     // the on-the-wire JSON stable for log/diff readability).
     out.sort_by_key(|s| s.start);
+    Ok(out)
+}
+
+/// One drain's wall-clock bounds as serialized for export.py: the result's
+/// ISO-8601 `drainStartTime` and `drainEndTime`, which also key the measured
+/// disk reads so the drain charts can find them.
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct DrainWindow {
+    start: String,
+    end: String,
+}
+
+/// Every drain's window in the drain-backlog results in a directory. Merged
+/// repeat aggregates have none, nor do results from before drains were
+/// timestamped.
+fn extract_drain_windows(result_dir: &str) -> Result<Vec<DrainWindow>> {
+    let mut out: Vec<DrainWindow> = Vec::new();
+    for entry in std::fs::read_dir(result_dir)?.flatten() {
+        let path = entry.path();
+        if !path.extension().is_some_and(|e| e == "json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        if val.get("mode").and_then(|m| m.as_str()) != Some("drain-backlog") {
+            continue;
+        }
+        let Some(scenarios) = val.get("scenarioResults").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for test in scenarios
+            .iter()
+            .filter_map(|sc| sc.get("tests").and_then(|t| t.as_array()))
+            .flatten()
+        {
+            let drain = test.get("drain");
+            let bound = |k: &str| drain.and_then(|d| d.get(k)).and_then(|v| v.as_str());
+            if let (Some(start), Some(end)) = (bound("drainStartTime"), bound("drainEndTime")) {
+                let window = DrainWindow {
+                    start: start.to_string(),
+                    end: end.to_string(),
+                };
+                if !out.contains(&window) {
+                    out.push(window);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.start.cmp(&b.start));
     Ok(out)
 }
 
@@ -1856,5 +1935,48 @@ Caused by: java.lang.NullPointerException\n\
         std::fs::write(snap_dash.join("kafka.json"), "{}").unwrap();
         std::fs::write(snap_dash.join("system.json"), "{}").unwrap();
         assert_eq!(count_json_files(root), 2);
+    }
+
+    #[test]
+    fn drain_windows_come_from_drain_backlog_results_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let drain = |start: &str, end: &str| serde_json::json!({"drain": {"drainStartTime": start, "drainEndTime": end}});
+        let result = serde_json::json!({
+            "mode": "drain-backlog",
+            "scenarioResults": [
+                {"tests": [drain("2026-10-28T10:02:00Z", "2026-10-28T10:02:07Z"),
+                           drain("2026-10-28T10:01:00Z", "2026-10-28T10:01:07Z")]},
+                // A merged repeat aggregate has no drain window.
+                {"name": "s (merged)", "tests": [{"drain": {"drainDurationMs": 7000}}]},
+            ],
+        });
+        let run_request = serde_json::json!({"mode": "drain-backlog", "type": "run-request"});
+        let run_result = serde_json::json!({
+            "mode": "run",
+            "scenarioResults": [{"tests": [drain("2026-10-28T09:00:00Z", "2026-10-28T09:01:00Z")]}],
+        });
+        for (name, val) in [
+            ("d.json", result),
+            ("r.json", run_request),
+            ("x.json", run_result),
+        ] {
+            std::fs::write(tmp.path().join(name), val.to_string()).unwrap();
+        }
+
+        let windows = extract_drain_windows(&tmp.path().to_string_lossy()).unwrap();
+
+        assert_eq!(
+            windows,
+            vec![
+                DrainWindow {
+                    start: "2026-10-28T10:01:00Z".into(),
+                    end: "2026-10-28T10:01:07Z".into()
+                },
+                DrainWindow {
+                    start: "2026-10-28T10:02:00Z".into(),
+                    end: "2026-10-28T10:02:07Z".into()
+                },
+            ]
+        );
     }
 }

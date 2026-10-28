@@ -3,6 +3,9 @@ package dev.dimster;
 import dev.dimster.flink.FlinkPipeline;
 import dev.dimster.flink.FlinkRestClient;
 import dev.dimster.flink.FlinkResult;
+import dev.dimster.hooks.HookContext;
+import dev.dimster.hooks.HookPoint;
+import dev.dimster.hooks.Hooks;
 import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.utils.Sleeper;
 import dev.dimster.utils.StopRequestedException;
@@ -44,6 +47,13 @@ public abstract class BaseEngine implements AutoCloseable {
      * wired up don't trip over a null call.
      */
     private TopologyRecorder topologyRecorder = TopologyRecorder.NO_OP;
+
+    /**
+     * The workload's hooks, set by the harness via {@link #setHooks}. Engines
+     * decide when each {@link HookPoint} is reached; {@link Hooks} runs the
+     * scripts. Defaults to {@link Hooks#NONE}.
+     */
+    private Hooks hooks = Hooks.NONE;
     protected KafkaCluster cluster;
 
     /**
@@ -100,6 +110,30 @@ public abstract class BaseEngine implements AutoCloseable {
         this.topologyRecorder = recorder != null ? recorder : TopologyRecorder.NO_OP;
     }
 
+    /** Inject the workload's {@link Hooks}. Tests can leave the default {@code NONE}. */
+    public void setHooks(Hooks hooks) {
+        this.hooks = hooks != null ? hooks : Hooks.NONE;
+    }
+
+    /** Whether the workload configures any hook for the point. */
+    protected boolean hasHooks(HookPoint hookPoint) {
+        return hooks.has(hookPoint);
+    }
+
+    /**
+     * Run the hooks for a point within a test point.
+     *
+     * @param topics the topics holding data at this point, passed to the hook
+     */
+    protected void runHooks(HookPoint hookPoint, ScenarioExpander.TestPoint point, int index, int total,
+                            List<String> topics) {
+        if (!hooks.has(hookPoint)) return;
+        String bootstrap = point.kafkaConfig() != null
+                ? point.kafkaConfig().commonProperties().getProperty("bootstrap.servers")
+                : null;
+        hooks.run(hookPoint, new HookContext(index, total, point.label(), point.scenarioName(), bootstrap, topics));
+    }
+
     /**
      * Hand the latest {@link #plannedTopology} to the recorder and, if
      * {@code printToLog} is true, dump a human-readable rendering to the log.
@@ -123,13 +157,43 @@ public abstract class BaseEngine implements AutoCloseable {
     /**
      * Sleep between test points to let Kafka stabilize and metric scrapers
      * collect all stats before the next test point deletes topics/groups.
+     * Runs the afterTestPoint hooks once the test point's resources are gone.
      * Skips the cooldown after the last test point.
      */
-    protected void cooldownBetweenTests(int cooldownMinutes, int currentIndex, int totalTests) throws IOException {
+    protected void cooldownBetweenTests(int cooldownMinutes, ScenarioExpander.TestPoint point,
+                                        int currentIndex, int totalTests) throws IOException {
+        cooldownBetweenTests(cooldownMinutes, point, currentIndex, totalTests, Set.of());
+    }
+
+    /**
+     * As above, keeping the {@code retainTopics} (e.g. a backlog the next
+     * test point reuses), which the afterTestPoint hooks are told about.
+     */
+    protected void cooldownBetweenTests(int cooldownMinutes, ScenarioExpander.TestPoint point,
+                                        int currentIndex, int totalTests, Set<String> retainTopics) throws IOException {
         log.info("Test point teardown: Stops all producers, consumers, deletes the topics and groups");
         log.info("Test point teardown: Waiting for 30 seconds for metrics scraping before starting");
         Sleeper.sleepOrStop(stopRequested, 30000, true);
 
+        releaseTestPointResources(retainTopics);
+        log.info("Test point teardown: Completed");
+
+        runHooks(HookPoint.AFTER_TEST_POINT, point, currentIndex, totalTests, new ArrayList<>(retainTopics));
+
+        if (cooldownMinutes > 0 && currentIndex < totalTests - 1 && !stopRequested.get()) {
+            log.info("Cooldown: waiting {}m before next test point...", cooldownMinutes);
+            Sleeper.sleepOrStop(stopRequested, cooldownMinutes * 60_000L, true);
+        } else {
+            log.info("Cooldown: No cooldown configured, moving onto next test point");
+        }
+    }
+
+    /**
+     * Stops the test point's clients and Flink job and deletes its groups and
+     * topics, except {@code retainTopics}. The part of the teardown that frees
+     * resources, without the scrape wait, hooks or cooldown.
+     */
+    protected void releaseTestPointResources(Set<String> retainTopics) throws IOException {
         log.info("Test point teardown: Stopping all producers and consumers");
         worker.stopAll();
         if (!stopRequested.get())
@@ -140,14 +204,9 @@ public abstract class BaseEngine implements AutoCloseable {
 
         log.info("Test point teardown: Deleting topics and groups");
         cluster.deleteTestGroups();
-        cluster.deleteTestTopics();
-        log.info("Test point teardown: Completed");
-
-        if (cooldownMinutes > 0 && currentIndex < totalTests - 1 && !stopRequested.get()) {
-            log.info("Cooldown: waiting {}m before next test point...", cooldownMinutes);
-            Sleeper.sleepOrStop(stopRequested, cooldownMinutes * 60_000L, true);
-        } else {
-            log.info("Cooldown: No cooldown configured, moving onto next test point");
+        cluster.deleteTestTopics(retainTopics);
+        if (!retainTopics.isEmpty()) {
+            log.info("Test point teardown: Kept {} topic(s) for reuse by the next test point", retainTopics.size());
         }
     }
 
@@ -344,6 +403,23 @@ public abstract class BaseEngine implements AutoCloseable {
                                 MessageDistributorType messageDistributorType, double messageDistributorSkew,
                                 boolean correctnessEnabled, boolean staticConsumerPartitions,
                                 int outputPartitionsPerTopic) {
+        planTopology(numTopics, partitionsPerTopic, producersPerTopic, consumerGroupsPerTopic, consumersPerGroup,
+                consumerType, procMsMin, procMsMax, procParallelism, procMode, procCapacity,
+                messageDistributorType, messageDistributorSkew, correctnessEnabled, staticConsumerPartitions,
+                outputPartitionsPerTopic, null);
+    }
+
+    /**
+     * As above, over existing input topics when {@code inputTopics} is not
+     * null (see {@link TopologyPlanner#plan(TopologyPlanner.TopologySpec, List)}).
+     */
+    protected void planTopology(int numTopics, int partitionsPerTopic,
+                                int producersPerTopic, int consumerGroupsPerTopic, int consumersPerGroup,
+                                ConsumerType consumerType, int procMsMin, int procMsMax, int procParallelism,
+                                ConsumerProcMode procMode, int procCapacity,
+                                MessageDistributorType messageDistributorType, double messageDistributorSkew,
+                                boolean correctnessEnabled, boolean staticConsumerPartitions,
+                                int outputPartitionsPerTopic, List<String> inputTopics) {
         var spec = new TopologyPlanner.TopologySpec(
                 cluster.topicPrefix(),
                 numTopics,
@@ -357,7 +433,7 @@ public abstract class BaseEngine implements AutoCloseable {
                 correctnessEnabled,
                 staticConsumerPartitions,
                 outputPartitionsPerTopic);
-        this.plannedTopology = topologyPlanner.plan(spec);
+        this.plannedTopology = topologyPlanner.plan(spec, inputTopics);
         log.info("Planned topology: {} topics, {} producers, {} consumers, {} active producer workers",
                 plannedTopology.topicPartitionCounts().size(),
                 plannedTopology.producers().size(),
@@ -371,7 +447,18 @@ public abstract class BaseEngine implements AutoCloseable {
      * Returns the topic names so engines can pass them to other helpers (e.g. {@code ensureReady}).
      */
     protected List<String> createPlannedTopics() {
-        var topicPartitionCounts = plannedTopology.topicPartitionCounts();
+        return createPlannedTopics(Set.of(), Map.of());
+    }
+
+    /**
+     * As above, skipping the {@code existing} topics (which must already be on
+     * the cluster) and applying {@code configOverrides} to the ones created.
+     * Returns every planned topic name, existing ones included.
+     */
+    protected List<String> createPlannedTopics(Set<String> existing, Map<String, String> configOverrides) {
+        var topicPartitionCounts = new LinkedHashMap<>(plannedTopology.topicPartitionCounts());
+        List<String> allTopics = new ArrayList<>(topicPartitionCounts.keySet());
+        topicPartitionCounts.keySet().removeAll(existing);
         int count = topicPartitionCounts.size();
         int progressInterval = Math.max(1, (int) Math.ceil(count / 50.0));
         progressInterval = (int) Math.ceil(progressInterval / 10.0) * 10;
@@ -382,7 +469,7 @@ public abstract class BaseEngine implements AutoCloseable {
         List<String> topicNames = new ArrayList<>(topicPartitionCounts.keySet());
         for (int i = 0; i < topicNames.size(); i++) {
             String topic = topicNames.get(i);
-            cluster.createTopic(topic, topicPartitionCounts.get(topic));
+            cluster.createTopic(topic, topicPartitionCounts.get(topic), configOverrides);
 
             if (i < 10) {
                 log.info("Created topic {}", topic);
@@ -395,8 +482,10 @@ public abstract class BaseEngine implements AutoCloseable {
             }
         }
         // Allow metadata propagation before creating producers and consumers.
-        Sleeper.sleepOrStop(stopRequested, 5000, true);
-        return topicNames;
+        if (count > 0) {
+            Sleeper.sleepOrStop(stopRequested, 5000, true);
+        }
+        return allTopics;
     }
 
     protected void createProducers() throws IOException {

@@ -10,6 +10,7 @@ resources:
   - workers/service.yaml
   - coordinator/deployment.yaml
   - coordinator/service.yaml
+  - coordinator/rbac.yaml
   - results/pvc.yaml
   - monitoring/prometheus-config.yaml
   - monitoring/prometheus.yaml

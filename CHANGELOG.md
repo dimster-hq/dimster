@@ -105,3 +105,18 @@ Initial public release.
 ### Fixed
 
 - `dimster deploy` now restarts Prometheus when its scrape configuration changes; previously a changed configuration was only picked up after a manual restart.
+
+## [Unreleased]
+
+### Added
+
+- Workload hooks: `engineConfig.hooks` runs scripts at `beforeWorkload`, `afterWorkload`, `beforeTestPoint`, `afterTestPoint` and (drain-backlog) `beforeDrain`. The CLI ships the referenced scripts in the run request, and the coordinator runs them as local processes with a timeout and a failure policy. Every execution is recorded under `metadata.hooks` in the result JSON. On Kubernetes, scripts run in the coordinator pod with `kubectl` and a namespace-scoped ServiceAccount. See docs/concepts/hooks.md.
+- Reference hook scripts in `run/hooks/`: `evict-topic-cache.sh` (unprivileged per-topic page-cache eviction on every broker), `rolling-restart-brokers.sh` and `drop-node-caches.sh`.
+- Drain-backlog `reuseBacklog`: consecutive test points that differ only in drain-side settings drain one backlog instead of each building their own. The coordinator checks the backlog is intact before reusing it, and it survives `dimster resume`. Before a drain that follows a `beforeDrain` hook or reuses a backlog, the coordinator elects preferred leaders and waits for a full ISR (`settleTimeoutMinutes`).
+- Drain-backlog `warmup`: runs each scenario's first test point once, unrecorded and without hooks, before the scenario, so the first recorded drain does not run on freshly started JVMs. Set for the workload or per scenario.
+- Drain-backlog results record `drainStartTime`/`drainEndTime`. The end-of-run metrics export measures each drain's disk reads in Prometheus and saves them to `drain-disk-reads.json`. The drain charts show them, with the disk read fraction, to tell whether a drain was served from disk or from the page cache. Drain charts also mark reused test points.
+- System dashboard: a Disk Read Ratio panel, the bytes read from disk divided by the log bytes the brokers served (to consumers and followers). Near 1 means fetches are served from disk, near 0 from the page cache.
+
+### Fixed
+
+- The drain-backlog docs and chart table treated `backlogProducerRate: -1` as "paused"; the default is 0, and any value of 0 or less pauses producers.
