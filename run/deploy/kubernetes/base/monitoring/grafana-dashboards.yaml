@@ -2859,7 +2859,7 @@ data:
           "type": "timeseries",
           "gridPos": {
             "h": 8,
-            "w": 24,
+            "w": 8,
             "x": 0,
             "y": 35
           },
@@ -2908,6 +2908,116 @@ data:
             }
           ],
           "description": "Producer send to consumer receive, measured from the producer's record timestamp, which the Flink job keeps."
+        },
+        {
+          "title": "Producer to Flink latency",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 35
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "total"
+                },
+                "properties": [
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "expr": "max(client_producer_to_flink_latency{percentile=\"50\"})",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "max(client_producer_to_flink_latency{percentile=\"99\"})",
+              "legendFormat": "p99"
+            },
+            {
+              "expr": "max(client_producer_to_flink_latency{percentile=\"99.9\"})",
+              "legendFormat": "p99.9"
+            }
+          ],
+          "description": "Producer send to the Flink job emitting the record, from the emit time Flink stamps on each output record (dimster-flink-emit header). Covers the input topic, the Flink source and the query."
+        },
+        {
+          "title": "Flink to consumer latency",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 35
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "total"
+                },
+                "properties": [
+                  {
+                    "id": "custom.lineWidth",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          },
+          "targets": [
+            {
+              "expr": "max(client_flink_to_consumer_latency{percentile=\"50\"})",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "max(client_flink_to_consumer_latency{percentile=\"99\"})",
+              "legendFormat": "p99"
+            },
+            {
+              "expr": "max(client_flink_to_consumer_latency{percentile=\"99.9\"})",
+              "legendFormat": "p99.9"
+            }
+          ],
+          "description": "Flink emitting the record to the Dimster consumer processing it: the Flink Kafka sink, the output topic and the consumer. With EXACTLY_ONCE this includes the wait for the checkpoint that commits the transaction."
         },
         {
           "title": "Tasks",

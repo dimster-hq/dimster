@@ -6,7 +6,7 @@ A workload can put an Apache Flink SQL job between its producers and consumers:
 producers ──► dimster-<s>-0000 ──► Flink SQL job ──► dimster-<s>-0000-out ──► consumers
 ```
 
-Producers send [dataset](data-generation.md) records to the test topics as usual. A Flink job reads each topic, runs the workload's SQL over it, and writes the result to a matching `-out` topic. The consumers read the `-out` topics and measure end-to-end latency from the producer's send to their receipt, so the latency includes the time spent in Flink.
+Producers send [dataset](data-generation.md) records to the test topics as usual. A Flink job reads each topic, runs the workload's SQL over it, and writes the result to a matching `-out` topic. The consumers read the `-out` topics and measure end-to-end latency from the producer's send to their receipt, so the latency includes the time spent in Flink. Flink also stamps each output record with the time it emitted it, so the latency is also reported in two parts: [producer to Flink and Flink to consumer](#latency-through-flink).
 
 The SQL is a `SELECT` over a table named `source`. It can filter, project and transform rows, but it can't aggregate or join: each input row gives at most one output row. Dimster writes everything else: the Kafka source and sink tables, their formats, and the plumbing that keeps the fields Dimster needs.
 
@@ -140,6 +140,7 @@ The output schema is derived from the query:
 1. The runner asks Flink's planner for the query's resolved schema (`tEnv.sqlQuery(sql).getResolvedSchema()`), which type-checks the `SELECT` against `source`. For example, `UPPER(country)` resolves to `STRING`.
 2. It checks that `_dimster` and `_dimster_ts` are present with their source types, and puts the columns in sink order: `_dimster`, the other columns in query order, `_dimster_key` if selected, then `_dimster_ts`.
 3. It creates the `sink` table with those columns, and inserts the query, reordered, into it. `_dimster_ts` is written as the record timestamp, `_dimster_key` as the record key, and the rest as the value in the dataset's format.
+4. It adds a `_dimster_headers` column, written as the record headers, which carries the time Flink emitted the record (see [Latency through Flink](#latency-through-flink)). It isn't part of the value, and a query can't return a column with that name.
 
 Flink's format then encodes the output with a schema built from the sink's columns. `_dimster` is first because it is the first column. With `SELECT *` the sink columns are the source's, so output records are byte for byte the input records.
 
@@ -150,9 +151,32 @@ The runner's `main` runs on the JobManager while the job is being submitted, so 
 The output schema isn't stored or sent anywhere: it exists only inside the Flink job. Consumers don't need it, because they never decode dataset columns. They read only:
 
 - the message type and header from `_dimster`, found from the format alone: in Avro it is a length-prefixed byte string at the start of the value, and in JSON it is the first member;
-- the record timestamp, for end-to-end latency, which is the producer's send time carried through `_dimster_ts`.
+- the record timestamp, for end-to-end latency, which is the producer's send time carried through `_dimster_ts`;
+- the `dimster-flink-emit` header, for the [latency split](#latency-through-flink) at the Flink job.
 
 This is why `_dimster` must stay first and unchanged, and why the consumers only need to be told the format, which is the dataset's. The one place the schema would be needed is `printContents`: consumed JSON prints as it is, but consumed Avro prints only its type and size, because the consumers can't decode it with the dataset's schema.
+
+## Latency through Flink
+
+End-to-end latency through Flink covers the input topic, the Flink job, Flink's writes to the output topic and the consumers' reads of it. To show where the time goes, Dimster also reports it in two parts:
+
+- **Producer to Flink**: from the producer's send to the Flink job emitting the output record. This covers the input topic, the Flink source and the query.
+- **Flink to consumer**: from the Flink job emitting the record to a Dimster consumer starting to process it. This covers the Flink Kafka sink (batching, acknowledgements and, with `EXACTLY_ONCE`, the wait for the checkpoint that commits the transaction), the output topic and the consumer.
+
+To measure the split, the runner adds a function to the projection that feeds the sink. It reads the clock for every row and writes the result as the `dimster-flink-emit` record header: 8 bytes, big-endian microseconds since the epoch. The record timestamp is still the producer's, so end-to-end latency is measured exactly as before. Consumers read the header from each record, which needs no knowledge of the output schema. The header adds about 30 bytes to each output record.
+
+The two parts are recorded as separate histograms. Percentiles don't add up, so the p99 of the two parts doesn't sum to the end-to-end p99.
+
+Like end-to-end latency, each part compares two hosts' clocks: the producer's and the TaskManager's for the first part, and the TaskManager's and the consumer's for the second. If the TaskManager's clock is ahead, the first part reads high and the second low by the same amount. End-to-end latency doesn't involve the TaskManager's clock. Values of zero or below are dropped, as for end-to-end latency.
+
+In run mode, the result's `results` record both parts alongside end-to-end latency, with the same fields:
+
+| Part | Per period | Over the measured phase |
+|---|---|---|
+| Producer to Flink | `producerToFlinkLatencyAvg`, `producerToFlinkLatency50pct`, ... `producerToFlinkLatency99pct`, ... `producerToFlinkLatencyMax` | `aggregatedProducerToFlinkLatency50pct`, ... `aggregatedProducerToFlinkLatencyMax`, `aggregatedProducerToFlinkLatencyQuantiles` |
+| Flink to consumer | `flinkToConsumerLatency...` | `aggregatedFlinkToConsumerLatency...` |
+
+The fields appear only for test points with a Flink stage. The run charts show both parts, the period log and aggregated results print them under end-to-end latency, and the **Dimster - Flink** Grafana dashboard shows them next to end-to-end latency (`client_producer_to_flink_latency` and `client_flink_to_consumer_latency` in Prometheus).
 
 ## Topics, jobs and test points
 

@@ -65,6 +65,16 @@ public class    PeriodStats {
     public Histogram endToEndDeliveryLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] endToEndDeliveryLatencyBytes;
 
+    // End-to-end latency split at the Flink job: producer → Flink emit and
+    // Flink emit → consumer. Empty without a Flink stage.
+    @JsonIgnore
+    public Histogram producerToFlinkLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    public byte[] producerToFlinkLatencyBytes;
+
+    @JsonIgnore
+    public Histogram flinkToConsumerLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    public byte[] flinkToConsumerLatencyBytes;
+
     @JsonIgnore
     public Histogram pollBatchSize = new Histogram(100_000, 3);
     public byte[] pollBatchSizeBytes;
@@ -124,6 +134,8 @@ public class    PeriodStats {
         publishDelayLatency.add(source.publishDelayLatency);
         endToEndLatency.add(source.endToEndLatency);
         endToEndDeliveryLatency.add(source.endToEndDeliveryLatency);
+        producerToFlinkLatency.add(source.producerToFlinkLatency);
+        flinkToConsumerLatency.add(source.flinkToConsumerLatency);
         scheduleLatency.add(source.scheduleLatency);
         pollBatchSize.add(source.pollBatchSize);
         commitSyncLatency.add(source.commitSyncLatency);
@@ -198,6 +210,8 @@ public class    PeriodStats {
         publishDelayLatency.reset();
         endToEndLatency.reset();
         endToEndDeliveryLatency.reset();
+        producerToFlinkLatency.reset();
+        flinkToConsumerLatency.reset();
         scheduleLatency.reset();
         pollBatchSize.reset();
         commitSyncLatency.reset();
@@ -209,8 +223,8 @@ public class    PeriodStats {
 
     // Populates in-memory histogram fields from wire-serialized byte arrays.
     // Only decodes the histograms that WorkerHttpServer actually serializes
-    // (publishLatency, scheduleLatency, publishDelayLatency, endToEndLatency,
-    // and per-partition e2e). pollBatchSize, commitSyncLatency, and
+    // (publishLatency, scheduleLatency, publishDelayLatency, the end-to-end
+    // latencies, and per-partition e2e). pollBatchSize, commitSyncLatency, and
     // processingTime are never serialized and stay as default-empty histograms.
     public void decodeHistograms() {
         try {
@@ -233,6 +247,14 @@ public class    PeriodStats {
             if (endToEndDeliveryLatencyBytes != null) {
                 endToEndDeliveryLatency = Histogram.decodeFromCompressedByteBuffer(
                         ByteBuffer.wrap(endToEndDeliveryLatencyBytes), E2E_LATENCY_MAX_MICROS);
+            }
+            if (producerToFlinkLatencyBytes != null) {
+                producerToFlinkLatency = Histogram.decodeFromCompressedByteBuffer(
+                        ByteBuffer.wrap(producerToFlinkLatencyBytes), E2E_LATENCY_MAX_MICROS);
+            }
+            if (flinkToConsumerLatencyBytes != null) {
+                flinkToConsumerLatency = Histogram.decodeFromCompressedByteBuffer(
+                        ByteBuffer.wrap(flinkToConsumerLatencyBytes), E2E_LATENCY_MAX_MICROS);
             }
             if (perPartitionE2eLatencyBytes != null) {
                 perPartitionE2eLatency = new TreeMap<>();

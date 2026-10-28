@@ -269,6 +269,18 @@ def time_labels(arr_len, sample_rate_ms):
     return [round(i * step) for i in range(arr_len)]
 
 
+# End-to-end latency split at the Flink job, present only in results of test
+# points with a Flink stage: (result field name, chart title).
+FLINK_LATENCY_SEGMENTS = [
+    ("ProducerToFlinkLatency", "Producer → Flink Latency"),
+    ("FlinkToConsumerLatency", "Flink → Consumer Latency"),
+]
+
+
+def lower_first(name):
+    return name[0].lower() + name[1:]
+
+
 def build_chart_configs(data):
     """Build all chart configs for a single run result.
 
@@ -387,6 +399,26 @@ def build_chart_configs(data):
         })
         chart_idx += 1
 
+        # --- 4b. Aggregated Latency - the e2e split at the Flink job ---
+        for field, title in FLINK_LATENCY_SEGMENTS:
+            keys = [f"aggregated{field}{suffix}" for suffix in ("50pct", "95pct", "99pct", "999pct", "Max")]
+            if not any(keys[2] in t["results"] for t in tests):
+                continue
+            datasets = [{
+                "label": pname,
+                "data": [t["results"].get(pkey, 0) for t in tests],
+                "backgroundColor": COLORS[pi % len(COLORS)],
+            } for pi, (pname, pkey) in enumerate(zip(pctiles, keys))]
+            chart_configs.append({
+                "id": f"chart-{s_idx}-{chart_idx}",
+                "config": {
+                    "type": "bar",
+                    "data": {"labels": labels, "datasets": datasets},
+                    "options": bar_options(f"Aggregated {title}", "ms"),
+                },
+            })
+            chart_idx += 1
+
         # --- 5. Publish Rate over time ---
         max_len = max((len(t["results"].get("publishRate", [])) for t in tests), default=0)
         x_labels = time_labels(max_len, sample_rate_ms)
@@ -487,6 +519,25 @@ def build_chart_configs(data):
             })
             chart_idx += 1
 
+        # --- 8c. The e2e split at the Flink job, p99 over time ---
+        for field, title in FLINK_LATENCY_SEGMENTS:
+            key = f"{lower_first(field)}99pct"
+            series = [t["results"].get(key, []) for t in tests]
+            if not any(series):
+                continue
+            x_labels = time_labels(max(len(v) for v in series), sample_rate_ms)
+            chart_configs.append({
+                "id": f"chart-{s_idx}-{chart_idx}",
+                "zoomGroup": "time",
+                "config": {
+                    "type": "line",
+                    "data": {"labels": x_labels,
+                             "datasets": [line_dataset(labels[ti], v, ti) for ti, v in enumerate(series)]},
+                    "options": line_options(f"{title} p99 over Time", "ms", "Time (s)"),
+                },
+            })
+            chart_idx += 1
+
         # --- 9. Publish Delay p99 over time ---
         max_len = max((len(t["results"].get("publishDelayLatency99pct", [])) for t in tests), default=0)
         x_labels = time_labels(max_len, sample_rate_ms)
@@ -565,6 +616,25 @@ def build_chart_configs(data):
                 },
             })
             chart_idx += 1
+
+        # --- 11c. The e2e split at the Flink job, percentile distributions ---
+        for field, title in FLINK_LATENCY_SEGMENTS:
+            datasets = []
+            for ti, t in enumerate(tests):
+                quantiles = t["results"].get(f"aggregated{field}Quantiles", {})
+                if quantiles:
+                    datasets.append(percentile_dataset(labels[ti], percentile_points(quantiles), ti))
+            if datasets:
+                chart_configs.append({
+                    "id": f"chart-{s_idx}-{chart_idx}",
+                    "zoomGroup": "percentile",
+                    "config": {
+                        "type": "scatter",
+                        "data": {"datasets": datasets},
+                        "options": percentile_options(f"{title} Percentile Distribution"),
+                    },
+                })
+                chart_idx += 1
 
         aggregate_end = chart_idx
 

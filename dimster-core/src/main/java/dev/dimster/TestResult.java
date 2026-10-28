@@ -7,7 +7,11 @@ import java.util.TreeMap;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
+
+import org.HdrHistogram.Histogram;
 
 import dev.dimster.availability.AvailabilityResult;
 import dev.dimster.datagen.ResolvedDataset;
@@ -258,8 +262,86 @@ public class TestResult {
         public double aggregatedEndToEndDeliveryLatency9999pct;
         public double aggregatedEndToEndDeliveryLatencyMax;
 
+        // End-to-end latency split at the Flink job (producer → Flink emit,
+        // Flink emit → consumer). Null without a Flink stage, so absent from
+        // the JSON; otherwise flat like the fields above, e.g.
+        // producerToFlinkLatency99pct and aggregatedProducerToFlinkLatency99pct.
+        @JsonUnwrapped(prefix = "producerToFlinkLatency")
+        public LatencySeries producerToFlinkLatency;
+        @JsonUnwrapped(prefix = "aggregatedProducerToFlinkLatency")
+        public LatencySummary aggregatedProducerToFlinkLatency;
+        @JsonUnwrapped(prefix = "flinkToConsumerLatency")
+        public LatencySeries flinkToConsumerLatency;
+        @JsonUnwrapped(prefix = "aggregatedFlinkToConsumerLatency")
+        public LatencySummary aggregatedFlinkToConsumerLatency;
+
         @JsonInclude(JsonInclude.Include.NON_NULL)
         public List<PartitionResult> perPartitionResults;
+    }
+
+    /**
+     * One latency's percentiles per sample period, in ms. Unwrapped into
+     * PerformanceResults under a prefix, so it serializes as the flat
+     * {@code <name>Avg}, {@code <name>99pct}, ... lists that charting tools read.
+     */
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    public static class LatencySeries {
+        @JsonProperty("Min") public List<Double> min = new ArrayList<>();
+        @JsonProperty("Avg") public List<Double> avg = new ArrayList<>();
+        @JsonProperty("50pct") public List<Double> p50 = new ArrayList<>();
+        @JsonProperty("75pct") public List<Double> p75 = new ArrayList<>();
+        @JsonProperty("95pct") public List<Double> p95 = new ArrayList<>();
+        @JsonProperty("99pct") public List<Double> p99 = new ArrayList<>();
+        @JsonProperty("999pct") public List<Double> p999 = new ArrayList<>();
+        @JsonProperty("9999pct") public List<Double> p9999 = new ArrayList<>();
+        @JsonProperty("Max") public List<Double> max = new ArrayList<>();
+
+        /** Appends one period's histogram (microseconds). */
+        public void add(Histogram h) {
+            min.add(h.getMinValue() / 1000.0);
+            avg.add(h.getMean() / 1000.0);
+            p50.add(h.getValueAtPercentile(50) / 1000.0);
+            p75.add(h.getValueAtPercentile(75) / 1000.0);
+            p95.add(h.getValueAtPercentile(95) / 1000.0);
+            p99.add(h.getValueAtPercentile(99) / 1000.0);
+            p999.add(h.getValueAtPercentile(99.9) / 1000.0);
+            p9999.add(h.getValueAtPercentile(99.99) / 1000.0);
+            max.add(h.getMaxValue() / 1000.0);
+        }
+    }
+
+    /**
+     * One latency over the whole measured phase, in ms. Unwrapped into
+     * PerformanceResults under an {@code aggregated<Name>} prefix, like
+     * {@code aggregatedEndToEndLatency99pct} and its Quantiles map. Boxed so
+     * an empty instance (as deserialization creates) writes nothing.
+     */
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    public static class LatencySummary {
+        @JsonProperty("Avg") public Double avg;
+        @JsonProperty("50pct") public Double p50;
+        @JsonProperty("75pct") public Double p75;
+        @JsonProperty("95pct") public Double p95;
+        @JsonProperty("99pct") public Double p99;
+        @JsonProperty("999pct") public Double p999;
+        @JsonProperty("9999pct") public Double p9999;
+        @JsonProperty("Max") public Double max;
+        @JsonProperty("Quantiles") public Map<Double, Double> quantiles = new TreeMap<>();
+
+        /** Summarizes a cumulative histogram (microseconds). */
+        public static LatencySummary of(Histogram h) {
+            LatencySummary s = new LatencySummary();
+            s.avg = h.getMean() / 1000.0;
+            s.p50 = h.getValueAtPercentile(50) / 1000.0;
+            s.p75 = h.getValueAtPercentile(75) / 1000.0;
+            s.p95 = h.getValueAtPercentile(95) / 1000.0;
+            s.p99 = h.getValueAtPercentile(99) / 1000.0;
+            s.p999 = h.getValueAtPercentile(99.9) / 1000.0;
+            s.p9999 = h.getValueAtPercentile(99.99) / 1000.0;
+            s.max = h.getMaxValue() / 1000.0;
+            h.percentiles(100).forEach(v -> s.quantiles.put(v.getPercentile(), v.getValueIteratedTo() / 1000.0));
+            return s;
+        }
     }
 
     public static class PartitionResult {

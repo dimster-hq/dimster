@@ -49,6 +49,14 @@ public class DimsterSqlJobTest {
     }
 
     @Test
+    public void everyOutputRecordIsStampedWithItsEmitTime() {
+        String plan = plan(spec("JSON", "SELECT * FROM source WHERE event_type = 'purchase'", 1));
+        // Planned per row in the Calc that feeds the sink's headers metadata.
+        assertTrue(plan, plan.contains("Calc(select=[_dimster, event_id"));
+        assertTrue(plan, plan.contains("EmitTimeHeaders*() AS headers"));
+    }
+
+    @Test
     public void projectionAndTransformationOverJsonPlans() {
         String plan = plan(spec("JSON",
                 "SELECT _dimster_ts, UPPER(event_type) AS event_type, duration_ms * 2 AS d, _dimster FROM source", 1));

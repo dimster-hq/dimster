@@ -228,6 +228,10 @@ public class RepeatMerger {
                 results.stream().map(r -> r.aggregatedPublishDelayLatencyQuantiles).toList());
         m.aggregatedEndToEndLatencyQuantiles = mergeQuantileMaps(
                 results.stream().map(r -> r.aggregatedEndToEndLatencyQuantiles).toList());
+        m.aggregatedProducerToFlinkLatency = mergeLatencySummaries(
+                results.stream().map(r -> r.aggregatedProducerToFlinkLatency).toList());
+        m.aggregatedFlinkToConsumerLatency = mergeLatencySummaries(
+                results.stream().map(r -> r.aggregatedFlinkToConsumerLatency).toList());
 
         // Per-period time series (publishRate, consumeRate, latency-over-time, etc.) are left
         // empty in merged results — collapsing per-period rates to a single run-wide average per
@@ -235,6 +239,22 @@ public class RepeatMerger {
         // makes publish and consume charts coincide (since totalSent ≈ totalReceived per run).
         // Users should inspect individual runs for time-series detail.
         // perPartitionResults omitted
+        return m;
+    }
+
+    /** Averages the runs' summaries; null unless every run has one (a Flink stage). */
+    private static TestResult.LatencySummary mergeLatencySummaries(List<TestResult.LatencySummary> summaries) {
+        if (summaries.isEmpty() || summaries.stream().anyMatch(x -> x == null || x.avg == null)) return null;
+        var m = new TestResult.LatencySummary();
+        m.avg = avg(summaries, x -> x.avg);
+        m.p50 = avg(summaries, x -> x.p50);
+        m.p75 = avg(summaries, x -> x.p75);
+        m.p95 = avg(summaries, x -> x.p95);
+        m.p99 = avg(summaries, x -> x.p99);
+        m.p999 = avg(summaries, x -> x.p999);
+        m.p9999 = avg(summaries, x -> x.p9999);
+        m.max = avg(summaries, x -> x.max);
+        m.quantiles = mergeQuantileMaps(summaries.stream().map(x -> x.quantiles).toList());
         return m;
     }
 

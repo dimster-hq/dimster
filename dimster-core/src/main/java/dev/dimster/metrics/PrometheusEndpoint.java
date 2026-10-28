@@ -122,6 +122,10 @@ public class PrometheusEndpoint {
                     writer.write("client_e2e_delivery_latency{host=\"" + hostname + "\",percentile=\"99.999\"} " + dec.format(microsToMillis(periodStats.endToEndDeliveryLatency.getValueAtPercentile(99.999))) + "\n");
                     writer.write("client_e2e_delivery_latency{host=\"" + hostname + "\",percentile=\"100\"} " + dec.format(microsToMillis(periodStats.endToEndDeliveryLatency.getValueAtPercentile(100))) + "\n");
 
+                    // The e2e latency split at the Flink job: only with a Flink stage.
+                    writeLatencyPercentiles(writer, "client_producer_to_flink_latency", periodStats.producerToFlinkLatency);
+                    writeLatencyPercentiles(writer, "client_flink_to_consumer_latency", periodStats.flinkToConsumerLatency);
+
                     writer.write("client_publish_latency{host=\"" + hostname + "\",percentile=\"50\"} " + dec.format(microsToMillis(periodStats.publishLatency.getValueAtPercentile(50))) + "\n");
                     writer.write("client_publish_latency{host=\"" + hostname + "\",percentile=\"75\"} " + dec.format(microsToMillis(periodStats.publishLatency.getValueAtPercentile(75))) + "\n");
                     writer.write("client_publish_latency{host=\"" + hostname + "\",percentile=\"90\"} " + dec.format(microsToMillis(periodStats.publishLatency.getValueAtPercentile(90))) + "\n");
@@ -318,6 +322,15 @@ public class PrometheusEndpoint {
                 writer.write("client_pp_e2e_delivery_latency{" + labels + ",percentile=\"99.9\"} " + dec.format(microsToMillis(h.getValueAtPercentile(99.9))) + "\n");
                 writer.write("client_pp_e2e_delivery_latency{" + labels + ",percentile=\"100\"} " + dec.format(microsToMillis(h.getValueAtPercentile(100))) + "\n");
             }
+        }
+    }
+
+    /** Writes a latency gauge's percentiles in ms; nothing when the period recorded none. */
+    private void writeLatencyPercentiles(StringWriter writer, String name, org.HdrHistogram.Histogram h) {
+        if (h.getTotalCount() == 0) return;
+        for (String p : new String[]{"50", "75", "90", "95", "99", "99.9", "99.99", "99.999", "100"}) {
+            writer.write(name + "{host=\"" + hostname + "\",percentile=\"" + p + "\"} "
+                    + dec.format(microsToMillis(h.getValueAtPercentile(Double.parseDouble(p)))) + "\n");
         }
     }
 

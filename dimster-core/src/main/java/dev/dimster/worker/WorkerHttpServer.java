@@ -489,6 +489,18 @@ public class WorkerHttpServer {
             stats.endToEndDeliveryLatencyBytes = new byte[histogramSerializationBuffer.position()];
             histogramSerializationBuffer.flip();
             histogramSerializationBuffer.get(stats.endToEndDeliveryLatencyBytes);
+
+            histogramSerializationBuffer.clear();
+            stats.producerToFlinkLatency.encodeIntoCompressedByteBuffer(histogramSerializationBuffer);
+            stats.producerToFlinkLatencyBytes = new byte[histogramSerializationBuffer.position()];
+            histogramSerializationBuffer.flip();
+            histogramSerializationBuffer.get(stats.producerToFlinkLatencyBytes);
+
+            histogramSerializationBuffer.clear();
+            stats.flinkToConsumerLatency.encodeIntoCompressedByteBuffer(histogramSerializationBuffer);
+            stats.flinkToConsumerLatencyBytes = new byte[histogramSerializationBuffer.position()];
+            histogramSerializationBuffer.flip();
+            histogramSerializationBuffer.get(stats.flinkToConsumerLatencyBytes);
         }
     }
 

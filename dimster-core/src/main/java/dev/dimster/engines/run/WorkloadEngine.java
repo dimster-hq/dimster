@@ -984,6 +984,8 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             PeriodStats stats = worker.getPeriodStats();
             agg.endToEndLatency.add(stats.endToEndLatency);
             agg.endToEndDeliveryLatency.add(stats.endToEndDeliveryLatency);
+            agg.producerToFlinkLatency.add(stats.producerToFlinkLatency);
+            agg.flinkToConsumerLatency.add(stats.flinkToConsumerLatency);
             agg.publishDelayLatency.add(stats.publishDelayLatency);
             agg.scheduleLatency.add(stats.scheduleLatency);
             agg.publishLatency.add(stats.publishLatency);
@@ -1159,7 +1161,11 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                         microsToMillis(stats.publishDelayLatency.getValueAtPercentile(50)),
                         microsToMillis(stats.publishDelayLatency.getValueAtPercentile(99)),
                         microsToMillis(stats.publishDelayLatency.getValueAtPercentile(99.9)),
-                        microsToMillis(stats.publishDelayLatency.getMaxValue())));
+                        microsToMillis(stats.publishDelayLatency.getMaxValue()))
+                + (testPoint.flink() != null
+                        ? formatLatencyRow("Producer->Flink (ms)", stats.producerToFlinkLatency)
+                            + formatLatencyRow("Flink->Consumer (ms)", stats.flinkToConsumerLatency)
+                        : ""));
     }
 
     private void logAvailabilityStatus() {
@@ -1231,6 +1237,15 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         r.endToEndDeliveryLatency999pct.add(microsToMillis(stats.endToEndDeliveryLatency.getValueAtPercentile(99.9)));
         r.endToEndDeliveryLatency9999pct.add(microsToMillis(stats.endToEndDeliveryLatency.getValueAtPercentile(99.99)));
         r.endToEndDeliveryLatencyMax.add(microsToMillis(stats.endToEndDeliveryLatency.getMaxValue()));
+
+        if (testPoint.flink() != null) {
+            if (r.producerToFlinkLatency == null) {
+                r.producerToFlinkLatency = new TestResult.LatencySeries();
+                r.flinkToConsumerLatency = new TestResult.LatencySeries();
+            }
+            r.producerToFlinkLatency.add(stats.producerToFlinkLatency);
+            r.flinkToConsumerLatency.add(stats.flinkToConsumerLatency);
+        }
     }
 
     private String formatTargetLine(long sampleStartNanos, long sampleEndNanos) {
@@ -1292,9 +1307,17 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                         microsToMillis(agg.publishDelayLatency.getValueAtPercentile(99)),
                         microsToMillis(agg.publishDelayLatency.getValueAtPercentile(99.9)),
                         microsToMillis(agg.publishDelayLatency.getValueAtPercentile(99.99)),
-                        microsToMillis(agg.publishDelayLatency.getMaxValue())));
+                        microsToMillis(agg.publishDelayLatency.getMaxValue()))
+                + (testPoint.flink() != null
+                        ? formatAggLatencyRow("Producer->Flink (ms)", agg.producerToFlinkLatency)
+                            + formatAggLatencyRow("Flink->Consumer (ms)", agg.flinkToConsumerLatency)
+                        : ""));
 
         var r = result.results;
+        if (testPoint.flink() != null) {
+            r.aggregatedProducerToFlinkLatency = TestResult.LatencySummary.of(agg.producerToFlinkLatency);
+            r.aggregatedFlinkToConsumerLatency = TestResult.LatencySummary.of(agg.flinkToConsumerLatency);
+        }
         r.aggregatedPublishLatencyAvg = microsToMillis(agg.publishLatency.getMean());
         r.aggregatedPublishLatency50pct = microsToMillis(agg.publishLatency.getValueAtPercentile(50));
         r.aggregatedPublishLatency75pct = microsToMillis(agg.publishLatency.getValueAtPercentile(75));
@@ -1421,6 +1444,12 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         return String.format("  %-22s %10.2f %10.2f %10.2f %10.2f %10.2f%n", label, avg, p50, p99, p999, max);
     }
 
+    private static String formatLatencyRow(String label, Histogram h) {
+        return formatLatencyRow(label, microsToMillis(h.getMean()),
+                microsToMillis(h.getValueAtPercentile(50)), microsToMillis(h.getValueAtPercentile(99)),
+                microsToMillis(h.getValueAtPercentile(99.9)), microsToMillis(h.getMaxValue()));
+    }
+
     private static String formatAggLatencyHeader() {
         return String.format("  %-22s %10s %10s %10s %10s %10s %10s %10s%n",
                 "", "avg", "p50", "p95", "p99", "p99.9", "p99.99", "max");
@@ -1430,6 +1459,13 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
                                                double p99, double p999, double p9999, double max) {
         return String.format("  %-22s %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f %10.2f%n",
                 label, avg, p50, p95, p99, p999, p9999, max);
+    }
+
+    private static String formatAggLatencyRow(String label, Histogram h) {
+        return formatAggLatencyRow(label, microsToMillis(h.getMean()),
+                microsToMillis(h.getValueAtPercentile(50)), microsToMillis(h.getValueAtPercentile(95)),
+                microsToMillis(h.getValueAtPercentile(99)), microsToMillis(h.getValueAtPercentile(99.9)),
+                microsToMillis(h.getValueAtPercentile(99.99)), microsToMillis(h.getMaxValue()));
     }
 
     private static double microsToMillis(double microTime) {

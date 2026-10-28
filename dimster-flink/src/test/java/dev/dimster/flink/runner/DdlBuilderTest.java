@@ -101,6 +101,22 @@ public class DdlBuilderTest {
     }
 
     @Test
+    public void sinkWritesTheEmitTimeHeadersAsMetadata() {
+        var layout = DdlBuilder.sinkLayout(List.of(HEADER, TS), SOURCE);
+        String ddl = DdlBuilder.sinkDdl(spec("AVRO", "AT_LEAST_ONCE", Map.of()), 0, layout);
+        // Last, as DimsterSqlJob appends the computed column after the query's.
+        assertTrue(ddl, ddl.contains("`_dimster_headers` MAP<STRING, BYTES> METADATA FROM 'headers'\n)"));
+    }
+
+    @Test
+    public void queryColumnNamedLikeTheHeadersIsRejected() {
+        var clash = new DdlBuilder.SchemaColumn("_dimster_headers", "INT");
+        var e = assertThrows(IllegalArgumentException.class,
+                () -> DdlBuilder.sinkLayout(List.of(HEADER, TS, clash), SOURCE));
+        assertTrue(e.getMessage().contains("_dimster_headers"));
+    }
+
+    @Test
     public void quotesAreEscaped() {
         assertEquals("`a``b`", DdlBuilder.quote("a`b"));
     }

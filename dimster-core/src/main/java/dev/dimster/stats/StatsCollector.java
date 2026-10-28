@@ -77,6 +77,11 @@ public class StatsCollector implements ConsumerCallback {
     // histogram + per-record CPU cost are skipped on the common no-processing workload.
     private final Recorder endToEndDeliveryLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     private volatile boolean recordDeliveryLatency = false;
+    // End-to-end latency split at the Flink job, from the emit time it stamps
+    // on each output record (FlinkEmitTime): producer send → Flink emit, and
+    // Flink emit → consumer processing start. Empty without a Flink stage.
+    private final Recorder producerToFlinkLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final Recorder flinkToConsumerLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     private final Recorder pollBatchSizeRecorder = new Recorder(100_000, 3);
     private final Recorder commitSyncLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     private final Recorder processingTimeRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 3);
@@ -271,6 +276,25 @@ public class StatsCollector implements ConsumerCallback {
     }
 
     @Override
+    public void flinkRecordReceived(byte[] payload, RecordFormat format, long publishTimestampMillis,
+                                    long flinkEmitMicros, Instant processingStartTime) {
+        if (format.typeOf(payload) == MessageType.PROBE) {
+            return;
+        }
+        // Like e2e, non-positive values (clock skew between hosts) are dropped.
+        long producerToFlinkMicros = flinkEmitMicros - TimeUnit.MILLISECONDS.toMicros(publishTimestampMillis);
+        if (producerToFlinkMicros > 0) {
+            producerToFlinkLatencyRecorder.recordValue(producerToFlinkMicros);
+        }
+        long processingStartMicros = TimeUnit.SECONDS.toMicros(processingStartTime.getEpochSecond())
+                + processingStartTime.getNano() / 1_000;
+        long flinkToConsumerMicros = processingStartMicros - flinkEmitMicros;
+        if (flinkToConsumerMicros > 0) {
+            flinkToConsumerLatencyRecorder.recordValue(flinkToConsumerMicros);
+        }
+    }
+
+    @Override
     public void error() {
         pollErrors.increment();
         totalPollErrors.increment();
@@ -364,6 +388,8 @@ public class StatsCollector implements ConsumerCallback {
         stats.publishDelayLatency = publishDelayLatencyRecorder.getIntervalHistogram();
         stats.endToEndLatency = endToEndLatencyRecorder.getIntervalHistogram();
         stats.endToEndDeliveryLatency = endToEndDeliveryLatencyRecorder.getIntervalHistogram();
+        stats.producerToFlinkLatency = producerToFlinkLatencyRecorder.getIntervalHistogram();
+        stats.flinkToConsumerLatency = flinkToConsumerLatencyRecorder.getIntervalHistogram();
         stats.pollBatchSize = pollBatchSizeRecorder.getIntervalHistogram();
         stats.commitSyncLatency = commitSyncLatencyRecorder.getIntervalHistogram();
         stats.processingTime = processingTimeRecorder.getIntervalHistogram();
@@ -399,6 +425,8 @@ public class StatsCollector implements ConsumerCallback {
         publishDelayLatencyRecorder.reset();
         endToEndLatencyRecorder.reset();
         endToEndDeliveryLatencyRecorder.reset();
+        producerToFlinkLatencyRecorder.reset();
+        flinkToConsumerLatencyRecorder.reset();
         pollBatchSizeRecorder.reset();
         commitSyncLatencyRecorder.reset();
         processingTimeRecorder.reset();
@@ -435,6 +463,8 @@ public class StatsCollector implements ConsumerCallback {
         publishDelayLatencyRecorder.reset();
         endToEndLatencyRecorder.reset();
         endToEndDeliveryLatencyRecorder.reset();
+        producerToFlinkLatencyRecorder.reset();
+        flinkToConsumerLatencyRecorder.reset();
         pollBatchSizeRecorder.reset();
         commitSyncLatencyRecorder.reset();
         processingTimeRecorder.reset();

@@ -59,6 +59,35 @@ class GenerateRunChartsTest(unittest.TestCase):
         self.assertIn("Dimension brokers", html)
         self.assertNotIn(">None<", html)
 
+    def test_flink_latency_split_is_charted_only_when_present(self):
+        """Results of Flink test points carry the e2e split at the Flink job."""
+        def run(results):
+            return {"mode": "run", "runConfig": {"sampleRateMillis": 1000},
+                    "scenarioResults": [{"name": "s", "tests": [{"label": "t", "results": results}]}]}
+
+        def titles(data):
+            configs, _ = generate_run_charts.build_chart_configs(data)
+            return [c["config"]["options"]["plugins"]["title"]["text"] for c in configs]
+
+        base = {"publishRate": [1.0], "consumeRate": [1.0]}
+        self.assertFalse(any("Flink" in t for t in titles(run(base))))
+
+        flink = dict(base,
+                     producerToFlinkLatency99pct=[30.0], flinkToConsumerLatency99pct=[70.0],
+                     aggregatedProducerToFlinkLatency99pct=30.0,
+                     aggregatedFlinkToConsumerLatency99pct=70.0,
+                     aggregatedProducerToFlinkLatencyQuantiles={"50.0": 30.0, "99.0": 30.0},
+                     aggregatedFlinkToConsumerLatencyQuantiles={"50.0": 70.0, "99.0": 70.0})
+        flink_titles = [t for t in titles(run(flink)) if "Flink" in t]
+        self.assertEqual([
+            "Aggregated Producer → Flink Latency",
+            "Aggregated Flink → Consumer Latency",
+            "Producer → Flink Latency p99 over Time",
+            "Flink → Consumer Latency p99 over Time",
+            "Producer → Flink Latency Percentile Distribution",
+            "Flink → Consumer Latency Percentile Distribution",
+        ], flink_titles)
+
     def test_avg_mbs_prefers_measured_byte_rates(self):
         """Generated datasets have variable record sizes, so measured MB/s wins."""
         test = {

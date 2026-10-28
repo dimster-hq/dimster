@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import dev.dimster.MessageType;
 import dev.dimster.datagen.RecordFormat;
 import dev.dimster.datagen.RecordPrinter;
+import dev.dimster.flink.FlinkEmitTime;
 import dev.dimster.spi.kafka.AckType;
 import dev.dimster.spi.kafka.RawShareConsumer;
 import dev.dimster.spi.kafka.ShareAckListener;
@@ -179,6 +180,7 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
                                 // Records stats
                                 callback.messageReceived(record.value(), recordFormat, record.topic(), record.partition(),
                                         record.timestamp(), deliveryTime, simulatedProcessingStartTime);
+                                FlinkEmitTime.report(callback, record, recordFormat, simulatedProcessingStartTime);
 
                                 // Maybe acknowledge
                                 // Note: acknowledge(ACCEPT) is local-only (no network I/O),

@@ -20,7 +20,9 @@ import java.util.stream.Collectors;
  *       {@code _dimster} header goes first (consumers read the message type
  *       from the first field), {@code _dimster_ts} is written back as the record
  *       timestamp (end-to-end latency is measured from it), and
- *       {@code _dimster_key}, when selected, becomes the record key.</li>
+ *       {@code _dimster_key}, when selected, becomes the record key, and
+ *       {@code _dimster_headers} carries the Flink emit time as a Kafka header
+ *       ({@link EmitTimeHeaders}).</li>
  * </ul>
  *
  * Pure string building, so it can be tested without a Flink cluster.
@@ -30,6 +32,8 @@ final class DdlBuilder {
     static final String HEADER = "_dimster";
     static final String TIMESTAMP = "_dimster_ts";
     static final String KEY = "_dimster_key";
+    /** The sink's headers metadata column; always last, computed by {@link DimsterSqlJob}. */
+    static final String HEADERS = "_dimster_headers";
 
     private DdlBuilder() {}
 
@@ -107,6 +111,10 @@ final class DdlBuilder {
             throw new IllegalArgumentException("The Flink SQL query returns duplicate column names: "
                     + queryColumns.stream().map(SchemaColumn::name).collect(Collectors.joining(", ")));
         }
+        if (query.containsKey(HEADERS)) {
+            throw new IllegalArgumentException("The Flink SQL query must not return a column named " + HEADERS
+                    + ": Dimster writes it as the output records' headers");
+        }
         SchemaColumn header = required(query, source, HEADER);
         SchemaColumn timestamp = required(query, source, TIMESTAMP);
         Optional<SchemaColumn> key = Optional.ofNullable(query.get(KEY));
@@ -127,6 +135,7 @@ final class DdlBuilder {
         }
         layout.key().ifPresent(k -> columns.add(quote(KEY) + " " + k.type()));
         columns.add(quote(TIMESTAMP) + " TIMESTAMP_LTZ(3) METADATA FROM 'timestamp'");
+        columns.add(quote(HEADERS) + " MAP<STRING, BYTES> METADATA FROM 'headers'");
 
         FlinkJobSpec.Pipeline pipeline = spec.pipelines().get(index);
         Map<String, String> options = new LinkedHashMap<>();

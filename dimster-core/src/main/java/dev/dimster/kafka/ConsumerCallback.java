@@ -20,6 +20,16 @@ public interface ConsumerCallback {
         messageReceived(payload.length, publishTimestampMillis, deliveryTime, processingStartTime);
     }
 
+    /**
+     * A record that a Flink job stamped with the time it emitted it
+     * ({@code FlinkEmitTime}), reported right after {@link #messageReceived}
+     * for the same record. Only records of a Flink job's output have the stamp.
+     *
+     * @param flinkEmitMicros when the Flink job emitted the record, in epoch microseconds
+     */
+    default void flinkRecordReceived(byte[] payload, RecordFormat format, long publishTimestampMillis,
+                                     long flinkEmitMicros, Instant processingStartTime) {}
+
     void error();
 
     default void pollCompleted(int messageCount) {}

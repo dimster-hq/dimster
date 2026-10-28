@@ -22,6 +22,7 @@ import dev.dimster.ConsumerProcMode;
 import dev.dimster.MessageType;
 import dev.dimster.datagen.RecordFormat;
 import dev.dimster.datagen.RecordPrinter;
+import dev.dimster.flink.FlinkEmitTime;
 import dev.dimster.spi.kafka.RawConsumer;
 import dev.dimster.utils.Sleeper;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -250,6 +251,7 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
                                 callback.messageReceived(record.value(), recordFormat, record.topic(),
                                         record.partition(), record.timestamp(),
                                         deliveryTime, simulatedProcessingStartTime);
+                                FlinkEmitTime.report(callback, record, recordFormat, simulatedProcessingStartTime);
                             }
                     );
 
@@ -405,6 +407,7 @@ public class KafkaConsumerWrapper implements AutoCloseable, OffsetCommitCallback
         callback.messageReceived(record.value(), recordFormat, record.topic(),
                 record.partition(), record.timestamp(),
                 cr.deliveryTime(), cr.simulatedStartTime());
+        FlinkEmitTime.report(callback, record, recordFormat, cr.simulatedStartTime());
     }
 
     /**

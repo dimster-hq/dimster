@@ -33,6 +33,12 @@ public class CumulativeLatencies {
     public byte[] endToEndDeliveryLatencyBytes;
 
     @JsonIgnore
+    public Histogram producerToFlinkLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+
+    @JsonIgnore
+    public Histogram flinkToConsumerLatency = new Histogram(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+
+    @JsonIgnore
     public Histogram scheduleLatency = new Histogram(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     public byte[] scheduleLatencyBytes;
 }
