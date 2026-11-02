@@ -311,7 +311,7 @@ enum Commands {
         results_dir: Option<String>,
     },
 
-    /// Compare run or correctness result files side-by-side
+    /// Compare run, drain-backlog or correctness result files side-by-side
     Compare {
         /// Labeled result files: LABEL=FILE (at least 2 required unless --directory is used)
         #[arg(num_args = 0.., value_name = "LABEL=FILE")]

@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::commands::broker_config;
+use crate::commands::cadvisor;
 use crate::commands::flink;
 use crate::commands::is_registry_image;
 use crate::commands::kafka_tls;
@@ -820,8 +821,12 @@ fn deploy(
         // Scrape Flink's reporters only when the env has Flink.
         if env_config.flink.is_some() {
             content.push_str(&flink::scrape_job(kubectl.namespace()));
-            std::fs::write(&prometheus_config, &content)?;
         }
+        // Per-container cgroup metrics only when the env opts in.
+        if env_config.cgroup_metrics() {
+            content.push_str(&cadvisor::scrape_job(kubectl.namespace()));
+        }
+        std::fs::write(&prometheus_config, &content)?;
         let mut hash = Fnv1a64::new();
         hash.update(content.as_bytes());
         Some(format!("{:016x}", hash.finish()))
@@ -830,7 +835,12 @@ fn deploy(
     };
 
     // Build resource list based on selected components
-    let resource_list = build_resource_list(components, external);
+    let mut resource_list = build_resource_list(components, external);
+    // The cAdvisor scrape job's ClusterRole, generated per namespace.
+    if components.contains(&Component::Monitoring) && env_config.cgroup_metrics() {
+        resource_list.push('\n');
+        resource_list.push_str(&cadvisor::write_rbac(tmp, kubectl.namespace())?);
+    }
 
     // Build patches separately — only emit the `patches:` key if there are entries.
     // Kustomize rejects an empty `patches:` key.

@@ -27,6 +27,10 @@ When the thing you want to compare lives outside the workload, the workflow is a
 
 The compare command is a **chart overlay only** command so it doesn't re-run anything. It also doesn't validate that the workloads match (sometimes you also want to compare different workloads using the compare command).
 
+Drain-backlog results can be compared the same way: drain durations, consumer throughput and disk read fractions as bars, and backlog and consume rate over time per test point.
+
+When the run or drain-backlog results have [resources report](results-and-charts.md#resources-report) data beside them, compare also writes a resources comparison. For each test point, it sets every entry's per-service CPU, CPU throttling, disk and network side by side, along with page cache vs disk and bottlenecks. Per-service figures need the environments to set `monitoring.cgroupMetrics`. For charts over time, open each run's own resources report.
+
 ## Worked example — Kafka 3.7 vs 4.2
 
 Goal: see how throughput and latency differ between Kafka 3.7.2 and 4.2.0 on the same hardware, same workload, same broker config.

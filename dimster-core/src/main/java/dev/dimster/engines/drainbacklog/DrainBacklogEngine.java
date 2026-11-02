@@ -35,9 +35,14 @@ import org.apache.kafka.common.TopicPartition;
  *
  * With {@code drainBacklogConfig.reuseBacklog}, consecutive test points that
  * differ only in drain-side settings drain the same backlog instead of each
- * building their own (rules in {@link BacklogReuse}). Isolation between those
- * drains (cache eviction, broker restarts) is left to beforeDrain hooks; the
- * engine only waits for the cluster to settle afterwards.
+ * building their own (rules in {@link BacklogReuse}). Backlogs are then built
+ * outside the test points, before the first one that needs each, so every
+ * recorded test point only drains. Isolation between those drains (cache
+ * eviction, broker restarts) is left to beforeDrain hooks; the engine only
+ * waits for the cluster to settle afterwards.
+ *
+ * With {@code drainBacklogConfig.warmup}, the run's first test point is run
+ * once before it, unrecorded, as a test point 0 that is in no result.
  */
 public class DrainBacklogEngine extends BaseEngine {
 
@@ -57,6 +62,9 @@ public class DrainBacklogEngine extends BaseEngine {
      * consumed message.
      */
     private static final long PRE_DRAIN_PAUSE_MS = 10_000;
+    /** How often, and how many times at most, to check that paused producers stopped sending. */
+    private static final long SEND_SETTLE_CHECK_MS = 1_000;
+    private static final int SEND_SETTLE_MAX_CHECKS = 30;
 
     private final DrainBacklogWorkload workload;
     private final BaseWorkload base;
@@ -106,6 +114,10 @@ public class DrainBacklogEngine extends BaseEngine {
             backlog = result.reusableBacklog;
         }
 
+        // Once, before the first test point this run executes (also on resume,
+        // whose JVMs may be fresh from a redeploy).
+        boolean warmUpPending = workload.drainBacklogConfig.warmup;
+
         try {
             for (int i = startTestPoint; i < allPoints.size(); i++) {
                 if (stopRequested.get()) break;
@@ -124,9 +136,11 @@ public class DrainBacklogEngine extends BaseEngine {
                 log.info("--- Drain-backlog test {}/{}: {} ---", i + 1, totalTests, point.label());
                 log.info("Merged workload:\n{}", point.toLogString());
 
+                String identity = reuse ? identities.get(i) : null;
                 // Unrecorded, and outside the scenario's time window.
-                if (point.drainBacklogConfig().warmup) {
-                    warmUp(point, i, totalTests, reuse ? identities.get(i) : null);
+                if (warmUpPending) {
+                    warmUpPending = false;
+                    warmUp(point, i, totalTests, identity);
                 }
 
                 // Stamp the scenario boundary the first time we touch it, then
@@ -135,9 +149,13 @@ public class DrainBacklogEngine extends BaseEngine {
                 if (scenarioResult.beginTime == null) {
                     scenarioResult.beginTime = currentScenarioTimestamp();
                 }
+                // With reuse, a backlog is built here, outside the test point,
+                // which only drains it. Inside the scenario's time window.
+                if (reuse) {
+                    ensureBacklog(point, i, identity, false);
+                }
                 runHooks(HookPoint.BEFORE_TEST_POINT, point, i, totalTests, List.of());
-                DrainBacklogResult.TestOutcome outcome = runSingleTest(point, i, totalTests,
-                        reuse ? identities.get(i) : null, false);
+                DrainBacklogResult.TestOutcome outcome = runSingleTest(point, i, totalTests, identity, false);
                 scenarioResult.endTime = currentScenarioTimestamp();
                 scenarioResult.tests.add(outcome);
 
@@ -145,8 +163,9 @@ public class DrainBacklogEngine extends BaseEngine {
                         outcome.drain.reusedBacklogFrom != null ? "reused" : "built",
                         outcome.drain.backlogSizeBytes / 1_000_000,
                         outcome.drain.reusedBacklogFrom != null
-                                ? " from test point " + (outcome.drain.reusedBacklogFrom + 1)
-                                : " in " + outcome.drain.buildDurationMs / 1000 + "s",
+                                ? " drained by test point " + (outcome.drain.reusedBacklogFrom + 1)
+                                : " in " + outcome.drain.buildDurationMs / 1000 + "s"
+                                        + (reuse ? " before the test point" : ""),
                         outcome.drain.drainDurationMs / 1000,
                         outcome.drain.backlogProducerRate <= 0 ? "paused" : outcome.drain.backlogProducerRate + " msg/s");
 
@@ -181,14 +200,18 @@ public class DrainBacklogEngine extends BaseEngine {
     }
 
     /**
-     * Runs the test point once without recording it, so the scenario's first
-     * recorded drain runs on warm worker and broker JVMs (e.g. right after a
-     * deploy). No hooks run: they prepare measured drains. With reuse, the
-     * backlog it builds is kept for the test point itself, so a warm-up costs
-     * one drain rather than a build.
+     * Runs the test point once without recording it, a test point 0 that is
+     * in no result, so the first recorded drain runs on warm worker and broker
+     * JVMs (e.g. right after a deploy). No hooks run: they prepare measured
+     * drains. With reuse, its backlog is built outside it like any other and
+     * kept for the test point itself, so a warm-up costs one drain rather
+     * than a build.
      */
     private void warmUp(TestPoint point, int index, int totalTests, String identity) throws Exception {
         log.info("--- Warm-up for drain-backlog test {}/{}: {} (not recorded) ---", index + 1, totalTests, point.label());
+        if (identity != null) {
+            ensureBacklog(point, index, identity, true);
+        }
         DrainBacklogResult.TestOutcome outcome = runSingleTest(point, index, totalTests, identity, true);
         log.info("    Warm-up drained in {}s", outcome.drain.drainDurationMs / 1000);
         releaseTestPointResources(backlog != null ? Set.copyOf(backlog.topics) : Set.of());
@@ -204,46 +227,16 @@ public class DrainBacklogEngine extends BaseEngine {
         DrainBacklogConfig dbc = point.drainBacklogConfig();
         String label = warmUp ? point.label() + " (warm-up)" : point.label();
 
-        worker.stopAll();
-        worker.awaitStopComplete(java.time.Duration.ofMinutes(10));
-        KafkaConfig pointConfig = point.kafkaConfig();
-        worker.setKafkaConfig(pointConfig);
-        cluster = new KafkaCluster(
-                dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
-                pointConfig);
-
+        connect(point);
+        // With reuse, ensureBacklog built it before the test point.
         ReusableBacklog reused = identity != null ? reusableBacklogFor(identity) : null;
-        if (reused == null) {
-            backlog = null;
+        if (identity != null && reused == null) {
+            throw new IllegalStateException("No backlog to drain for test point " + (index + 1)
+                    + ": with reuseBacklog it is built before the test point");
         }
-        Set<String> existing = reused != null ? Set.copyOf(reused.topics) : Set.of();
-        cluster.deleteTestTopics(existing);
-        cluster.deleteTestGroups();
-        cancelLeftoverFlinkJobs(point);
-
-        throwOnStopRequested(stopRequested);
-
-        // Plan first, then create the actual Kafka topics from the planned topic
-        // names. A reused backlog's topics already exist; the rest (Flink output
-        // topics) are created fresh. Reusable backlogs get unlimited retention.
-        planTopology(point.topics(), point.partitionsPerTopic(),
-                point.producersPerTopic(), point.consumerGroupsPerTopic(), point.consumersPerGroup(),
-                point.consumerType(), point.consumerProcMsMin(), point.consumerProcMsMax(), point.consumerProcParallelism(),
-                point.consumerProcMode(), point.consumerProcCapacity(),
-                point.messageDistributor(), point.messageDistributorSkew(),
-                false /* correctness off */,
-                false /* dynamic consumer assignment */,
-                outputPartitionsPerTopic(point),
-                reused != null ? reused.topics : null);
-        recordPlannedTopology(label, workload.engineConfig.printTopology);
-        List<String> allTopics = createPlannedTopics(existing,
-                identity != null ? BacklogReuse.RETENTION_OVERRIDES : Map.of());
-        List<String> backlogTopics = point.flink() != null
-                ? new ArrayList<>(plannedTopology.pipelineTopics().keySet())
-                : allTopics;
-        // Set before producers: consumers, created after the backlog is
-        // built, read the same dataset's record format.
-        configureDataset(point);
+        PreparedTopics prepared = prepareTopics(point, reused, identity, label);
+        List<String> allTopics = prepared.allTopics();
+        List<String> backlogTopics = prepared.backlogTopics();
 
         var perf = new TestResult.PerformanceResults();
         var drainData = new DrainBacklogResult.DrainData();
@@ -254,11 +247,15 @@ public class DrainBacklogEngine extends BaseEngine {
 
         if (reused != null) {
             enableClientMetrics();
-            log.info("----- Reusing the backlog built by test point {} ({}): {} messages -----",
-                    reused.builtAtTestPoint + 1, reused.builtAtLabel, reused.records);
+            log.info("----- Draining the backlog {}: {} messages -----", describe(reused), reused.records);
             priorRecords = reused.records;
             backlogMessages = point.consumerGroupsPerTopic() * reused.records;
-            drainData.reusedBacklogFrom = reused.builtAtTestPoint;
+            ReusableBacklog.Provenance provenance = reused.recordDrain(index, warmUp);
+            if (provenance != null) {
+                drainData.reusedBacklogFrom = provenance.reusedFrom();
+                drainData.drainedByWarmUp = provenance.drainedByWarmUp() ? Boolean.TRUE : null;
+                buildDuration = provenance.buildDurationMs();
+            }
         } else {
             priorRecords = 0;
             backlogMessages = buildBacklog(point, dbc, buildRate, perf, drainData);
@@ -433,16 +430,6 @@ public class DrainBacklogEngine extends BaseEngine {
         long drainDuration = drainEnd - drainStart;
         log.info("    Backlog drained in {}s", drainDuration / 1000);
 
-        // A freshly built backlog becomes reusable once drained: producers
-        // were paused throughout, so the sent count is final.
-        if (identity != null && reused == null) {
-            backlog = recordBacklog(identity, index, label, backlogTopics);
-            // Report what was drained (producers send briefly after the last
-            // build sample), so it matches the test points that reuse it.
-            backlogMessages = point.consumerGroupsPerTopic() * backlog.records;
-            backlogSizeBytes = backlogMessages * point.messageSize();
-        }
-
         // Build outcome
         DrainBacklogResult.TestOutcome outcome = new DrainBacklogResult.TestOutcome();
         outcome.label = point.label();
@@ -545,6 +532,109 @@ public class DrainBacklogEngine extends BaseEngine {
     }
 
     /**
+     * With reuse: makes sure the backlog this point drains is on the cluster,
+     * building it if the current one can't be drained again. The build is
+     * outside the test point and recorded nowhere but the backlog's build
+     * time, which its first recorded drain reports.
+     */
+    private void ensureBacklog(TestPoint point, int index, String identity, boolean forWarmUp)
+            throws Exception {
+        connect(point);
+        if (reusableBacklogFor(identity) != null) return;
+        backlog = null;
+        log.info("----- Building the backlog {} {} (not part of any test point) -----",
+                forWarmUp ? "for the warm-up of test point" : "before test point", index + 1);
+        // Its own entry in the planned topologies, apart from the test point's.
+        PreparedTopics prepared = prepareTopics(point, null, identity,
+                point.label() + (forWarmUp ? " (warm-up backlog build)" : " (backlog build)"));
+        DrainBacklogConfig dbc = point.drainBacklogConfig();
+        var build = new DrainBacklogResult.DrainData();
+        buildBacklog(point, dbc, dbc.buildRate > 0 ? dbc.buildRate : point.producerRate(),
+                new TestResult.PerformanceResults(), build);
+        worker.pauseProducers();
+        awaitSendsSettled();
+        backlog = recordBacklog(identity, index, point.label(), prepared.backlogTopics());
+        backlog.builtForWarmUp = forWarmUp;
+        backlog.buildDurationMs = build.buildDurationMs;
+        // Producers are no longer needed: the test point drains with fresh clients.
+        releaseTestPointResources(Set.copyOf(backlog.topics));
+    }
+
+    /**
+     * Waits for paused producers' in-flight sends to finish, so the sent count
+     * (the backlog's record count) is final.
+     */
+    private void awaitSendsSettled() throws IOException {
+        long sent = worker.getCountersStats().messagesSent();
+        for (int i = 0; i < SEND_SETTLE_MAX_CHECKS; i++) {
+            Sleeper.sleepOrStop(stopRequested, SEND_SETTLE_CHECK_MS, true);
+            long now = worker.getCountersStats().messagesSent();
+            if (now == sent) return;
+            sent = now;
+        }
+        log.warn("    Producers were still sending {}s after being paused", SEND_SETTLE_MAX_CHECKS * SEND_SETTLE_CHECK_MS / 1000);
+    }
+
+    /** A backlog's origin, for log lines. */
+    private static String describe(ReusableBacklog b) {
+        return b.builtForWarmUp
+                ? "built for the warm-up of test point " + (b.builtAtTestPoint + 1)
+                : "built before test point " + (b.builtAtTestPoint + 1) + " (" + b.builtAtLabel + ")";
+    }
+
+    /** Stops the previous clients and connects to the cluster with the point's Kafka config. */
+    private void connect(TestPoint point) throws IOException {
+        worker.stopAll();
+        worker.awaitStopComplete(java.time.Duration.ofMinutes(10));
+        KafkaConfig pointConfig = point.kafkaConfig();
+        worker.setKafkaConfig(pointConfig);
+        cluster = new KafkaCluster(
+                dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
+                pointConfig);
+    }
+
+    /** The topics a prepared test point uses, and those holding its backlog. */
+    private record PreparedTopics(List<String> allTopics, List<String> backlogTopics) {}
+
+    /**
+     * Clears what the previous test point left (keeping a reused backlog's
+     * topics), plans the topology and creates its topics. Shared by test
+     * points and the builds that run before them.
+     */
+    private PreparedTopics prepareTopics(TestPoint point, ReusableBacklog reused, String identity, String label)
+            throws Exception {
+        Set<String> existing = reused != null ? Set.copyOf(reused.topics) : Set.of();
+        cluster.deleteTestTopics(existing);
+        cluster.deleteTestGroups();
+        cancelLeftoverFlinkJobs(point);
+
+        throwOnStopRequested(stopRequested);
+
+        // Plan first, then create the actual Kafka topics from the planned topic
+        // names. A reused backlog's topics already exist; the rest (Flink output
+        // topics) are created fresh. Reusable backlogs get unlimited retention.
+        planTopology(point.topics(), point.partitionsPerTopic(),
+                point.producersPerTopic(), point.consumerGroupsPerTopic(), point.consumersPerGroup(),
+                point.consumerType(), point.consumerProcMsMin(), point.consumerProcMsMax(), point.consumerProcParallelism(),
+                point.consumerProcMode(), point.consumerProcCapacity(),
+                point.messageDistributor(), point.messageDistributorSkew(),
+                false /* correctness off */,
+                false /* dynamic consumer assignment */,
+                outputPartitionsPerTopic(point),
+                reused != null ? reused.topics : null);
+        recordPlannedTopology(label, workload.engineConfig.printTopology);
+        List<String> allTopics = createPlannedTopics(existing,
+                identity != null ? BacklogReuse.RETENTION_OVERRIDES : Map.of());
+        List<String> backlogTopics = point.flink() != null
+                ? new ArrayList<>(plannedTopology.pipelineTopics().keySet())
+                : allTopics;
+        // Set before producers: consumers, created after the backlog is
+        // built, read the same dataset's record format.
+        configureDataset(point);
+        return new PreparedTopics(allTopics, backlogTopics);
+    }
+
+    /**
      * The backlog on the cluster if this point can drain it again: built for
      * the same identity and still intact. Otherwise null, logging why, and
      * the point builds its own.
@@ -552,8 +642,7 @@ public class DrainBacklogEngine extends BaseEngine {
     private ReusableBacklog reusableBacklogFor(String identity) {
         if (backlog == null) return null;
         if (!backlog.identity.equals(identity)) {
-            log.info("Build settings differ from the backlog built by test point {}: building a new backlog",
-                    backlog.builtAtTestPoint + 1);
+            log.info("Build settings differ from the backlog {}: building a new backlog", describe(backlog));
             return null;
         }
         Set<String> existingTopics = cluster.listTopicNames();
@@ -562,8 +651,8 @@ public class DrainBacklogEngine extends BaseEngine {
                         cluster.startOffsets(backlog.topics), cluster.endOffsets(backlog.topics))
                 : BacklogReuse.whyNotIntact(backlog, existingTopics, Map.of(), Map.of());
         if (problem.isPresent()) {
-            log.warn("Cannot reuse the backlog built by test point {} ({}): building a new backlog",
-                    backlog.builtAtTestPoint + 1, problem.get());
+            log.warn("Cannot reuse the backlog {} ({}): building a new backlog",
+                    describe(backlog), problem.get());
             return null;
         }
         return backlog;

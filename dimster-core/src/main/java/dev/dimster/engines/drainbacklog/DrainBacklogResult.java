@@ -50,7 +50,7 @@ public class DrainBacklogResult {
     }
 
     @JsonPropertyOrder({"backlogSizeGB", "backlogSizeBytes", "backlogMessages",
-            "buildRate", "buildDurationMs", "reusedBacklogFrom",
+            "buildRate", "buildDurationMs", "reusedBacklogFrom", "drainedByWarmUp",
             "drainStartTime", "drainEndTime",
             "drainDurationMs", "drainTimeoutMinutes", "backlogProducerRate", "sampleRateMillis",
             "backlogMessagesOverTime", "backlogBytesOverTime"})
@@ -61,15 +61,25 @@ public class DrainBacklogResult {
         public long backlogMessages;
         /** Producer rate used during build phase (from config). */
         public int buildRate;
+        /**
+         * How long the backlog took to build. With reuseBacklog the build is
+         * outside every test point (whose time series cover the drain only),
+         * and its time is reported on the backlog's first recorded drain, 0
+         * on later ones, so each build appears once in the results.
+         */
         public long buildDurationMs;
         /**
-         * Index of the test point that built the backlog this one drained
-         * again (reuseBacklog). Null when this test point built its own; a
-         * reused test point has no build phase, so buildDurationMs is 0 and
-         * the time series cover the drain only.
+         * Index of the earlier test point that drained this backlog first
+         * (reuseBacklog). Null on a backlog's first recorded drain.
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
         public Integer reusedBacklogFrom;
+        /**
+         * True on a backlog's first recorded drain when the (unrecorded)
+         * warm-up drained it before; absent otherwise.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        public Boolean drainedByWarmUp;
         /** ISO-8601 wall-clock bounds of the drain, for correlating with Prometheus. */
         public String drainStartTime;
         public String drainEndTime;

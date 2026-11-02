@@ -21,6 +21,11 @@ data:
     the bytes the nodes read from disk during each drain to --disk-reads-file,
     for the drain charts.
 
+    Also independently of --outputs, --resource-windows (run and
+    drain-backlog runs) writes each test point's per-pod and per-node CPU,
+    disk and network usage, and their time series over the run, to
+    --resource-file, for the resources report.
+
     Usage:
         python3 export.py --prometheus-url http://prometheus:9090 \
             --start 1711900000 --end 1711903600 \
@@ -1109,6 +1114,17 @@ data:
                                  'each drain\'s disk reads to --disk-reads-file')
         parser.add_argument('--disk-reads-file', default='',
                             help='Output file for --drain-windows')
+        # Run and drain-backlog: each test point's window (list of
+        # {scenario, testIndex, label, start, end}, ISO-8601 instants) for
+        # the resources report.
+        parser.add_argument('--resource-windows', default='',
+                            help='JSON list of test point windows; writes each '
+                                 'one\'s pod and node resource usage, and the '
+                                 'run\'s time series, to --resource-file')
+        parser.add_argument('--resource-file', default='',
+                            help='Output file for --resource-windows')
+        parser.add_argument('--namespace', default='dimster',
+                            help='Namespace whose pods --resource-windows measures')
         args = parser.parse_args()
 
         outputs = {o.strip() for o in args.outputs.split(',') if o.strip()}
@@ -1137,6 +1153,18 @@ data:
             if windows:
                 write_drain_disk_reads(args.prometheus_url, windows,
                                        args.disk_reads_file)
+        if args.resource_windows and args.resource_file:
+            try:
+                windows = json.loads(args.resource_windows)
+            except json.JSONDecodeError as e:
+                print(f'  Warning: could not parse --resource-windows ({e})',
+                      file=sys.stderr)
+                windows = []
+            if windows:
+                write_resource_metrics(args.prometheus_url, args.namespace, windows,
+                                       args.start, args.end,
+                                       query_step(args.end - args.start, args.step),
+                                       args.resource_file)
 
     def find_dashboard_files(dashboard_dirs):
         """(path, basename) of every dashboard JSON in the comma-separated
@@ -1170,19 +1198,36 @@ data:
 
     def parse_instant(text):
         """An ISO-8601 instant as written by Java's Instant.toString(), as a
-        Unix timestamp."""
-        return datetime.fromisoformat(text.replace('Z', '+00:00')).timestamp()
+        Unix timestamp. Java writes up to nanoseconds; fromisoformat before
+        Python 3.11 accepts only 3 or 6 fractional digits, so the fraction is
+        padded or cut to microseconds."""
+        text = re.sub(r'\.(\d+)', lambda m: '.' + m.group(1).ljust(6, '0')[:6],
+                      text.replace('Z', '+00:00'))
+        return datetime.fromisoformat(text).timestamp()
+
+    def counter_delta_query(selector, window_s, by='', dedupe_by=''):
+        """PromQL for how much a counter grew over the window_s seconds before
+        the evaluation time: the counter then minus the counter window_s
+        earlier. Not increase(): over a window of a few scrapes it only sees
+        the samples inside the window, missing growth between the last sample
+        before the window and the first inside it, which for a short window is
+        most of it. An offset reads the last sample at or before the start.
+
+        by groups the sum (empty: one total). dedupe_by first takes the max
+        over identical series exported more than once, such as a pod's network
+        counters reported for both its pause container and its cgroup."""
+        def side(offset):
+            inner = selector + (f' offset {window_s}s' if offset else '')
+            if dedupe_by:
+                inner = f'max by ({dedupe_by}) ({inner})'
+            return f'sum by ({by}) ({inner})' if by else f'sum({inner})'
+        return f'{side(False)} - {side(True)}'
 
     def disk_read_query(window_s):
-        """PromQL for the bytes read from disk over the window_s seconds
-        before the evaluation time: the counter then minus the counter
-        window_s earlier. Not increase(): over a window of a few scrapes it
-        only sees the samples inside the window, missing reads between the
-        last sample before the window and the first inside it, which for a
-        short drain is most of them. An offset reads the last sample at or
-        before the start."""
-        selector = f'node_disk_read_bytes_total{{device=~"{WHOLE_DISK_DEVICES}"}}'
-        return f'sum({selector}) - sum({selector} offset {window_s}s)'
+        """PromQL for the bytes every node read from its whole disks over the
+        window_s seconds before the evaluation time."""
+        return counter_delta_query(
+            f'node_disk_read_bytes_total{{device=~"{WHOLE_DISK_DEVICES}"}}', window_s)
 
     def drain_disk_reads(prom_url, start, end):
         """Bytes the nodes read from disk between two Unix timestamps, summed
@@ -1219,6 +1264,337 @@ data:
             json.dump({'drains': drains}, f, indent=2)
         print(f'  Disk reads of {len(drains)}/{len(windows)} drain(s) written to {path}')
 
+    # -----------------------------------------------------------------------
+    # Resources
+    # -----------------------------------------------------------------------
+    # Raw per-pod (cAdvisor, when monitoring.cgroupMetrics is on) and per-node
+    # (node-exporter) resource usage for each test point's window, plus their
+    # time series over the run, for charts/generate_resource_charts.py. Only
+    # measurements here: grouping pods into services, ratios and bottleneck
+    # flags happen in the chart script, so they can be re-run without the
+    # cluster.
+
+    # Windows shorter than this (drains) have too few scrapes for a rate
+    # between the samples at their bounds; their counters are instead read
+    # from before the start to past the end, as for drain disk reads, and the
+    # delta attributed to the window.
+    SHORT_WINDOW_S = 60
+
+    # Interfaces that aren't the node's own network: loopback, container
+    # veths and bridges, overlay and CNI devices.
+    VIRTUAL_NET_DEVICES = ('lo|veth.*|docker.*|br-.*|bridge.*|cni.*|cali.*|'
+                           'flannel.*|cilium.*|lxc.*|tunl.*|vxlan.*|kube.*|'
+                           'virbr.*|tap.*|eni.*')
+
+    def resource_eval(start, end):
+        """(evaluation time, offset seconds, measured seconds) for reading how
+        much counters grew over a window given as Unix timestamps; measured
+        seconds is the time that growth covers, for turning it into rates.
+
+        A window of at least SHORT_WINDOW_S is read between the last samples at
+        or before its whole-second bounds, which lag each bound by up to a
+        scrape, about equally in steady state. A shorter one is read from
+        before its start to past its end, as for drain disk reads, so totals
+        such as the bytes it read are complete. Either way the measured
+        seconds is the span the delta covers, the offset: for a short window
+        that is longer than the window, so its rates average in the slack
+        after it. Dividing by the window's own length instead would credit the
+        slack's CPU and idle time to the window (utilisation below zero, pods
+        above their CPU limit)."""
+        if end - start >= SHORT_WINDOW_S:
+            eval_at = math.floor(end)
+            offset_s = eval_at - math.ceil(start)
+        else:
+            eval_at = math.ceil(end) + DISK_READ_SCRAPE_SLACK_S
+            offset_s = max(1, eval_at - math.floor(start))
+        return eval_at, offset_s, offset_s
+
+    def instant_vector(prom_url, expr, at, labels):
+        """{label value (a tuple for several labels): float} for an instant
+        query; empty when Prometheus has no answer."""
+        result = prom_query_instant(prom_url, expr, at)
+        if not result or result.get('status') != 'success':
+            return {}
+        out = {}
+        for series in result.get('data', {}).get('result', []):
+            metric = series.get('metric', {})
+            key = tuple(metric.get(l, '') for l in labels)
+            try:
+                value = float(series['value'][1])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                out[key if len(labels) > 1 else key[0]] = value
+        return out
+
+    def deltas(prom_url, selector, at, offset_s, by, dedupe_by=''):
+        """{group: how much a counter grew} over a window: the raw total, not
+        a rate. Groups whose delta is negative (a counter reset: a restarted
+        pod or node) are left out rather than reported wrong."""
+        grown = instant_vector(prom_url, counter_delta_query(
+            selector, offset_s, by=by, dedupe_by=dedupe_by), at, by.split(', '))
+        return {k: v for k, v in grown.items() if v >= 0}
+
+    def pod_window_metrics(prom_url, ns, at, offset_s):
+        """{pod: {metric: value}} from cAdvisor, and {pod: node}. Counters
+        are totals over the window (CPU seconds, bytes, operations, CFS
+        periods); peak CPU, the CPU limit and the page cache are gauges.
+        Container series only (container!=""), which leaves out the
+        pod-level cgroup and the pause container, so each pod counts once."""
+        sel = f'{{namespace="{ns}", container!="", container!="POD"}}'
+        pod_sel = f'{{namespace="{ns}"}}'
+        def total(metric, selector=sel, dedupe_by=''):
+            return deltas(prom_url, f'{metric}{selector}', at, offset_s, 'pod', dedupe_by)
+        metrics = {
+            'cpuSeconds': total('container_cpu_usage_seconds_total'),
+            'diskReadBytes': total('container_fs_reads_bytes_total'),
+            'diskWriteBytes': total('container_fs_writes_bytes_total'),
+            'diskReadOps': total('container_fs_reads_total'),
+            'diskWriteOps': total('container_fs_writes_total'),
+            'netRxBytes': total('container_network_receive_bytes_total', pod_sel,
+                                'pod, interface'),
+            'netTxBytes': total('container_network_transmit_bytes_total', pod_sel,
+                                'pod, interface'),
+            'cfsPeriods': total('container_cpu_cfs_periods_total'),
+            'cfsThrottledPeriods': total('container_cpu_cfs_throttled_periods_total'),
+            'cpuCoresPeak': instant_vector(prom_url, (
+                f'max_over_time((sum by (pod) (rate(container_cpu_usage_seconds_total{sel}[1m])))'
+                f'[{offset_s}s:15s])'), at, ['pod']),
+            'cpuLimitCores': instant_vector(prom_url, (
+                f'sum by (pod) (container_spec_cpu_quota{sel} / container_spec_cpu_period{sel})'),
+                at, ['pod']),
+            'memoryCacheBytes': instant_vector(
+                prom_url, f'sum by (pod) (container_memory_cache{sel})', at, ['pod']),
+        }
+        pods = {}
+        for name, values in metrics.items():
+            for pod, value in values.items():
+                pods.setdefault(pod, {})[name] = value
+        placements = instant_vector(prom_url, (
+            f'group by (pod, node) (container_cpu_usage_seconds_total{sel})'), at, ['pod', 'node'])
+        pod_nodes = {pod: node for pod, node in placements if node}
+        return pods, pod_nodes
+
+    def node_names(prom_url, at):
+        """{node-exporter instance: hostname}, which is the Kubernetes node
+        name that cAdvisor's node label carries."""
+        names = instant_vector(prom_url, 'node_uname_info', at, ['instance', 'nodename'])
+        return {instance: name for instance, name in names if name}
+
+    def node_window_metrics(prom_url, at, offset_s, measured_s):
+        """{node: {metric: value}} from node-exporter. Byte counters are
+        totals over the window; CPU utilisation, IO wait, disk busy and
+        pressure stall are shares of the measured time; cores and link
+        speed are gauges."""
+        disks = f'{{device=~"{WHOLE_DISK_DEVICES}"}}'
+        nics = f'{{device!~"{VIRTUAL_NET_DEVICES}"}}'
+        def total(selector, by='instance'):
+            return deltas(prom_url, selector, at, offset_s, by)
+        def share(selector):
+            return {i: v / measured_s for i, v in total(selector).items()}
+        cores = instant_vector(prom_url,
+                               'count by (instance) (node_cpu_seconds_total{mode="idle"})',
+                               at, ['instance'])
+        idle = share('node_cpu_seconds_total{mode="idle"}')
+        iowait = share('node_cpu_seconds_total{mode="iowait"}')
+        metrics = {
+            'cores': cores,
+            'cpuUtil': {i: 1 - idle[i] / c for i, c in cores.items() if i in idle and c},
+            'iowaitShare': {i: iowait[i] / c for i, c in cores.items() if i in iowait and c},
+            'cpuUtilPeak': instant_vector(prom_url, (
+                'max_over_time((1 - avg by (instance) '
+                '(rate(node_cpu_seconds_total{mode="idle"}[1m])))'
+                f'[{offset_s}s:15s])'), at, ['instance']),
+            'diskReadBytes': total(f'node_disk_read_bytes_total{disks}'),
+            'diskWriteBytes': total(f'node_disk_written_bytes_total{disks}'),
+            'netRxBytes': total(f'node_network_receive_bytes_total{nics}'),
+            'netTxBytes': total(f'node_network_transmit_bytes_total{nics}'),
+            'netSpeedBytesPerSec': instant_vector(
+                prom_url, f'max by (instance) (node_network_speed_bytes{nics}) > 0',
+                at, ['instance']),
+            'psiCpuWaiting': share('node_pressure_cpu_waiting_seconds_total'),
+            'psiIoWaiting': share('node_pressure_io_waiting_seconds_total'),
+        }
+        # The busiest whole disk: one saturated device bottlenecks its node
+        # whatever the others do.
+        disk_busy = {}
+        for (instance, _device), busy_s in total(f'node_disk_io_time_seconds_total{disks}',
+                                                 'instance, device').items():
+            disk_busy[instance] = max(disk_busy.get(instance, 0.0), busy_s / measured_s)
+        metrics['diskBusy'] = disk_busy
+
+        names = node_names(prom_url, at)
+        nodes = {}
+        for name, values in metrics.items():
+            for instance, value in values.items():
+                nodes.setdefault(names.get(instance, instance), {})[name] = value
+        return nodes
+
+    def kafka_window_metrics(prom_url, at, offset_s):
+        """Cluster-wide broker byte totals over the window from the Kafka JMX
+        exporter: what clients produced (bytesIn) and what brokers served to
+        consumers (bytesOut) and followers (replicationBytesOut), the logical
+        reads the page cache estimate compares disk reads against. Empty
+        without in-cluster Kafka."""
+        out = {}
+        for name, metric in (('bytesIn', 'bytesinpersec'),
+                             ('bytesOut', 'bytesoutpersec'),
+                             ('replicationBytesOut', 'replicationbytesoutpersec')):
+            grown = deltas(prom_url,
+                           f'kafka_server_brokertopicmetrics_{metric}_count{{topic=""}}',
+                           at, offset_s, 'job')
+            if grown:
+                out[name] = sum(grown.values())
+        return out
+
+    def window_resources(prom_url, ns, window):
+        """Everything measured over one test point's window. Counters are
+        totals; measuredSeconds is the time they cover, for rates."""
+        start, end = parse_instant(window['start']), parse_instant(window['end'])
+        at, offset_s, measured_s = resource_eval(start, end)
+        pods, pod_nodes = pod_window_metrics(prom_url, ns, at, offset_s)
+        return {
+            'scenario': window.get('scenario', ''),
+            'testIndex': window.get('testIndex', 0),
+            'label': window.get('label', ''),
+            'start': window['start'],
+            'end': window['end'],
+            'seconds': end - start,
+            'measuredSeconds': measured_s,
+            'pods': pods,
+            'podNodes': pod_nodes,
+            'nodes': node_window_metrics(prom_url, at, offset_s, measured_s),
+            'kafka': kafka_window_metrics(prom_url, at, offset_s),
+            'timeseries': window_series(prom_url, ns, start, end),
+        }
+
+    def range_series(prom_url, expr, start, end, step, labels):
+        """{label value (a tuple for several labels): {timestamp: float}}."""
+        result = prom_query_range(prom_url, expr, start, end, step)
+        if not result or result.get('status') != 'success':
+            return {}
+        out = {}
+        for series in result.get('data', {}).get('result', []):
+            metric = series.get('metric', {})
+            key = tuple(metric.get(l, '') for l in labels)
+            points = {}
+            for ts, value in series.get('values', []):
+                try:
+                    v = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(v):
+                    points[int(float(ts))] = v
+            out[key if len(labels) > 1 else key[0]] = points
+        return out
+
+    def resource_timeseries(prom_url, ns, start, end, step, rate_s=60):
+        """Per-pod and per-node usage between two whole-second Unix times, each
+        series aligned to the shared `times` list (null where there is no
+        sample). rate_s is the rate() window: a minute smooths the whole run;
+        a test point's series uses a shorter one to follow its changes. Each
+        value averages the rate_s seconds before its time, which the series
+        records as rateSeconds so charts can centre it."""
+        sel = f'{{namespace="{ns}", container!="", container!="POD"}}'
+        pod_sel = f'{{namespace="{ns}"}}'
+        disks = f'{{device=~"{WHOLE_DISK_DEVICES}"}}'
+        r = f'{rate_s}s'
+        net = 'sum by (pod) (max by (pod, interface) (rate({}{}[' + r + '])))'
+        pod_exprs = {
+            'cpuCores': f'sum by (pod) (rate(container_cpu_usage_seconds_total{sel}[{r}]))',
+            # Share of CFS periods throttled; only pods with a CPU limit have periods.
+            'cpuThrottledShare': (
+                f'sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{sel}[{r}])) / '
+                f'sum by (pod) (rate(container_cpu_cfs_periods_total{sel}[{r}]))'),
+            'diskReadBytesPerSec': f'sum by (pod) (rate(container_fs_reads_bytes_total{sel}[{r}]))',
+            'diskWriteBytesPerSec': f'sum by (pod) (rate(container_fs_writes_bytes_total{sel}[{r}]))',
+            'diskReadIops': f'sum by (pod) (rate(container_fs_reads_total{sel}[{r}]))',
+            'diskWriteIops': f'sum by (pod) (rate(container_fs_writes_total{sel}[{r}]))',
+            'netRxBytesPerSec': net.format('container_network_receive_bytes_total', pod_sel),
+            'netTxBytesPerSec': net.format('container_network_transmit_bytes_total', pod_sel),
+        }
+        node_exprs = {
+            'cpuUtil': ('1 - avg by (instance) '
+                        f'(rate(node_cpu_seconds_total{{mode="idle"}}[{r}]))'),
+            'diskBusy': f'max by (instance) (rate(node_disk_io_time_seconds_total{disks}[{r}]))',
+        }
+        times = list(range(int(start), int(end) + 1, step))
+
+        def aligned(exprs, label, rename=None):
+            out = {}
+            for name, expr in exprs.items():
+                for key, points in range_series(prom_url, expr, start, end, step,
+                                                [label]).items():
+                    key = (rename or {}).get(key, key)
+                    out.setdefault(key, {})[name] = [points.get(t) for t in times]
+            return out
+
+        return {
+            'times': times,
+            'rateSeconds': rate_s,
+            'pods': aligned(pod_exprs, 'pod'),
+            'nodes': aligned(node_exprs, 'instance', node_names(prom_url, end)),
+        }
+
+    # A test point's own series: its window plus this much either side for
+    # context, at no finer a step than the scrape interval (10s; the kubelet
+    # refreshes container stats about as often), and at most about this many
+    # points. Its rate() window spans three scrapes, so short test points
+    # such as quick drains are not smoothed away.
+    WINDOW_SERIES_MARGIN_S = 30
+    WINDOW_SERIES_MIN_STEP_S = 10
+    WINDOW_SERIES_MAX_POINTS = 300
+    WINDOW_SERIES_RATE_S = 30
+
+    def window_series(prom_url, ns, start, end):
+        """A test point's per-pod and per-node usage over its window and the
+        margins around it, with its step and margin. Each sample averages
+        the rate window before it and is charted at that window's middle,
+        so the samples are taken half a rate window late: the first and
+        last are then charted at the margins' outer edges."""
+        span = math.ceil(end) - math.floor(start) + 2 * WINDOW_SERIES_MARGIN_S
+        step = max(WINDOW_SERIES_MIN_STEP_S, math.ceil(span / WINDOW_SERIES_MAX_POINTS))
+        rate_s = max(WINDOW_SERIES_RATE_S, 2 * step)
+        first = math.floor(start) - WINDOW_SERIES_MARGIN_S + rate_s // 2
+        last = math.ceil(end) + WINDOW_SERIES_MARGIN_S + rate_s // 2
+        series = resource_timeseries(prom_url, ns, first, last, step, rate_s)
+        series['step'] = step
+        series['marginSeconds'] = WINDOW_SERIES_MARGIN_S
+        return series
+
+    def query_step(duration_s, override=0):
+        """Range-query step: the override, else coarser for longer ranges."""
+        if override > 0:
+            return override
+        if duration_s < 3600:
+            return 15
+        if duration_s < 14400:
+            return 30
+        return 60
+
+    def write_resource_metrics(prom_url, ns, windows, start, end, step, path):
+        """Writes each window's resources and the run's time series to path.
+        cgroupMetrics records whether any per-pod (cAdvisor) data was found."""
+        measured = []
+        for w in windows:
+            try:
+                measured.append(window_resources(prom_url, ns, w))
+            except (KeyError, ValueError) as e:
+                print(f'  Warning: skipping resource window {w}: {e}', file=sys.stderr)
+        timeseries = resource_timeseries(prom_url, ns, start, end, step)
+        doc = {
+            'namespace': ns,
+            'cgroupMetrics': any(m['pods'] for m in measured) or bool(timeseries['pods']),
+            'step': step,
+            'windows': measured,
+            'timeseries': timeseries,
+        }
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(doc, f, separators=(',', ':'))
+        print(f'  Resources of {len(measured)}/{len(windows)} test point(s) written to {path}'
+              f' (per-pod cgroup metrics: {"yes" if doc["cgroupMetrics"] else "no"})')
+
     def write_html_dashboards(args, dashboard_files):
         """Render every dashboard to static HTML, split into time windows."""
         scenarios = []
@@ -1252,14 +1628,7 @@ data:
         total = 0
         for window in windows:
             duration = window['end'] - window['start']
-            if args.step > 0:
-                step = args.step
-            elif duration < 3600:
-                step = 15
-            elif duration < 14400:
-                step = 30
-            else:
-                step = 60
+            step = query_step(duration, args.step)
 
             if len(windows) > 1:
                 print(f'  Window {window["index"]}/{window["total"]}: '

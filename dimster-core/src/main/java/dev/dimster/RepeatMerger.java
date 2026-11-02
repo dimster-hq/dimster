@@ -193,6 +193,8 @@ public class RepeatMerger {
         // Average scalar aggregates
         m.aggregatedPublishLatencyAvg = avg(results, r -> r.aggregatedPublishLatencyAvg);
         m.avgRecordBytes = avg(results, r -> r.avgRecordBytes);
+        m.bytesSent = Math.round(avg(results, r -> r.bytesSent));
+        m.bytesReceived = Math.round(avg(results, r -> r.bytesReceived));
         m.aggregatedPublishLatency50pct = avg(results, r -> r.aggregatedPublishLatency50pct);
         m.aggregatedPublishLatency75pct = avg(results, r -> r.aggregatedPublishLatency75pct);
         m.aggregatedPublishLatency95pct = avg(results, r -> r.aggregatedPublishLatency95pct);

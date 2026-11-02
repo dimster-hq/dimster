@@ -19,7 +19,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from generate_run_charts import is_result_of_mode, metadata_annotation_html
+from generate_run_charts import find_run_artifact, is_result_of_mode, metadata_annotation_html
 
 
 COLORS = [
@@ -66,17 +66,8 @@ DISK_READS_FILE = "drain-disk-reads.json"
 
 
 def find_disk_reads_file(result_path, results_root):
-    """The disk reads measured for the run a result belongs to, or None: the
-    nearest file in the result's directory or a parent, up to results_root."""
-    root = os.path.abspath(results_root)
-    d = os.path.dirname(os.path.abspath(result_path))
-    while True:
-        candidate = os.path.join(d, DISK_READS_FILE)
-        if os.path.isfile(candidate):
-            return candidate
-        if d == root or os.path.dirname(d) == d:
-            return None
-        d = os.path.dirname(d)
+    """The disk reads measured for the run a result belongs to, or None."""
+    return find_run_artifact(result_path, results_root, DISK_READS_FILE)
 
 
 def load_disk_reads(path):
@@ -388,11 +379,15 @@ def build_config_section(data):
 
 
 def build_cell(drain):
-    """Build time, or which test point's backlog a reused test point drained."""
+    """Build time, or which test point first drained the backlog a reused
+    test point drained again. With reuseBacklog the build is outside the
+    test points and its time shows on the backlog's first recorded drain,
+    noting when the unrecorded warm-up drained it before."""
     reused_from = drain.get("reusedBacklogFrom")
-    if reused_from is None:
-        return f'{round(drain.get("buildDurationMs", 0) / 1000, 1)}s'
-    return f"reused (test point {reused_from + 1})"
+    if reused_from is not None:
+        return f"reused (test point {reused_from + 1})"
+    built = f'{round(drain.get("buildDurationMs", 0) / 1000, 1)}s'
+    return f"{built} (warm-up drained it first)" if drain.get("drainedByWarmUp") else built
 
 
 def disk_cell(reading):
@@ -404,36 +399,30 @@ def disk_cell(reading):
     return f"{round(read / 1_000_000):,} MB{share}"
 
 
-def build_scenario_sections(scenarios, chart_counts, disk_reads=None):
-    disk_reads = disk_reads or {}
-    sections = []
-    for s_idx, scenario in enumerate(scenarios):
-        name = scenario.get("name", f"Scenario {s_idx + 1}")
-        tests = scenario.get("tests", [])
-        num_charts = chart_counts.get(s_idx, 0)
-
-        # Summary table
-        table_rows = []
-        for t_idx, t in enumerate(tests):
-            wc = t.get("workloadConfig", {})
-            d = t.get("drain", {})
-            table_rows.append(
-                f'<tr>'
-                f'<td>{t.get("label", "")}</td>'
-                f'<td>{d.get("backlogMessages", 0):,}</td>'
-                f'<td>{round(d.get("backlogSizeBytes", 0) / 1_000_000):,} MB</td>'
-                f'<td>{build_cell(d)}</td>'
-                f'<td>{round(d.get("drainDurationMs", 0) / 1000, 1)}s</td>'
-                f'<td>{disk_cell(disk_reads.get((s_idx, t_idx)))}</td>'
-                f'<td>{"paused" if d.get("backlogProducerRate", 0) <= 0 else str(d.get("backlogProducerRate")) + " msg/s"}</td>'
-                f'<td>{wc.get("partitionsPerTopic", "")}</td>'
-                f'<td>{wc.get("consumersPerGroup", "")}</td>'
-                f'</tr>'
-            )
-
-        table_html = ""
-        if table_rows:
-            table_html = f"""
+def drain_table(tests, disk_reads, s_idx):
+    """A scenario's drain summary table: per test point its backlog, build
+    and drain times, disk reads, drain producer rate and topology. Shared
+    with the drain-backlog comparison (generate_compare_charts.py)."""
+    rows = []
+    for t_idx, t in enumerate(tests):
+        wc = t.get("workloadConfig", {})
+        d = t.get("drain", {})
+        rows.append(
+            f'<tr>'
+            f'<td>{t.get("label", "")}</td>'
+            f'<td>{d.get("backlogMessages", 0):,}</td>'
+            f'<td>{round(d.get("backlogSizeBytes", 0) / 1_000_000):,} MB</td>'
+            f'<td>{build_cell(d)}</td>'
+            f'<td>{round(d.get("drainDurationMs", 0) / 1000, 1)}s</td>'
+            f'<td>{disk_cell(disk_reads.get((s_idx, t_idx)))}</td>'
+            f'<td>{"paused" if d.get("backlogProducerRate", 0) <= 0 else str(d.get("backlogProducerRate")) + " msg/s"}</td>'
+            f'<td>{wc.get("partitionsPerTopic", "")}</td>'
+            f'<td>{wc.get("consumersPerGroup", "")}</td>'
+            f'</tr>'
+        )
+    if not rows:
+        return ""
+    return f"""
             <div class="config-table-wrap">
                 <table class="config-table">
                     <thead><tr>
@@ -441,10 +430,20 @@ def build_scenario_sections(scenarios, chart_counts, disk_reads=None):
                         <th>Build Time</th><th>Drain Time</th><th>Disk Reads</th><th>Producer Rate (drain)</th>
                         <th>Partitions</th><th>Consumers/Group</th>
                     </tr></thead>
-                    <tbody>{"".join(table_rows)}</tbody>
+                    <tbody>{"".join(rows)}</tbody>
                 </table>
             </div>
             """
+
+
+def build_scenario_sections(scenarios, chart_counts, disk_reads=None):
+    disk_reads = disk_reads or {}
+    sections = []
+    for s_idx, scenario in enumerate(scenarios):
+        name = scenario.get("name", f"Scenario {s_idx + 1}")
+        tests = scenario.get("tests", [])
+        num_charts = chart_counts.get(s_idx, 0)
+        table_html = drain_table(tests, disk_reads, s_idx)
 
         chart_cards = []
         for c_idx in range(num_charts):

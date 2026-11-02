@@ -269,5 +269,96 @@ class GenerateCompareChartsTest(unittest.TestCase):
         self.assertLess(performance_heading, first_performance_chart)
 
 
+def _drain_result(name, drain_ms=(20_000, 30_000), received=(400e6, 600e6)):
+    """A drain-backlog result with one scenario of two test points."""
+    return {
+        "fileType": "dimster-result",
+        "mode": "drain-backlog",
+        "metadata": {"name": name, "environment": "local"},
+        "config": {"baseKafkaConfig": {"replicationFactor": 3},
+                   "drainBacklogConfig": {"backlogSizeGB": 2.0, "sampleRateMillis": 5000,
+                                          "reuseBacklog": True, "warmup": True}},
+        "scenarioResults": [{"name": "batch.size", "tests": [
+            {"label": label,
+             "workloadConfig": {"partitionsPerTopic": 1, "consumersPerGroup": 1},
+             "drain": {"drainDurationMs": ms, "buildDurationMs": 70_000,
+                       "drainStartTime": f"2026-11-02T11:5{i}:00Z",
+                       "drainEndTime": f"2026-11-02T11:5{i}:30Z",
+                       "backlogMessages": 7_500_000, "backlogSizeBytes": 2_000_000_000,
+                       "backlogMessagesOverTime": [7_500_000, 2_000_000, 0]},
+             "performance": {"consumeRate": [0, 250_000, 300_000], "bytesReceived": rx,
+                             "consumeBytesRate": [0.0, 12.0, 15.0]}}
+            for i, (label, ms, rx) in enumerate(zip(("16KB", "64KB"), drain_ms, received))]}],
+    }
+
+
+class DrainCompareTest(unittest.TestCase):
+    """Comparing drain-backlog results: drain bars per entry, backlog and
+    consume rate overlays per test point, and each entry's drain table."""
+
+    def entries(self, directory, disk_reads_for=()):
+        entries = []
+        for label, ms in (("run1", (20_000, 30_000)), ("run2", (25_000, 40_000))):
+            os.makedirs(os.path.join(directory, label))
+            path = os.path.join(directory, label, "drain.json")
+            data = _drain_result("w", drain_ms=ms)
+            with open(path, "w") as fh:
+                json.dump(data, fh)
+            if label in disk_reads_for:
+                t = data["scenarioResults"][0]["tests"][0]["drain"]
+                with open(os.path.join(directory, label, "drain-disk-reads.json"), "w") as fh:
+                    json.dump({"drains": [{"drainStartTime": t["drainStartTime"],
+                                           "drainEndTime": t["drainEndTime"],
+                                           "diskReadBytes": 1_000_000_000}]}, fh)
+            entries.append((label, path, data))
+        return entries
+
+    def test_drain_bars_compare_each_entry_across_test_points(self):
+        with tempfile.TemporaryDirectory() as d:
+            entries = self.entries(d)
+            generate_compare_charts.validate_compare(entries)
+            configs, sections = generate_compare_charts.build_compare_chart_configs(entries)
+        bars = {c["config"]["options"]["plugins"]["title"]["text"]: c["config"]["data"]
+                for c in configs if c["config"]["type"] == "bar"}
+        self.assertEqual(set(bars), {"Drain Duration", "Consume Throughput during the Drain"})
+        duration = bars["Drain Duration"]
+        self.assertEqual(duration["labels"], ["16KB", "64KB"])
+        self.assertEqual([(ds["label"], ds["data"]) for ds in duration["datasets"]],
+                         [("run1", [20.0, 30.0]), ("run2", [25.0, 40.0])])
+        # bytesReceived over the drain's duration: 400 MB in 20s.
+        self.assertEqual(bars["Consume Throughput during the Drain"]["datasets"][0]["data"],
+                         [20.0, 20.0])
+        self.assertEqual([label for label, _s, _e in sections[0]["per_dimension"]], ["16KB", "64KB"])
+        titles = [c["config"]["options"]["plugins"]["title"]["text"] for c in configs
+                  if c["config"]["type"] == "line"]
+        self.assertEqual(titles, ["Backlog Messages over Time", "Consume Rate over Time"] * 2)
+
+    def test_disk_read_fraction_shown_when_an_entry_measured_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            configs, _ = generate_compare_charts.build_compare_chart_configs(
+                self.entries(d, disk_reads_for=("run2",)))
+        fraction = next(c for c in configs if "Disk Read Fraction" in
+                        c["config"]["options"]["plugins"]["title"]["text"])
+        # 1 GB read of the 2 GB backlog, for run2's first drain only.
+        self.assertEqual([ds["data"] for ds in fraction["config"]["data"]["datasets"]],
+                         [[None, None], [0.5, None]])
+
+    def test_page_shows_each_entrys_drain_table(self):
+        with tempfile.TemporaryDirectory() as d:
+            entries = self.entries(d)
+            configs, sections = generate_compare_charts.build_compare_chart_configs(entries)
+            page = generate_compare_charts.build_compare_html(entries, configs, sections)
+        self.assertEqual(page.count("<th>Drain Time</th>"), 2)
+        self.assertIn("<td>20.0s</td>", page)
+        self.assertIn("Backlog Size:</span> <span class=\"value\">2.0 GB", page)
+        self.assertNotIn("Test Duration:", page)
+
+    def test_a_run_and_a_drain_backlog_result_cannot_be_compared(self):
+        with tempfile.TemporaryDirectory() as d:
+            drain = self.entries(d)[0]
+        with self.assertRaises(SystemExit):
+            generate_compare_charts.validate_compare([("r", "r.json", _run_result("r")), drain])
+
+
 if __name__ == "__main__":
     unittest.main()

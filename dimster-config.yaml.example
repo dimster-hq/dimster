@@ -202,6 +202,7 @@ environments:
   #       memory: "2Gi"
   #   monitoring:
   #     nodeLabel: "role=infra"
+  #     cgroupMetrics: true     # per-pod CPU/disk/network for the resources report
   #     prometheus:
   #       requests:
   #         cpu: "1"
