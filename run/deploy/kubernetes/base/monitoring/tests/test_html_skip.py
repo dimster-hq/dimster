@@ -56,5 +56,21 @@ class HtmlSkipTests(unittest.TestCase):
         self.assertIsNotNone(self.render([], '3'))
 
 
+    def test_rows_head_their_panels_and_are_not_data(self):
+        with open(self.path, 'w') as f:
+            json.dump({'title': 'Rows', 'panels': [
+                {'type': 'row', 'title': 'Throughput', 'collapsed': False},
+                DASHBOARD['panels'][0],
+                {'type': 'row', 'title': 'Hidden', 'collapsed': True,
+                 'panels': [DASHBOARD['panels'][1]]},
+            ]}, f)
+        self.assertIsNone(self.render([], None))   # headings alone are no data
+        html = self.render([({'job': 'x'}, [(0, '1'), (15, '2')])], None)
+        throughput = html.index('<h3 class="row-heading">Throughput</h3>')
+        hidden = html.index('<h3 class="row-heading">Hidden</h3>')
+        # Each heading comes before its panels, a collapsed row's included.
+        self.assertLess(throughput, html.index('chart_all_0'))
+        self.assertLess(hidden, html.index('count'))
+
 if __name__ == '__main__':
     unittest.main()

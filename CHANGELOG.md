@@ -126,6 +126,8 @@ Initial public release.
 
 - `dimster compare` accepts drain-backlog results. The comparison shows each entry's drain table, then grouped bars for drain duration, consumer throughput during the drain and, where `drain-disk-reads.json` exists, the disk read fraction. Each test point also gets overlays of backlog messages and consume rate over time. With `--directory`, drain-backlog results are found by their `metadata.label`, as run results are.
 
+- Client dashboard: a Bytes Received panel beside Bytes Sent, and the panels above Consumer Details are grouped into a Throughput row (message and byte rates, totals, errors, client counts) and a Latencies row (every latency panel). Saved dashboard HTML now shows each row's title as a heading over its panels.
+
 ### Fixed
 
 - The drain-backlog docs and chart table treated `backlogProducerRate: -1` as "paused"; the default is 0, and any value of 0 or less pauses producers.

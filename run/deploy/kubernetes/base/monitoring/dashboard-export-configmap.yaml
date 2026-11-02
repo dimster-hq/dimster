@@ -132,15 +132,16 @@ data:
         return variables
 
     def extract_panels(dashboard):
-        """Extract flat list of renderable panels (skip rows)."""
+        """Flat list of the dashboard's panels in order. Row panels are kept,
+        before the panels they hold when collapsed, so pages can head each
+        row's panels with its title; they have no targets."""
         panels = []
         for p in dashboard.get('panels', []):
+            panels.append(p)
             if p.get('type') == 'row':
                 # Row panels may contain collapsed panels
                 for child in p.get('panels', []):
                     panels.append(child)
-            else:
-                panels.append(p)
         return panels
 
     def get_panel_unit(panel):
@@ -281,6 +282,12 @@ data:
             unit = get_panel_unit(panel)
             grid = panel.get('gridPos', {})
             w = grid.get('w', 12)
+
+            if ptype == 'row':
+                # A heading across the grid, so the row's panels start on a
+                # new line under it, as in Grafana.
+                chart_htmls.append(f'<h3 class="row-heading">{html_mod.escape(title)}</h3>')
+                continue
 
             if ptype == 'timeseries':
                 datasets = []
@@ -489,6 +496,15 @@ data:
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 20px;
+    }}
+    .row-heading {{
+        grid-column: 1 / -1;
+        font-size: 15px;
+        font-weight: 600;
+        color: #4a4a6a;
+        margin: 12px 0 0 0;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #e8e8e8;
     }}
     .chart-card {{
         background: #fff;
