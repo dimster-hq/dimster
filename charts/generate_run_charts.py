@@ -101,6 +101,21 @@ def find_run_json_files(results_dir):
     return found
 
 
+def find_run_artifact(result_path, results_root, filename):
+    """A file the end-of-run metrics export wrote for the run a result
+    belongs to, or None: the nearest one named filename in the result's
+    directory or a parent, up to results_root."""
+    root = os.path.abspath(results_root)
+    d = os.path.dirname(os.path.abspath(result_path))
+    while True:
+        candidate = os.path.join(d, filename)
+        if os.path.isfile(candidate):
+            return candidate
+        if d == root or os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
 def has_availability_data(data):
     """Check if any test in the result has availability data."""
     for scenario in data.get("scenarioResults", []):

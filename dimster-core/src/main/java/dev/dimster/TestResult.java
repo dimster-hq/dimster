@@ -159,10 +159,15 @@ public class TestResult {
         public List<Double> consumeBytesRate = new ArrayList<>();
         /** Average encoded size of the records sent, over all recorded periods. */
         public double avgRecordBytes;
+        /**
+         * Encoded bytes sent and received over all recorded periods: the raw
+         * totals behind the byte rates, for figures that need totals over a
+         * window (the resources report) rather than averaged rates.
+         */
+        public long bytesSent;
+        public long bytesReceived;
 
-        // Running totals behind avgRecordBytes; not part of the result JSON.
-        @JsonIgnore
-        private long recordedBytesSent;
+        // Running total behind avgRecordBytes; not part of the result JSON.
         @JsonIgnore
         private long recordedMessagesSent;
 
@@ -176,9 +181,10 @@ public class TestResult {
                     ? publishRate * stats.bytesSent / stats.messagesSent / 1_000_000 : 0.0);
             consumeBytesRate.add(stats.messagesReceived > 0
                     ? consumeRate * stats.bytesReceived / stats.messagesReceived / 1_000_000 : 0.0);
-            recordedBytesSent += stats.bytesSent;
+            bytesSent += stats.bytesSent;
+            bytesReceived += stats.bytesReceived;
             recordedMessagesSent += stats.messagesSent;
-            avgRecordBytes = recordedMessagesSent > 0 ? (double) recordedBytesSent / recordedMessagesSent : 0;
+            avgRecordBytes = recordedMessagesSent > 0 ? (double) bytesSent / recordedMessagesSent : 0;
         }
 
         public List<Double> scheduleLatencyMin = new ArrayList<>();

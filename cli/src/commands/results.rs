@@ -18,6 +18,10 @@ pub const SNAPSHOT_FILE: &str = "metrics.om.gz";
 /// Result-dir file holding the bytes read from disk during each drain of a
 /// drain-backlog run, measured by export.py and read by the drain charts.
 pub const DISK_READS_FILE: &str = "drain-disk-reads.json";
+/// Result-dir file holding each test point's pod and node resource usage
+/// (CPU, disk, network) plus their time series, measured by export.py and
+/// read by charts/generate_resource_charts.py.
+pub const RESOURCE_METRICS_FILE: &str = "resource-metrics.json";
 
 // Shell snippet that prints the basename of the most-recently-modified
 // *directory* under /results. The trailing-slash glob (`*/`) is the POSIX
@@ -1033,6 +1037,8 @@ pub fn export_metrics(
     let scenario_boundaries = extract_scenario_boundaries(result_dir).unwrap_or_default();
     // Drain-backlog: each drain's window, for export.py to measure its disk reads.
     let drain_windows = extract_drain_windows(result_dir).unwrap_or_default();
+    // Run and drain-backlog: each test point's window, for the resources report.
+    let resource_windows = extract_resource_windows(result_dir).unwrap_or_default();
     if !scenario_boundaries.is_empty() {
         println!(
             "    Discovered {} scenario boundary range(s) for window alignment",
@@ -1131,6 +1137,9 @@ spec:
     let drain_windows_json =
         serde_json::to_string(&drain_windows).unwrap_or_else(|_| "[]".to_string());
     let disk_reads_path = format!("/results/{}/{}", pvc_subdir, DISK_READS_FILE);
+    let resource_windows_json =
+        serde_json::to_string(&resource_windows).unwrap_or_else(|_| "[]".to_string());
+    let resource_path = format!("/results/{}/{}", pvc_subdir, RESOURCE_METRICS_FILE);
     let mut export_args = vec![
         "exec",
         &helper_name,
@@ -1166,6 +1175,16 @@ spec:
             &disk_reads_path,
         ]);
     }
+    if !resource_windows.is_empty() {
+        export_args.extend([
+            "--resource-windows",
+            &resource_windows_json,
+            "--resource-file",
+            &resource_path,
+            "--namespace",
+            ns,
+        ]);
+    }
     let exec_result = kubectl.run(&export_args);
 
     match &exec_result {
@@ -1185,6 +1204,15 @@ spec:
             &helper_name,
             &format!("/results/{}", pvc_subdir),
             DISK_READS_FILE,
+            result_dir,
+        )?;
+    }
+    if !resource_windows.is_empty() {
+        copy_matching_files(
+            kubectl,
+            &helper_name,
+            &format!("/results/{}", pvc_subdir),
+            RESOURCE_METRICS_FILE,
             result_dir,
         )?;
     }
@@ -1423,11 +1451,13 @@ struct DrainWindow {
     end: String,
 }
 
-/// Every drain's window in the drain-backlog results in a directory. Merged
-/// repeat aggregates have none, nor do results from before drains were
-/// timestamped.
-fn extract_drain_windows(result_dir: &str) -> Result<Vec<DrainWindow>> {
-    let mut out: Vec<DrainWindow> = Vec::new();
+/// Calls `f(mode, scenario, test_index, test)` for every test point of every
+/// result JSON in a directory. Files that aren't results (no
+/// `scenarioResults`) or don't parse are skipped.
+fn for_each_result_test(
+    result_dir: &str,
+    mut f: impl FnMut(&str, &serde_json::Value, usize, &serde_json::Value),
+) -> Result<()> {
     for entry in std::fs::read_dir(result_dir)?.flatten() {
         let path = entry.path();
         if !path.extension().is_some_and(|e| e == "json") {
@@ -1439,32 +1469,128 @@ fn extract_drain_windows(result_dir: &str) -> Result<Vec<DrainWindow>> {
         let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else {
             continue;
         };
-        if val.get("mode").and_then(|m| m.as_str()) != Some("drain-backlog") {
-            continue;
-        }
+        let mode = val.get("mode").and_then(|m| m.as_str()).unwrap_or("");
         let Some(scenarios) = val.get("scenarioResults").and_then(|v| v.as_array()) else {
             continue;
         };
-        for test in scenarios
-            .iter()
-            .filter_map(|sc| sc.get("tests").and_then(|t| t.as_array()))
-            .flatten()
-        {
-            let drain = test.get("drain");
-            let bound = |k: &str| drain.and_then(|d| d.get(k)).and_then(|v| v.as_str());
-            if let (Some(start), Some(end)) = (bound("drainStartTime"), bound("drainEndTime")) {
-                let window = DrainWindow {
-                    start: start.to_string(),
-                    end: end.to_string(),
-                };
-                if !out.contains(&window) {
-                    out.push(window);
-                }
+        for sc in scenarios {
+            let tests = sc.get("tests").and_then(|t| t.as_array());
+            for (i, test) in tests.into_iter().flatten().enumerate() {
+                f(mode, sc, i, test);
             }
         }
     }
+    Ok(())
+}
+
+/// Every drain's window in the drain-backlog results in a directory. Merged
+/// repeat aggregates have none, nor do results from before drains were
+/// timestamped.
+fn extract_drain_windows(result_dir: &str) -> Result<Vec<DrainWindow>> {
+    let mut out: Vec<DrainWindow> = Vec::new();
+    for_each_result_test(result_dir, |mode, _sc, _i, test| {
+        if mode != "drain-backlog" {
+            return;
+        }
+        let drain = test.get("drain");
+        let bound = |k: &str| drain.and_then(|d| d.get(k)).and_then(|v| v.as_str());
+        if let (Some(start), Some(end)) = (bound("drainStartTime"), bound("drainEndTime")) {
+            let window = DrainWindow {
+                start: start.to_string(),
+                end: end.to_string(),
+            };
+            if !out.contains(&window) {
+                out.push(window);
+            }
+        }
+    })?;
     out.sort_by(|a, b| a.start.cmp(&b.start));
     Ok(out)
+}
+
+/// One test point's measured window as serialized for export.py, which
+/// queries the pods' and nodes' resource usage over it. `scenario` and
+/// `testIndex` key the measurements back to the test in the result JSON;
+/// `start` and `end` are ISO-8601 instants.
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct ResourceWindow {
+    scenario: String,
+    #[serde(rename = "testIndex")]
+    test_index: usize,
+    label: String,
+    start: String,
+    end: String,
+}
+
+/// Every test point's measured window in the run and drain-backlog results
+/// in a directory, for the resources report:
+/// - run: the test's `measureStartTime`/`measureEndTime`. Results from
+///   before those existed fall back to the scenario's bounds when the
+///   scenario has a single test point, as they then bracket just it.
+/// - drain-backlog: the drain's start and end.
+///
+/// Synthetic "(merged)" repeat aggregates are skipped; each repeat has its
+/// own windows.
+fn extract_resource_windows(result_dir: &str) -> Result<Vec<ResourceWindow>> {
+    let mut out: Vec<ResourceWindow> = Vec::new();
+    for_each_result_test(result_dir, |mode, sc, i, test| {
+        let scenario = sc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if scenario.ends_with("(merged)") {
+            return;
+        }
+        let str_at = |v: Option<&serde_json::Value>, k: &str| {
+            v.and_then(|v| v.get(k))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        };
+        let bounds = match mode {
+            "run" => match (
+                str_at(Some(test), "measureStartTime"),
+                str_at(Some(test), "measureEndTime"),
+            ) {
+                (Some(start), Some(end)) => Some((start, end)),
+                _ => single_test_scenario_bounds(sc),
+            },
+            "drain-backlog" => {
+                let drain = test.get("drain");
+                str_at(drain, "drainStartTime").zip(str_at(drain, "drainEndTime"))
+            }
+            _ => None,
+        };
+        if let Some((start, end)) = bounds {
+            out.push(ResourceWindow {
+                scenario: scenario.to_string(),
+                test_index: i,
+                label: str_at(Some(test), "label").unwrap_or_default(),
+                start,
+                end,
+            });
+        }
+    })?;
+    out.sort_by(|a, b| a.start.cmp(&b.start));
+    Ok(out)
+}
+
+/// A scenario's begin/end as ISO-8601 instants, when it holds exactly one
+/// test point and both stamps parse.
+fn single_test_scenario_bounds(sc: &serde_json::Value) -> Option<(String, String)> {
+    if sc.get("tests").and_then(|t| t.as_array()).map(Vec::len) != Some(1) {
+        return None;
+    }
+    let iso = |k: &str| {
+        let ts = parse_dimster_timestamp(sc.get(k)?.as_str()?).ok()?;
+        unix_to_iso(ts)
+    };
+    iso("beginTime").zip(iso("endTime"))
+}
+
+/// A Unix timestamp as an ISO-8601 instant ("2026-10-26T15:18:13Z"), the
+/// format Java's Instant.toString() writes for whole seconds.
+fn unix_to_iso(ts: i64) -> Option<String> {
+    time::OffsetDateTime::from_unix_timestamp(ts)
+        .ok()?
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
 }
 
 /// Parse a Dimster timestamp "yyyy-MM-dd-HH-mm-ss" into a Unix timestamp (UTC).
@@ -1977,6 +2103,111 @@ Caused by: java.lang.NullPointerException\n\
                     end: "2026-10-28T10:02:07Z".into()
                 },
             ]
+        );
+    }
+
+    fn write_results(dir: &Path, files: Vec<(&str, serde_json::Value)>) {
+        for (name, val) in files {
+            std::fs::write(dir.join(name), val.to_string()).unwrap();
+        }
+    }
+
+    fn window(scenario: &str, i: usize, label: &str, start: &str, end: &str) -> ResourceWindow {
+        ResourceWindow {
+            scenario: scenario.into(),
+            test_index: i,
+            label: label.into(),
+            start: start.into(),
+            end: end.into(),
+        }
+    }
+
+    #[test]
+    fn resource_windows_come_from_measured_phases_and_drains() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = serde_json::json!({
+            "mode": "run",
+            "scenarioResults": [
+                {"name": "sweep", "beginTime": "2026-10-28-09-00-00", "endTime": "2026-10-28-09-30-00",
+                 "tests": [
+                    {"label": "p1", "measureStartTime": "2026-10-28T09:05:00Z", "measureEndTime": "2026-10-28T09:10:00Z"},
+                    {"label": "p2", "measureStartTime": "2026-10-28T09:15:00Z", "measureEndTime": "2026-10-28T09:20:00Z"},
+                 ]},
+                // Merged aggregates carry no windows of their own.
+                {"name": "sweep (merged)", "tests": [{"label": "p1"}, {"label": "p2"}]},
+            ],
+        });
+        let drain = serde_json::json!({
+            "mode": "drain-backlog",
+            "scenarioResults": [{"name": "d", "tests": [
+                {"label": "b1", "drain": {"drainStartTime": "2026-10-28T08:00:00Z", "drainEndTime": "2026-10-28T08:00:07Z"}},
+            ]}],
+        });
+        let explore = serde_json::json!({
+            "mode": "explore",
+            "scenarioResults": [{"name": "e", "beginTime": "2026-10-28-07-00-00", "endTime": "2026-10-28-07-10-00",
+                                 "tests": [{"label": "x"}]}],
+        });
+        write_results(
+            tmp.path(),
+            vec![
+                ("run.json", run),
+                ("drain.json", drain),
+                ("explore.json", explore),
+            ],
+        );
+
+        let windows = extract_resource_windows(&tmp.path().to_string_lossy()).unwrap();
+
+        assert_eq!(
+            windows,
+            vec![
+                window("d", 0, "b1", "2026-10-28T08:00:00Z", "2026-10-28T08:00:07Z"),
+                window(
+                    "sweep",
+                    0,
+                    "p1",
+                    "2026-10-28T09:05:00Z",
+                    "2026-10-28T09:10:00Z"
+                ),
+                window(
+                    "sweep",
+                    1,
+                    "p2",
+                    "2026-10-28T09:15:00Z",
+                    "2026-10-28T09:20:00Z"
+                ),
+            ]
+        );
+    }
+
+    /// Results from before per-test windows: only a single-test scenario's
+    /// bounds bracket one test point, so only it falls back to them.
+    #[test]
+    fn older_run_results_fall_back_to_single_test_scenario_bounds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = serde_json::json!({
+            "mode": "run",
+            "scenarioResults": [
+                {"name": "one", "beginTime": "2026-10-28-09-00-00", "endTime": "2026-10-28-09-07-30",
+                 "tests": [{"label": "only"}]},
+                {"name": "two", "beginTime": "2026-10-28-10-00-00", "endTime": "2026-10-28-10-20-00",
+                 "tests": [{"label": "a"}, {"label": "b"}]},
+            ],
+        });
+        write_results(tmp.path(), vec![("run.json", run)]);
+
+        let windows = extract_resource_windows(&tmp.path().to_string_lossy()).unwrap();
+
+        assert_eq!(
+            windows,
+            vec![window(
+                "one",
+                0,
+                "only",
+                "2026-10-28T09:00:00Z",
+                "2026-10-28T09:07:30Z"
+            )]
         );
     }
 }

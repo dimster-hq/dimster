@@ -10,7 +10,8 @@ Usage:
 Validates that all files have matching scenario names and test labels,
 then generates a single HTML page with comparison charts. Run results use
 overlaid performance series; correctness results use aggregate violation bars
-and recorded-event timelines.
+and recorded-event timelines; drain-backlog results use drain duration,
+throughput and disk read bars and overlaid backlog and consume rate series.
 """
 
 import argparse
@@ -24,6 +25,12 @@ import sys
 # Allow importing from the same directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from generate_drain_backlog_charts import (
+    drain_table,
+    find_disk_reads_file,
+    load_disk_reads,
+    measure_disk_reads,
+)
 from generate_run_charts import (
     COLORS,
     COLORS_ALPHA,
@@ -39,6 +46,7 @@ from generate_run_charts import (
     percentile_options,
     percentile_points,
     strip_heavy_data,
+    text_or_empty,
     time_labels,
 )
 
@@ -169,9 +177,9 @@ def validate_compare(entries):
     """Validate that all result files have compatible structure for comparison."""
     ref_label, _, ref_data = entries[0]
     ref_mode = ref_data.get("mode")
-    if ref_mode not in ("run", "correctness"):
+    if ref_mode not in ("run", "correctness", "drain-backlog"):
         print(
-            f"Error: {ref_label} file is not a run or correctness result "
+            f"Error: {ref_label} file is not a run, drain-backlog or correctness result "
             f"(mode={ref_mode})",
             file=sys.stderr,
         )
@@ -269,9 +277,117 @@ def compare_percentile_dataset(label, points, color, dash_pattern):
 
 def build_compare_chart_configs(entries):
     """Dispatch to the chart model matching the validated result mode."""
-    if entries[0][2].get("mode") == "correctness":
+    mode = entries[0][2].get("mode")
+    if mode == "correctness":
         return build_correctness_compare_chart_configs(entries)
+    if mode == "drain-backlog":
+        return build_drain_compare_chart_configs(entries)
     return build_run_compare_chart_configs(entries)
+
+
+def entry_disk_reads(filepath, data):
+    """{(scenario index, test index): (bytes read, fraction drained)} from the
+    drain-disk-reads.json beside a drain-backlog result; empty without one."""
+    path = find_disk_reads_file(filepath, os.path.dirname(os.path.abspath(filepath)))
+    return measure_disk_reads(data, load_disk_reads(path)) if path else {}
+
+
+def drain_consume_mbs(test):
+    """A drain's consumer throughput in MB/s: the bytes consumed over the
+    drain's duration, or for results from before byte totals, the average
+    of the drain's consume byte rate samples."""
+    drain_s = test.get("drain", {}).get("drainDurationMs", 0) / 1000
+    received = test.get("performance", {}).get("bytesReceived")
+    if received is not None and drain_s > 0:
+        return round(received / 1_000_000 / drain_s, 2)
+    return round(avg(test.get("performance", {}).get("consumeBytesRate", [])), 2)
+
+
+def build_drain_compare_chart_configs(entries):
+    """Build chart configs comparing N drain-backlog results.
+
+    Returns (chart_configs, chart_sections) in the run builder's shape:
+    per scenario, full-width aggregate bars across test points (drain
+    duration, consumer throughput, and the disk read fraction when any
+    entry measured it), then per test point the entries' backlog and
+    consume rate over time.
+    """
+    n_files = len(entries)
+    labels = [e[0] for e in entries]
+    all_data = [e[2] for e in entries]
+    all_scenarios = [d.get("scenarioResults", []) for d in all_data]
+    sample_rate_ms = max(
+        d.get("config", {}).get("drainBacklogConfig", {}).get("sampleRateMillis", 10000)
+        for d in all_data)
+    disk_reads = [entry_disk_reads(path, data) for _l, path, data in entries]
+
+    chart_configs = []
+    chart_sections = {}
+    for s_idx in range(len(all_scenarios[0])):
+        scenario_tests = [all_scenarios[f_idx][s_idx].get("tests", []) for f_idx in range(n_files)]
+        if not scenario_tests[0]:
+            continue
+        dim_labels = [t.get("label", f"test-{i}") for i, t in enumerate(scenario_tests[0])]
+        n_dims = len(dim_labels)
+        chart_idx = 0
+
+        def aggregate_bar(title, y_label, values_of):
+            """Grouped bars across test points, one dataset per entry."""
+            nonlocal chart_idx
+            datasets = [{"label": labels[f_idx], "data": values_of(f_idx),
+                         "backgroundColor": file_palette(f_idx)[0]} for f_idx in range(n_files)]
+            opts = bar_options(title, y_label)
+            opts["maintainAspectRatio"] = False
+            chart_configs.append({
+                "id": f"chart-{s_idx}-{chart_idx}",
+                "fullWidth": True,
+                "height": min(600, max(300, n_files * n_dims * 20)),
+                "config": {"type": "bar", "data": {"labels": dim_labels, "datasets": datasets},
+                           "options": opts},
+            })
+            chart_idx += 1
+
+        aggregate_bar("Drain Duration", "seconds", lambda f: [
+            round(t.get("drain", {}).get("drainDurationMs", 0) / 1000, 1) for t in scenario_tests[f]])
+        aggregate_bar("Consume Throughput during the Drain", "MB/s", lambda f: [
+            drain_consume_mbs(t) for t in scenario_tests[f]])
+        fractions = [[disk_reads[f].get((s_idx, t), (None, None))[1] for t in range(n_dims)]
+                     for f in range(n_files)]
+        if any(v is not None for row in fractions for v in row):
+            aggregate_bar("Disk Read Fraction (disk reads / bytes drained)", "fraction",
+                          lambda f: [None if v is None else round(v, 3) for v in fractions[f]])
+        agg_end = chart_idx
+
+        per_dimension = []
+        for ti in range(n_dims):
+            dim_start = chart_idx
+
+            def dim_time_chart(title, y_label, series_of, _ti=ti):
+                nonlocal chart_idx
+                series = [series_of(scenario_tests[f][_ti]) for f in range(n_files)]
+                datasets = [compare_line_dataset(labels[f], series[f], file_palette(f)[0],
+                                                 file_palette_alpha(f)[0], file_dash(f))
+                            for f in range(n_files)]
+                chart_configs.append({
+                    "id": f"chart-{s_idx}-{chart_idx}",
+                    "zoomGroup": f"time-{s_idx}-{_ti}",
+                    "config": {
+                        "type": "line",
+                        "data": {"labels": time_labels(max(len(x) for x in series), sample_rate_ms),
+                                 "datasets": datasets},
+                        "options": line_options(title, y_label, "Time (s)"),
+                    },
+                })
+                chart_idx += 1
+
+            dim_time_chart("Backlog Messages over Time", "messages",
+                           lambda t: t.get("drain", {}).get("backlogMessagesOverTime", []))
+            dim_time_chart("Consume Rate over Time", "msg/s",
+                           lambda t: t.get("performance", {}).get("consumeRate", []))
+            per_dimension.append((dim_labels[ti], dim_start, chart_idx))
+
+        chart_sections[s_idx] = {"aggregate": (0, agg_end), "per_dimension": per_dimension}
+    return chart_configs, chart_sections
 
 
 def _parse_timestamp_ms(value):
@@ -757,6 +873,16 @@ def build_compare_header(entries):
                 f'<div class="meta-item"><span class="label">Grace Period:</span> '
                 f'<span class="value">{rc.get("gracePeriodSeconds", "")} s</span></div>'
             )
+        elif data.get("mode") == "drain-backlog":
+            dc = data.get("config", {}).get("drainBacklogConfig", {})
+            kc = data.get("config", {}).get("baseKafkaConfig", {}) or {}
+            rc = {}
+            secondary_timing = "".join(
+                f'<div class="meta-item"><span class="label">{name}:</span> '
+                f'<span class="value">{value}</span></div>'
+                for name, value in (("Backlog Size", f'{dc.get("backlogSizeGB", "")} GB'),
+                                    ("Reuse Backlog", dc.get("reuseBacklog", False)),
+                                    ("Warm-up", dc.get("warmup", False))))
         else:
             rc = data.get("runConfig", {})
             kc = data.get("baseKafkaConfig", {})
@@ -765,18 +891,22 @@ def build_compare_header(entries):
                 f'<span class="value">{rc.get("warmupDurationMinutes", "")} min</span></div>'
             )
         annotation_meta = metadata_annotation_html(m)
+        # A drain lasts as long as the backlog takes; there is no test duration.
+        duration_item = "" if data.get("mode") == "drain-backlog" else (
+            f'<div class="meta-item"><span class="label">Test Duration:</span> '
+            f'<span class="value">{rc.get("testDurationMinutes", "")} min</span></div>')
         return f"""
         <div class="compare-col">
             <h3>{label}</h3>
-            <div class="meta-item"><span class="label">System:</span> <span class="value">{m.get("system", "")}</span></div>
-            <div class="meta-item"><span class="label">Environment:</span> <span class="value">{m.get("environment", "")}</span></div>
-            <div class="meta-item"><span class="label">Kafka Config:</span> <span class="value">{m.get("kafkaConfigName", "")}</span></div>
+            <div class="meta-item"><span class="label">System:</span> <span class="value">{text_or_empty(m.get("system"))}</span></div>
+            <div class="meta-item"><span class="label">Environment:</span> <span class="value">{text_or_empty(m.get("environment"))}</span></div>
+            <div class="meta-item"><span class="label">Kafka Config:</span> <span class="value">{text_or_empty(m.get("kafkaConfigName"))}</span></div>
             <div class="meta-item"><span class="label">Replication Factor:</span> <span class="value">{kc.get("replicationFactor", "")}</span></div>
-            <div class="meta-item"><span class="label">Test Duration:</span> <span class="value">{rc.get("testDurationMinutes", "")} min</span></div>
+            {duration_item}
             {secondary_timing}
             {annotation_meta}
-            <div class="meta-item"><span class="label">Start:</span> <span class="value">{m.get("beginTime", "")}</span></div>
-            <div class="meta-item"><span class="label">End:</span> <span class="value">{m.get("endTime", "")}</span></div>
+            <div class="meta-item"><span class="label">Start:</span> <span class="value">{text_or_empty(m.get("beginTime"))}</span></div>
+            <div class="meta-item"><span class="label">End:</span> <span class="value">{text_or_empty(m.get("endTime"))}</span></div>
         </div>
         """
 
@@ -876,9 +1006,13 @@ def build_compare_scenario_sections(entries, chart_configs, chart_sections):
         ranges = chart_sections.get(s_idx, {})
 
         table_html = ""
-        for f_idx in range(len(entries)):
+        for f_idx, (_label, path, data) in enumerate(entries):
             tests = all_scenarios[f_idx][s_idx].get("tests", [])
-            table_html += _build_workload_table(tests, labels[f_idx])
+            if data.get("mode") == "drain-backlog":
+                table_html += (f'<h4 class="table-heading">{labels[f_idx]}</h4>'
+                               + drain_table(tests, entry_disk_reads(path, data), s_idx))
+            else:
+                table_html += _build_workload_table(tests, labels[f_idx])
 
         # Aggregate charts — rendered full-width
         agg_start, agg_end = ranges.get("aggregate", (0, 0))

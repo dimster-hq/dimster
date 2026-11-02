@@ -20,11 +20,10 @@ public class DrainBacklogConfig {
     public int drainTimeoutMinutes = 0;
 
     /**
-     * Run a scenario's first test point once, unrecorded, before the
-     * scenario proper, so its first recorded drain does not run on cold
-     * client and broker JVMs. Set here for every scenario, or per scenario.
-     * In a test point's resolved config, true only on the one test point to
-     * warm up before (the first of the scenario's first repeat).
+     * Run the workload's first test point once before it, unrecorded (a test
+     * point 0 that is in no result), so the first recorded drain does not run
+     * on cold client and broker JVMs. Workload-level only: not settable in
+     * scenarios.
      */
     public boolean warmup = false;
 

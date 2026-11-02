@@ -40,7 +40,7 @@ With a `baseWorkload.flink` block, the backlog builds on the input topics with n
 | `backlogProducerRate` | 0       | Producer rate during drain (0 = pause producers)                          |
 | `sampleRateMillis` | 10000   | Stats sampling interval in milliseconds                                   |
 | `drainTimeoutMinutes` | 0       | Bound the time the test will run (0 unlimited)                            |
-| `warmup` | false   | Run each scenario's first test point once, unrecorded, before the scenario; see [Warm-up](#warm-up). Can also be set per scenario, but not swept. |
+| `warmup` | false   | Run the workload's first test point once before it, unrecorded; see [Warm-up](#warm-up). Workload-level only: not settable in scenarios. |
 | `reuseBacklog` | false   | Drain one backlog in several test points; see [Reusing a backlog](#reusing-a-backlog). Not sweepable. |
 | `settleTimeoutMinutes` | 10      | How long to wait for every partition to have a full ISR and its preferred leader before a drain that follows a `beforeDrain` hook or reuses a backlog. Not sweepable. |
 
@@ -111,23 +111,23 @@ baseWorkload:
 
 ## Warm-up
 
-The first drain after a deploy runs on freshly started JVMs. The worker's consumer code and the brokers' read path have not yet been compiled by the JIT, so that drain can be much slower than the ones after it. With `warmup: true`, each scenario's first test point is run once before the scenario: build and drain, with nothing recorded and no [hooks](../concepts/hooks.md). The scenario then runs as normal.
+The first drain after a deploy runs on freshly started JVMs. The worker's consumer code and the brokers' read path have not yet been compiled by the JIT, so that drain can be much slower than the ones after it. With `warmup: true`, the workload's first test point is run once before it, as a test point 0 that is in no result: nothing is recorded, no [hooks](../concepts/hooks.md) run, and it lies outside every scenario's time window. The workload then runs as normal.
 
 ```yaml
 drainBacklogConfig:
   backlogSizeGB: 5
-  warmup: true          # every scenario
+  warmup: true
 
 scenarios:
   - name: partitions
     partitionsPerTopic: [1, 6, 12]
   - name: more-partitions
     partitionsPerTopic: [24, 48]
-    drainBacklogConfig:
-      warmup: false     # already warm from the scenario before
 ```
 
-A scenario with `repeat` warms up once, before its first run. Without `reuseBacklog`, the warm-up builds its own backlog, so the first build is paid twice. With `reuseBacklog`, the first test point drains the backlog the warm-up built, so a warm-up costs one extra drain; its `reusedBacklogFrom` is then its own index.
+The warm-up is a workload-level setting and runs once per run, before the first test point that run executes. `dimster resume` warms up again before the test point it resumes at, since a resumed run may follow a redeploy.
+
+Without `reuseBacklog`, the warm-up builds and drains its own backlog, and the first test point then builds its own, so the first build is paid twice. With `reuseBacklog`, the warm-up's backlog is built outside it like any other (see [Reusing a backlog](#reusing-a-backlog)), and the first test point drains it again, so a warm-up costs one extra drain. That test point's result reports the build time and `drainedByWarmUp: true`.
 
 ## Reusing a backlog
 
@@ -171,9 +171,17 @@ scenarios:
     consumersPerGroup: [2, 4, 8, 12]
 ```
 
-The backlog is built once, by the first test point. Every test point, including the first, then drains it from offset 0 with fresh consumer groups. A reused test point has no build phase: its result shows `reusedBacklogFrom` (the index of the test point that built it), a build time of 0, and time series that cover the drain only. Topics of a reusable backlog are created with unlimited retention (`retention.ms` and `retention.bytes` of -1), so a broker's retention cannot shrink them between drains.
+With `reuseBacklog`, backlogs are built outside the test points: before the first test point that needs each one, and before that test point's `beforeTestPoint` hooks. Every test point, including the first, then only drains, from offset 0 with fresh consumer groups, so every recorded test point is measured the same way and its time series cover the drain only. Here the backlog is built once, before the first test point. Builds fall inside the scenario's time window but in no test point's.
 
-Before reusing, the coordinator checks that the backlog is intact: its topics exist, nothing was deleted from the start of a partition, and nothing was appended. Otherwise it rebuilds. The same check lets `dimster resume` carry on with a backlog from before the interruption.
+Each build is reported once, on the backlog's first recorded drain:
+
+- `buildDurationMs` is the build's time on the backlog's first recorded drain, and 0 on later drains of it.
+- `reusedBacklogFrom` is the index of the test point that first drained the backlog. It is absent on the first recorded drain itself.
+- `drainedByWarmUp: true` marks a first recorded drain that the [warm-up](#warm-up) drained before.
+
+Topics of a reusable backlog are created with unlimited retention (`retention.ms` and `retention.bytes` of -1), so a broker's retention cannot shrink them between drains.
+
+Before reusing, the coordinator checks that the backlog is intact: its topics exist, nothing was deleted from the start of a partition, and nothing was appended. Otherwise it rebuilds, again outside the test point. The same check lets `dimster resume` carry on with a backlog from before the interruption.
 
 ### Requirements
 
@@ -204,6 +212,7 @@ The output includes:
 - **Drain rate over time** -- Time series showing how consumer throughput varies as the backlog shrinks.
 - **Disk reads** -- Bytes read from disk during the drain, and as a share of the bytes drained, in the charts (measured by the end-of-run metrics export).
 - **Drain window** -- `drainStartTime` and `drainEndTime`, for finding the drain in Grafana.
+- **Byte totals** -- `performance.bytesSent` and `bytesReceived`, the encoded bytes produced and consumed over the test point's samples. Consumers only read during the drain, so `bytesReceived` is what the drain consumed.
 
 ## When to Use
 

@@ -78,6 +78,7 @@ environments:
 
     monitoring:               # Monitoring stack config
       nodeLabel: <string>       # Node selector for Grafana and Prometheus
+      cgroupMetrics: <bool>     # Scrape per-container metrics (cAdvisor); default false
       prometheus:               # Resource overrides for Prometheus (optional)
         requests:
           cpu: <string>
@@ -283,6 +284,7 @@ The coordinator deployment uses `strategy: Recreate` because it has a ReadWriteO
 | `prometheus.requests.memory` | string | -- | Override Prometheus memory request/limit. |
 | `grafana.requests.cpu` | string | -- | Override Grafana CPU request/limit. |
 | `grafana.requests.memory` | string | -- | Override Grafana memory request/limit. |
+| `cgroupMetrics` | bool | `false` | Scrape every kubelet's cAdvisor for per-container CPU, disk and network, so the [resources report](../concepts/results-and-charts.md#resources-report) can split usage by service. Creates a ClusterRole on nodes for Prometheus (removed by `dimster teardown`). Takes effect on the next `dimster deploy`. |
 
 `prometheus` and `grafana` resource overrides only take effect when both `cpu` and `memory` are set; otherwise the base manifest defaults apply.
 

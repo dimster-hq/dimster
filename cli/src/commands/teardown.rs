@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::commands::cadvisor;
 use crate::commands::deploy;
 use crate::commands::deploy::Component;
 use crate::kubectl::Kubectl;
@@ -66,8 +67,15 @@ pub fn run(
     deploy::write_namespace_yaml(&tmp.join("base/namespace.yaml"), ns)?;
 
     let include_namespace = only.is_empty();
-    let resource_list =
+    let mut resource_list =
         deploy::build_teardown_resource_list(&components, external, include_namespace);
+    // Always sweep the cAdvisor ClusterRole and binding with monitoring,
+    // even if `monitoring.cgroupMetrics` was switched off after deploying:
+    // they are cluster-scoped, so deleting the namespace leaves them behind.
+    if components.contains(&Component::Monitoring) {
+        resource_list.push('\n');
+        resource_list.push_str(&cadvisor::write_rbac(tmp, ns)?);
+    }
     if !resource_list.trim().is_empty() {
         let kustomization = format!(
             "apiVersion: kustomize.config.k8s.io/v1beta1\n\

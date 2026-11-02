@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.text.DecimalFormat;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -357,6 +358,8 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         worker.startLoad(producerWorkAssignment);
 
         TestResult testResult;
+        Instant measureStart;
+        Instant measureEnd;
         // testPointActive is the gate for /modify — set it true once load is
         // running and clear it in finally so an exception during warmup,
         // probes, or test never leaves the flag stuck on (which would let
@@ -448,7 +451,9 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             // start the recorded benchmark  -----------
             log.info("----- Starting benchmark traffic ({}m) ------", pointRunConfig.testDurationMinutes);
 
+            measureStart = Instant.now();
             testResult = collectStats(Duration.ofMinutes(pointRunConfig.testDurationMinutes), true);
+            measureEnd = Instant.now();
         } finally {
             testPointActive = false;
         }
@@ -477,6 +482,8 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
 
         RunResult.TestEntry entry = new RunResult.TestEntry();
         entry.label = point.label();
+        entry.measureStartTime = measureStart.toString();
+        entry.measureEndTime = measureEnd.toString();
         entry.kafkaConfig = testResult.kafkaConfig;
         entry.workloadConfig = testResult.workloadConfig;
         entry.results = testResult.results;

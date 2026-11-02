@@ -36,9 +36,18 @@ public class RunResult {
         public List<TestEntry> tests = new ArrayList<>();
     }
 
-    @JsonPropertyOrder({"label", "kafkaConfig", "workloadConfig", "modifications", "results", "availability"})
+    @JsonPropertyOrder({"label", "measureStartTime", "measureEndTime", "kafkaConfig", "workloadConfig",
+            "modifications", "results", "availability"})
     public static class TestEntry {
         public String label;
+        // ISO-8601 instants bracketing the measured phase (after warm-up),
+        // as Instant.toString(). The metrics export queries Prometheus over
+        // this window for the resources report. Null on the synthetic
+        // "(merged)" repeat-aggregate.
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String measureStartTime;
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+        public String measureEndTime;
         @JsonInclude(JsonInclude.Include.NON_NULL)
         public TestResult.KafkaConfigSummary kafkaConfig;
         public TestResult.WorkloadConfig workloadConfig = new TestResult.WorkloadConfig();

@@ -478,6 +478,10 @@ pub struct MonitoringEnvConfig {
     pub node_label: Option<String>,
     pub prometheus: Option<MonitoringResourceConfig>,
     pub grafana: Option<MonitoringResourceConfig>,
+    /// Scrape the kubelets' cAdvisor for per-container (cgroup) CPU, disk
+    /// and network, which the resources report splits by service. Off by
+    /// default: it needs a cluster-scoped ClusterRole (see `cadvisor.rs`).
+    pub cgroup_metrics: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -584,6 +588,15 @@ impl ConnectionConfig {
 }
 
 impl Environment {
+    /// Whether Prometheus scrapes per-container cgroup metrics
+    /// (`monitoring.cgroupMetrics`, default false).
+    pub fn cgroup_metrics(&self) -> bool {
+        self.monitoring
+            .as_ref()
+            .and_then(|m| m.cgroup_metrics)
+            .unwrap_or(false)
+    }
+
     /// Returns true when the environment connects to an external Kafka cluster.
     pub fn is_external(&self) -> bool {
         self.deploy == DeployMode::External
@@ -934,6 +947,26 @@ mod tests {
             ]
         );
         env.validate("local").unwrap();
+    }
+
+    #[test]
+    fn cgroup_metrics_is_off_unless_monitoring_enables_it() {
+        assert!(!env_from_yaml("image: dimster").unwrap().cgroup_metrics());
+        assert!(
+            !env_from_yaml("monitoring:\n  nodeLabel: role=infra\n")
+                .unwrap()
+                .cgroup_metrics()
+        );
+        assert!(
+            !env_from_yaml("monitoring:\n  cgroupMetrics: false\n")
+                .unwrap()
+                .cgroup_metrics()
+        );
+        assert!(
+            env_from_yaml("monitoring:\n  cgroupMetrics: true\n")
+                .unwrap()
+                .cgroup_metrics()
+        );
     }
 
     #[test]

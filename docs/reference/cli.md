@@ -265,8 +265,8 @@ Runs `charts/generate_charts.py` against the results directory. Requires Python 
 
 ### compare
 
-Generate side-by-side comparison charts from two or more compatible `run` or
-`correctness` result JSON files.
+Generate side-by-side comparison charts from two or more compatible `run`,
+`drain-backlog` or `correctness` result JSON files.
 
 You can specify a directory (it will recursively search for result JSON files), or pass label=result-file-path.
 
@@ -290,6 +290,16 @@ cumulative sampled timelines for duplicates, out-of-order records, and CRC
 failures. Message loss is shown only as a final aggregate because intermediate
 missing-message counts primarily represent consumer lag. Older results fall
 back to the timestamped detailed violation list, which may be capped.
+
+For drain-backlog results, each scenario's comparison holds:
+
+- each entry's drain table: backlog, build time, drain time, disk reads, producer rate during the drain, partitions and consumers per group;
+- grouped bars across test points for drain duration and consumer throughput during the drain. Throughput is the bytes consumed over the drain's duration. When any entry has `drain-disk-reads.json` beside it, there is also a bar for the disk read fraction (disk reads divided by bytes drained);
+- for each test point, the entries' backlog messages and consume rate over time, overlaid.
+
+With `--directory`, drain-backlog results need a `metadata.label`, set with `--metadata label=...` when running, as run results do.
+
+For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<labels>-resources.html` and `compare-<labels>-resources.csv`. The page sets the entries side by side in three tables: the per-service summary, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
 
 Example:
 

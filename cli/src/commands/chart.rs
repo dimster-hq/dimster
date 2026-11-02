@@ -27,6 +27,8 @@ pub fn run(results_dir: &str, script_dir: &Path) -> Result<()> {
         "generate_explore_charts.py",
         "generate_drain_backlog_charts.py",
         "generate_correctness_charts.py",
+        // Needs resource-metrics.json from the metrics export
+        "generate_resource_charts.py",
     ];
 
     for script in generators {

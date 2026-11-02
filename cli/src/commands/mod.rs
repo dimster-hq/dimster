@@ -1,5 +1,6 @@
 pub mod broker_config;
 pub mod build;
+pub mod cadvisor;
 pub mod chart;
 pub mod compare;
 pub mod csv;

@@ -48,5 +48,21 @@ class DiskReadsTest(unittest.TestCase):
         self.assertNotIn("Disk Read Fraction", str(configs))
 
 
+class BuildCellTest(unittest.TestCase):
+    """The build column: the build time on a backlog's first recorded drain,
+    and which test point a reused backlog was first drained by."""
+
+    def test_first_drain_shows_the_build(self):
+        self.assertEqual(charts.build_cell({"buildDurationMs": 72_400}), "72.4s")
+
+    def test_first_drain_after_the_warm_up_says_so(self):
+        self.assertEqual(charts.build_cell({"buildDurationMs": 72_400, "drainedByWarmUp": True}),
+                         "72.4s (warm-up drained it first)")
+
+    def test_reuse_names_the_first_drain(self):
+        self.assertEqual(charts.build_cell({"buildDurationMs": 0, "reusedBacklogFrom": 0}),
+                         "reused (test point 1)")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -38,27 +38,17 @@ pub fn run(
 
     std::fs::create_dir_all(&output_dir)?;
 
-    let script = script_dir
-        .join("charts/generate_compare_charts.py")
-        .to_string_lossy()
-        .to_string();
-
     let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
     println!("==> Comparing {}...", labels.join(" vs "));
 
-    let mut cmd = Command::new("python3");
-    cmd.arg(&script);
-
-    for entry in &entries {
-        cmd.args([
-            "--entry",
-            &format!("{}={}", entry.label, entry.file.to_string_lossy()),
-        ]);
-    }
-    cmd.args(["--output", &output_dir]);
-
-    let status = cmd.status()?;
-
+    let status = Command::new("python3")
+        .args(script_args(
+            script_dir,
+            COMPARE_SCRIPT,
+            &entries,
+            &output_dir,
+        ))
+        .status()?;
     if !status.success() {
         bail!("Comparison chart generation failed");
     }
@@ -67,7 +57,46 @@ pub fn run(
 
     println!("==> Comparison charts saved to {}/", output_dir);
     println!("==> Comparison CSV saved to {}", csv_path.display());
+
+    // Writes nothing unless at least two entries have resource data; the
+    // comparison above stands either way.
+    match Command::new("python3")
+        .args(script_args(
+            script_dir,
+            RESOURCES_SCRIPT,
+            &entries,
+            &output_dir,
+        ))
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("==> Warning: resource comparison failed ({status})"),
+        Err(e) => eprintln!("==> Warning: could not run the resource comparison: {e}"),
+    }
     Ok(())
+}
+
+/// The run comparison's charts.
+const COMPARE_SCRIPT: &str = "charts/generate_compare_charts.py";
+/// The comparison of the entries' resources report data, where they have it.
+const RESOURCES_SCRIPT: &str = "charts/generate_compare_resource_charts.py";
+
+/// python3 arguments for a comparison script: the script, then one
+/// `--entry LABEL=FILE` per entry and the output directory.
+fn script_args(
+    script_dir: &Path,
+    script: &str,
+    entries: &[CompareEntry],
+    output_dir: &str,
+) -> Vec<String> {
+    let mut args = vec![script_dir.join(script).to_string_lossy().to_string()];
+    for entry in entries {
+        args.push("--entry".to_string());
+        args.push(format!("{}={}", entry.label, entry.file.to_string_lossy()));
+    }
+    args.push("--output".to_string());
+    args.push(output_dir.to_string());
+    args
 }
 
 fn write_combined_csv(entries: &[CompareEntry], output_dir: &str) -> Result<PathBuf> {
@@ -167,7 +196,7 @@ fn entries_from_directory(directory: &Path) -> Result<Vec<CompareEntry>> {
         }
         if let Some(dir) = typed_json_dirs.first() {
             bail!(
-                "No supported result JSON with fileType='dimster-result' and mode='run' or mode='correctness' found in {}",
+                "No supported result JSON with fileType='dimster-result' and mode 'run', 'drain-backlog' or 'correctness' found in {}",
                 dir.display()
             );
         }
@@ -295,12 +324,15 @@ fn compare_result_label(file: &Path) -> Result<Option<String>> {
     let mode = value.get("mode").and_then(|v| v.as_str());
     let metadata = value.get("metadata");
     let label = match mode {
-        Some("run") => metadata
+        // Results of one workload share its name, so runs and drains need
+        // the explicit label (`--metadata label=...`) to tell them apart.
+        Some(m @ ("run" | "drain-backlog")) => metadata
             .and_then(|v| v.get("label"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Run result JSON is missing string metadata.label: {}",
+                    "{} result JSON is missing string metadata.label (set it with --metadata label=...): {}",
+                    if m == "run" { "Run" } else { "Drain-backlog" },
                     file.display()
                 )
             })?,
@@ -478,6 +510,42 @@ mod tests {
     }
 
     #[test]
+    fn entries_from_directory_accepts_drain_backlog_results_by_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        let drain = |label: &str| {
+            format!(
+                r#"{{"fileType":"dimster-result","mode":"drain-backlog","metadata":{{"name":"w","label":"{label}"}},"scenarioResults":[]}}"#
+            )
+        };
+        write(&tmp.path().join("a/result.json"), &drain("16kb"));
+        write(&tmp.path().join("b/result.json"), &drain("64kb"));
+
+        let labels: Vec<String> = entries_from_directory(tmp.path())
+            .unwrap()
+            .into_iter()
+            .map(|e| e.label)
+            .collect();
+
+        assert_eq!(labels, vec!["16kb", "64kb"]);
+    }
+
+    #[test]
+    fn drain_backlog_results_need_a_metadata_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            &tmp.path().join("a/result.json"),
+            r#"{"fileType":"dimster-result","mode":"drain-backlog","metadata":{"name":"w"},"scenarioResults":[]}"#,
+        );
+
+        let err = entries_from_directory(tmp.path()).unwrap_err().to_string();
+
+        assert!(
+            err.contains("Drain-backlog result JSON is missing string metadata.label"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn entries_from_directory_rejects_json_files_without_file_type() {
         let tmp = tempfile::tempdir().unwrap();
         let subdir = tmp.path().join("2026-07-08-13-46-21");
@@ -589,6 +657,32 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("Use either --directory or LABEL=FILE arguments")
+        );
+    }
+
+    #[test]
+    fn script_args_pass_every_entry_and_the_output() {
+        let entries = vec![
+            CompareEntry {
+                label: "A".into(),
+                file: PathBuf::from("r/a.json"),
+            },
+            CompareEntry {
+                label: "B".into(),
+                file: PathBuf::from("r/b.json"),
+            },
+        ];
+        assert_eq!(
+            script_args(Path::new("/repo"), RESOURCES_SCRIPT, &entries, "out"),
+            vec![
+                "/repo/charts/generate_compare_resource_charts.py",
+                "--entry",
+                "A=r/a.json",
+                "--entry",
+                "B=r/b.json",
+                "--output",
+                "out",
+            ]
         );
     }
 }

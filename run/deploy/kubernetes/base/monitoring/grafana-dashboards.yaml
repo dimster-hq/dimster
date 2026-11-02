@@ -13,9 +13,141 @@ data:
       "links": [],
       "panels": [
         {
+          "title": "Throughput",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "collapsed": false
+        },
+        {
+          "title": "Messages Sent (rate/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(rate(client_messages_sent_count[1m]))", "legendFormat": "total msg/s" },
+            { "expr": "rate(client_messages_sent_count[1m])", "legendFormat": "{{host}}" }
+          ]
+        },
+        {
+          "title": "Messages Received (rate/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(rate(client_messages_received_count[1m]))", "legendFormat": "total msg/s" },
+            { "expr": "rate(client_messages_received_count[1m])", "legendFormat": "{{host}}" }
+          ]
+        },
+        {
+          "title": "Bytes Sent (rate/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(rate(client_bytes_sent_count[1m]))", "legendFormat": "total" },
+            { "expr": "rate(client_bytes_sent_count[1m])", "legendFormat": "{{host}}" }
+          ]
+        },
+        {
+          "title": "Bytes Received (rate/s)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(rate(client_bytes_received_count[1m]))", "legendFormat": "total" },
+            { "expr": "rate(client_bytes_received_count[1m])", "legendFormat": "{{host}}" }
+          ]
+        },
+        {
+          "title": "Total Messages (cumulative)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(client_messages_sent_count)", "legendFormat": "sent" },
+            { "expr": "sum(client_messages_received_count)", "legendFormat": "received" }
+          ]
+        },
+        {
+          "title": "Errors",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(rate(client_producer_errors_count[1m]))", "legendFormat": "producer errors" },
+            { "expr": "sum(rate(client_producer_timeout_errors_count[1m]))", "legendFormat": "timeout errors" },
+            { "expr": "sum(rate(client_consumer_errors_count[1m]))", "legendFormat": "consumer errors" }
+          ]
+        },
+        {
+          "title": "Client Counts",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" },
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(client_producer_count)", "legendFormat": "producers" },
+            { "expr": "sum(client_consumer_count)", "legendFormat": "consumers" }
+          ]
+        },
+        {
+          "title": "Latencies",
+          "type": "row",
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+          "collapsed": false
+        },
+        {
           "title": "Publish Latency (ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 34 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -34,7 +166,7 @@ data:
         {
           "title": "End-to-End Latency (ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 34 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -53,7 +185,7 @@ data:
         {
           "title": "Publish Delay (ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -72,7 +204,7 @@ data:
         {
           "title": "E2E Delivery Latency (ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -89,131 +221,9 @@ data:
           ]
         },
         {
-          "title": "Schedule Latency (ms)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "ms",
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "avg(client_schedule_latency{percentile=\"50\"})", "legendFormat": "p50" },
-            { "expr": "avg(client_schedule_latency{percentile=\"99\"})", "legendFormat": "p99" },
-            { "expr": "avg(client_schedule_latency{percentile=\"99.9\"})", "legendFormat": "p99.9" },
-            { "expr": "max(client_schedule_latency{percentile=\"100\"})", "legendFormat": "max" }
-          ]
-        },
-        {
-          "title": "Messages Sent (rate/s)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "sum(rate(client_messages_sent_count[1m]))", "legendFormat": "total msg/s" },
-            { "expr": "rate(client_messages_sent_count[1m])", "legendFormat": "{{host}}" }
-          ]
-        },
-        {
-          "title": "Messages Received (rate/s)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "sum(rate(client_messages_received_count[1m]))", "legendFormat": "total msg/s" },
-            { "expr": "rate(client_messages_received_count[1m])", "legendFormat": "{{host}}" }
-          ]
-        },
-        {
-          "title": "Bytes Sent (rate/s)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "Bps",
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "sum(rate(client_bytes_sent_count[1m]))", "legendFormat": "total" },
-            { "expr": "rate(client_bytes_sent_count[1m])", "legendFormat": "{{host}}" }
-          ]
-        },
-        {
-          "title": "Errors",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "sum(rate(client_producer_errors_count[1m]))", "legendFormat": "producer errors" },
-            { "expr": "sum(rate(client_producer_timeout_errors_count[1m]))", "legendFormat": "timeout errors" },
-            { "expr": "sum(rate(client_consumer_errors_count[1m]))", "legendFormat": "consumer errors" }
-          ]
-        },
-        {
-          "title": "Total Messages (cumulative)",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "unit": "short",
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "sum(client_messages_sent_count)", "legendFormat": "sent" },
-            { "expr": "sum(client_messages_received_count)", "legendFormat": "received" }
-          ]
-        },
-        {
-          "title": "Client Counts",
-          "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "fieldConfig": {
-            "defaults": {
-              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" },
-              "decimals": 0
-            },
-            "overrides": []
-          },
-          "targets": [
-            { "expr": "sum(client_producer_count)", "legendFormat": "producers" },
-            { "expr": "sum(client_consumer_count)", "legendFormat": "consumers" }
-          ]
-        },
-        {
           "title": "Publish Latency by Worker (p99, ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 50 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -229,7 +239,7 @@ data:
         {
           "title": "E2E Latency by Worker (p99, ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -242,17 +252,36 @@ data:
             { "expr": "client_e2e_latency{percentile=\"99\"}", "legendFormat": "{{host}}" }
           ]
         },
+        {
+          "title": "Schedule Latency (ms)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 58 },
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "pointSize": 5, "showPoints": "never" }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "avg(client_schedule_latency{percentile=\"50\"})", "legendFormat": "p50" },
+            { "expr": "avg(client_schedule_latency{percentile=\"99\"})", "legendFormat": "p99" },
+            { "expr": "avg(client_schedule_latency{percentile=\"99.9\"})", "legendFormat": "p99.9" },
+            { "expr": "max(client_schedule_latency{percentile=\"100\"})", "legendFormat": "max" }
+          ]
+        },
 
         {
           "title": "Consumer Details",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 66 },
           "collapsed": false
         },
         {
           "title": "Poll Batch Size (records)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 57 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 67 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -271,7 +300,7 @@ data:
         {
           "title": "Poll Rate (/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 57 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 67 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -288,7 +317,7 @@ data:
         {
           "title": "Commit Sync Latency (ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 65 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 75 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -308,7 +337,7 @@ data:
         {
           "title": "Commit Rate (/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 65 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 75 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -325,7 +354,7 @@ data:
         {
           "title": "Processing Time (ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 73 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 83 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -345,7 +374,7 @@ data:
         {
           "title": "Consumer Recreations (cumulative)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 73 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 83 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -362,13 +391,13 @@ data:
         {
           "title": "Per-Partition Details",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 81 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 91 },
           "collapsed": false
         },
         {
           "title": "Messages Received by Partition (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 82 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 92 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -384,7 +413,7 @@ data:
         {
           "title": "Messages Sent by Partition (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 90 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 100 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -400,7 +429,7 @@ data:
         {
           "title": "E2E Latency by Partition (p99, ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 98 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 108 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -416,7 +445,7 @@ data:
         {
           "title": "Publish Latency by Partition (p99, ms)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 98 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 108 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -432,7 +461,7 @@ data:
         {
           "title": "Total Messages Sent by Partition (cumulative)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 106 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 116 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -448,7 +477,7 @@ data:
         {
           "title": "Total Messages Received by Partition (cumulative)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 106 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 116 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -465,13 +494,13 @@ data:
         {
           "title": "Per-Consumer Details",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 114 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 124 },
           "collapsed": false
         },
         {
           "title": "Messages Received by Consumer (rate/s)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 115 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 125 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -488,14 +517,14 @@ data:
         {
           "title": "Share Group Lag",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 123 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 133 },
           "collapsed": false
         },
         {
           "title": "Share Group Lag (total by group)",
           "description": "Total lag across all partitions per share group, as reported by the broker",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 124 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 134 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -513,7 +542,7 @@ data:
           "title": "Share Group Lag (by partition)",
           "description": "Per-partition share group lag",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 124 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 134 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -531,14 +560,14 @@ data:
         {
           "title": "Kafka Producer Client Metrics",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 132 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 142 },
           "collapsed": false
         },
         {
           "title": "Record Queue Time (ms)",
           "description": "Time records spend in the producer accumulator before being sent — reveals backpressure",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 133 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 143 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -556,7 +585,7 @@ data:
           "title": "Request Latency (ms)",
           "description": "Round-trip time of produce requests to the broker",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 133 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 143 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -574,7 +603,7 @@ data:
           "title": "Throttle Time (ms)",
           "description": "Time the broker throttled the producer due to quota enforcement",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 141 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 151 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -591,7 +620,7 @@ data:
           "title": "Batching",
           "description": "Producer batch sizing — useful for tuning batch.size and linger.ms",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 141 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 151 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -609,7 +638,7 @@ data:
           "title": "Buffer Pool (bytes)",
           "description": "Producer buffer pool pressure — low available bytes indicates the producer can't keep up",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 149 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 159 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -627,7 +656,7 @@ data:
           "title": "Send & Retry Rates (/s)",
           "description": "Producer record send and retry throughput",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 149 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 159 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -645,14 +674,14 @@ data:
         {
           "title": "Kafka Consumer Client Metrics",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 157 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 167 },
           "collapsed": false
         },
         {
           "title": "Fetch Latency (ms)",
           "description": "Round-trip time of fetch requests to the broker",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 158 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 168 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -670,7 +699,7 @@ data:
           "title": "Fetch Throttle Time (ms)",
           "description": "Time the broker throttled fetch requests due to quota enforcement",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 158 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 168 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -687,7 +716,7 @@ data:
           "title": "Fetch & Consumption Rates (/s)",
           "description": "Consumer fetch request rate, record consumption rate, and records per fetch",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 166 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 176 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -706,7 +735,7 @@ data:
           "title": "Fetch Size (bytes)",
           "description": "Average fetch response size — useful for tuning fetch.max.bytes",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 166 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 176 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -723,7 +752,7 @@ data:
           "title": "Network Ingress (Bps)",
           "description": "Consumer incoming byte rate from the network layer (shared by classic and share consumers)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 174 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 184 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -741,7 +770,7 @@ data:
           "title": "Consumer Lag (records)",
           "description": "Max consumer lag across all assigned partitions (classic consumer groups only — share groups use broker-reported lag)",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 174 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 184 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -759,7 +788,7 @@ data:
           "title": "Connection Count",
           "description": "Number of active connections to brokers — drops indicate disconnects, growth may signal connection leaks",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 182 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 192 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -777,7 +806,7 @@ data:
           "title": "Connection Churn (/s)",
           "description": "Rate of connections created and closed — spikes indicate reconnect storms or broker instability",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 182 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 192 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -795,7 +824,7 @@ data:
           "title": "I/O Ratio",
           "description": "Fraction of time spent performing I/O vs waiting — low io_ratio with high io_wait_ratio means consumers are idle",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 190 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 200 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -815,7 +844,7 @@ data:
           "title": "Request / Response Rate (/s)",
           "description": "Overall request and response throughput at the network layer",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 190 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 200 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -833,7 +862,7 @@ data:
           "title": "Per-Broker Request Latency (ms)",
           "description": "Request latency per broker node — identifies slow brokers or uneven load",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 198 },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 208 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -851,14 +880,14 @@ data:
         {
           "title": "Kafka Share Group Metrics",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 206 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 216 },
           "collapsed": false
         },
         {
           "title": "Acknowledgement Send Rate (/s)",
           "description": "Rate of share group acknowledgements sent to brokers — tracks consumer processing throughput",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 207 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 217 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -875,7 +904,7 @@ data:
           "title": "Acknowledgement Error Rate (/s)",
           "description": "Rate of failed share group acknowledgements — non-zero values indicate ack processing failures",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 207 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 217 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -893,7 +922,7 @@ data:
           "title": "Last Heartbeat (seconds ago)",
           "description": "Time since last successful heartbeat — growth indicates consumers at risk of being fenced",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 215 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 225 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -912,7 +941,7 @@ data:
           "title": "Rebalance Rate & Total",
           "description": "Share group rebalance frequency — frequent rebalances severely impact drain throughput",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 215 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 225 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -931,7 +960,7 @@ data:
           "title": "Poll Idle Ratio & Time Between Polls (ms)",
           "description": "Poll idle ratio (fraction of time idle between polls) and time between polls — low idle ratio means consumer is saturated, high time-between-polls risks rebalance",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 223 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 233 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -962,7 +991,7 @@ data:
           "title": "Internal Queue Sizes",
           "description": "Share consumer internal queue depths — growth indicates back-pressure between the application thread and the background network thread",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 223 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 233 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -981,14 +1010,14 @@ data:
         {
           "title": "Classic Consumer Rebalances",
           "type": "row",
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 231 },
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 241 },
           "collapsed": false
         },
         {
           "title": "Partitions Assigned (rate/s)",
           "description": "Aggregate rate of group-managed partitions assigned across all classic consumers",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 232 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 242 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -1006,7 +1035,7 @@ data:
           "title": "Partitions Revoked (rate/s)",
           "description": "Aggregate rate of group-managed partitions released across all classic consumers",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 232 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 242 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -1024,7 +1053,7 @@ data:
           "title": "Partitions Assigned (cumulative)",
           "description": "Cumulative number of group-managed partitions assigned across all classic consumers",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 240 },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 250 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {
@@ -1043,7 +1072,7 @@ data:
           "title": "Partitions Revoked (cumulative)",
           "description": "Cumulative number of group-managed partitions released across all classic consumers",
           "type": "timeseries",
-          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 240 },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 250 },
           "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
           "fieldConfig": {
             "defaults": {

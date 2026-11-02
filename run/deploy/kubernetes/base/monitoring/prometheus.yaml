@@ -1,3 +1,12 @@
+# Identity for Prometheus. Unused unless monitoring.cgroupMetrics is set,
+# in which case the CLI binds it to a ClusterRole for scraping the kubelets'
+# cAdvisor (cli/src/commands/cadvisor.rs).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: dimster
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,6 +28,7 @@ spec:
       labels:
         app: prometheus
     spec:
+      serviceAccountName: prometheus
       # Prometheus runs as user 'nobody' (65534). The fsGroup ensures
       # the PVC is writable by that user.
       securityContext:
