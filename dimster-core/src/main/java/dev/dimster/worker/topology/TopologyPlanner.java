@@ -303,13 +303,15 @@ public class TopologyPlanner {
         // 1b. With a Flink stage, each input topic gets an output topic, which
         //     consumers read instead. The "-out" suffix keeps it under the topic
         //     prefix, so test-topic cleanup removes it too. Over existing inputs
-        //     the output also gets a fresh suffix: the previous test point's
+        //     the output is named afresh under the prefix: the inputs may be
+        //     outside it (persistent backlogs), and the previous test point's
         //     output of the same input may still be being deleted.
         Map<String, String> pipelineTopics = new LinkedHashMap<>();
         if (spec.pipelined()) {
-            for (String topic : topicNames) {
+            for (int i = 0; i < topicNames.size(); i++) {
+                String topic = topicNames.get(i);
                 String output = inputTopicNames != null
-                        ? topic + OUTPUT_TOPIC_SUFFIX + "-" + randomSuffix.get()
+                        ? String.format("%s-%s-%04d%s", spec.topicPrefix(), randomSuffix.get(), i, OUTPUT_TOPIC_SUFFIX)
                         : topic + OUTPUT_TOPIC_SUFFIX;
                 pipelineTopics.put(topic, output);
                 topicPartitionCounts.put(output, spec.outputPartitionsPerTopic());

@@ -382,10 +382,13 @@ def build_cell(drain):
     """Build time, or which test point first drained the backlog a reused
     test point drained again. With reuseBacklog the build is outside the
     test points and its time shows on the backlog's first recorded drain,
-    noting when the unrecorded warm-up drained it before."""
+    noting when the unrecorded warm-up drained it before. With reuseTopic, a
+    backlog found in kept topics has no build to show."""
     reused_from = drain.get("reusedBacklogFrom")
     if reused_from is not None:
         return f"reused (test point {reused_from + 1})"
+    if drain.get("reusedTopic"):
+        return "kept topic"
     built = f'{round(drain.get("buildDurationMs", 0) / 1000, 1)}s'
     return f"{built} (warm-up drained it first)" if drain.get("drainedByWarmUp") else built
 

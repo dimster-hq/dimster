@@ -702,17 +702,22 @@ public class TopologyPlannerTest {
     @Test
     public void planOverExistingInputsKeepsTheirNamesAndFreshensGroupsAndOutputs() {
         var planner = newPlanner(List.of("w1", "w2"), WorkerMode.MIXED, new RatioSplit(1, 1));
-        List<String> inputs = List.of("dimster-reused-0000", "dimster-reused-0001");
+        // Inputs outside the spec's prefix, like persistent backlogs.
+        List<String> inputs = List.of("kept-backlog-0000", "kept-backlog-0001");
 
         VirtualTopology first = planner.plan(pipelinedSpec(2, 4, 6, 2, false), inputs);
         VirtualTopology second = planner.plan(pipelinedSpec(2, 4, 6, 2, false), inputs);
 
         assertEquals(inputs, List.copyOf(first.pipelineTopics().keySet()));
         assertEquals(inputs, List.copyOf(second.pipelineTopics().keySet()));
-        // Output topics never repeat a name a previous test point may still be deleting.
+        // Output topics sit under the prefix, so cleanup removes them, and never
+        // repeat a name a previous test point may still be deleting.
+        String prefix = pipelinedSpec(2, 4, 6, 2, false).topicPrefix();
         for (String input : inputs) {
-            assertTrue(first.pipelineTopics().get(input).startsWith(input + "-out-"));
-            assertNotEquals(first.pipelineTopics().get(input), second.pipelineTopics().get(input));
+            String output = first.pipelineTopics().get(input);
+            assertTrue(output, output.startsWith(prefix + "-"));
+            assertTrue(output, output.endsWith(TopologyPlanner.OUTPUT_TOPIC_SUFFIX));
+            assertNotEquals(output, second.pipelineTopics().get(input));
         }
         assertNotEquals(first.consumers().getFirst().consumerGroup(), second.consumers().getFirst().consumerGroup());
     }

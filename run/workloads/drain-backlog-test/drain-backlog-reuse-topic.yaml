@@ -1,0 +1,49 @@
+# Keeps each scenario's backlog on the cluster (reuseTopic) in topics named
+# from its build settings, dimst-no-delete-<hash>-NNNN. The first run builds
+# both; any later workload or run with the same build settings drains them
+# without building. Dimster never deletes these topics: delete them yourself.
+# Before every drain the evict-topic-cache hook drops the backlog's page
+# cache on every broker, so each drain starts cold. See
+# docs/modes/drain-backlog.md#keeping-backlogs-across-workloads-and-runs.
+name: drain-backlog reuse topic
+
+engineConfig:
+  hooks:
+    beforeDrain:
+      # - script: rolling-restart-brokers.sh   # ~2 min for 3 brokers on minikube
+      #   timeoutSeconds: 1200
+      - script: evict-topic-cache.sh   # built-in: run/hooks/evict-topic-cache.sh
+      - script: pause.sh
+        args: ["20"]
+
+drainBacklogConfig:
+  backlogSizeGB: 5
+  buildRate: 50000
+  backlogProducerRate: 0
+  drainTimeoutMinutes: 10
+  sampleRateMillis: 5000
+  reuseTopic: true
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 1
+  messageSize: 1000
+  producersPerTopic: 1
+  consumerType: CONSUMER_GROUP
+  consumerGroupsPerTopic: 1
+  consumersPerGroup: 1
+  kafkaConfig:
+    classicConsumerConfig:
+      # Required with reuseTopic: consumers must read the kept backlog from the start.
+      auto.offset.reset: earliest
+
+scenarios:
+  - name: no-compression
+    kafkaConfig:
+      producerConfig:
+        compression.type: none
+
+  - name: zstd
+    kafkaConfig:
+      producerConfig:
+        compression.type: zstd

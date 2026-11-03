@@ -42,6 +42,7 @@ With a `baseWorkload.flink` block, the backlog builds on the input topics with n
 | `drainTimeoutMinutes` | 0       | Bound the time the test will run (0 unlimited)                            |
 | `warmup` | false   | Run the workload's first test point once before it, unrecorded; see [Warm-up](#warm-up). Workload-level only: not settable in scenarios. |
 | `reuseBacklog` | false   | Drain one backlog in several test points; see [Reusing a backlog](#reusing-a-backlog). Not sweepable. |
+| `reuseTopic` | false   | Keep backlogs on the cluster and drain them in any later test point, workload or run with the same build settings; see [Keeping backlogs across workloads and runs](#keeping-backlogs-across-workloads-and-runs). Not sweepable. |
 | `settleTimeoutMinutes` | 10      | How long to wait for every partition to have a full ISR and its preferred leader before a drain that follows a `beforeDrain` hook or reuses a backlog. Not sweepable. |
 
 ## Workload Example
@@ -202,6 +203,65 @@ Draining the same backlog again is not the same as draining a fresh one, because
 Cold-cache drains of a reused backlog are a deliberately repeatable regime. They are not directly comparable with fresh-backlog results, whose drains start with the most recent part of the backlog still cached.
 
 Use the drain charts' disk reads to check that eviction worked on your storage, rather than assuming it did. They are the bytes the nodes read from disk between each drain's `drainStartTime` and `drainEndTime`, and that as a fraction of the bytes drained. Near 1 means the drain was served from disk, near 0 from the page cache. The end-of-run metrics export measures them in Prometheus (node-exporter) and saves them to `drain-disk-reads.json` in the results directory. Disks of every scraped node are counted, so other disk readers on those nodes add to it. The System dashboard's Disk Read Ratio panel shows the same ratio over time: disk reads divided by the log bytes the brokers served to consumers and followers.
+
+
+## Keeping backlogs across workloads and runs
+
+`reuseBacklog` shares a backlog between consecutive test points of one workload. With `reuseTopic: true`, a backlog is kept on the cluster instead, and any test point with the same build settings drains it. That includes later test points that aren't adjacent, other workloads in the same run, and later runs. A multi-workload run then builds each distinct backlog once.
+
+```yaml
+name: drain-backlog reuse topic
+
+drainBacklogConfig:
+  backlogSizeGB: 5
+  buildRate: 50000
+  reuseTopic: true
+
+baseWorkload:
+  topics: 1
+  partitionsPerTopic: 1
+  messageSize: 1000
+  consumerGroupsPerTopic: 1
+  kafkaConfig:
+    classicConsumerConfig:
+      auto.offset.reset: earliest
+
+scenarios:
+  - name: no-compression
+    kafkaConfig:
+      producerConfig:
+        compression.type: none
+  - name: zstd
+    kafkaConfig:
+      producerConfig:
+        compression.type: zstd
+```
+
+A kept backlog lives in topics named from a hash of its build settings: `dimst-no-delete-<hash>-0000`, `-0001` and so on. The build settings are the ones listed under [Reusing a backlog](#reusing-a-backlog) as forcing a rebuild. Equal settings always give the same name, and different settings (here, the two compression types) give different names, so a kept topic is never drained with the wrong data. Scenario names, labels and drain-side settings don't affect the name, and neither do the connection settings in `commonConfig` (`bootstrap.servers`, `security.*`, `ssl.*`, `sasl.*`).
+
+Everything described under [Reusing a backlog](#reusing-a-backlog) applies too:
+- builds happen outside the test points;
+- topics get unlimited retention;
+- the backlog is checked before each drain;
+- the cluster settles before each drain;
+- fresh consumer groups and Flink output topics are used per drain;
+- the same [requirements](#requirements) apply.
+
+`reuseTopic` also rejects transactional producers. A kept backlog's record count is read from its offsets, and transaction markers would inflate it.
+
+Before building a backlog, the coordinator looks for its kept topics:
+
+- **None exist**: it builds the backlog into them.
+- **They hold a complete backlog**: all topics exist with the right partition count, nothing was deleted from the start of a partition, and they hold at least the records a build of `backlogSizeGB` produces. It drains them without building. The result reports `reusedTopic: true` and `buildDurationMs: 0`.
+- **Otherwise**, most often a build that was interrupted (`dimster stop`, a failure): it logs why, deletes those topics and builds them again.
+
+**Dimster never deletes kept topics otherwise**, not at the end of a test point, a workload or a run, and test-topic cleanup doesn't match their prefix. They take disk space until you delete them. Every result lists a test point's kept topics in `backlogTopics`. To delete all of them:
+
+```bash
+kafka-topics.sh --bootstrap-server <broker> --delete --topic 'dimst-no-delete-.*'
+```
+
+A Dimster upgrade that adds a build-side workload setting changes the hash, so the new version builds its own backlogs rather than draining the old ones.
 
 ## Results
 

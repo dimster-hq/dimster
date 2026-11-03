@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import dev.dimster.ScenarioExpander;
 import dev.dimster.ScenarioExpander.TestPoint;
+import dev.dimster.kafka.KafkaCluster;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.Test;
 
@@ -136,6 +137,86 @@ public class BacklogReuseTest {
     }
 
     @Test
+    public void identity_ignores_how_clients_reach_the_cluster() throws Exception {
+        var plain = points("scenarios:\n  - name: s\n");
+        var tls = points("""
+                scenarios:
+                  - name: s
+                    kafkaConfig:
+                      commonConfig:
+                        bootstrap.servers: kafka-tls:9093
+                        security.protocol: SSL
+                        ssl.keystore.password: secret
+                        sasl.mechanism: PLAIN
+                """);
+        assertEquals(BacklogReuse.identity(plain.get(0)), BacklogReuse.identity(tls.get(0)));
+        // Other common settings reach the producers, so they still count.
+        var tuned = points("""
+                scenarios:
+                  - name: s
+                    kafkaConfig:
+                      commonConfig:
+                        linger.ms: 50
+                """);
+        assertNotEquals(BacklogReuse.identity(plain.get(0)), BacklogReuse.identity(tuned.get(0)));
+    }
+
+    // ─── Persistent backlog names (reuseTopic) ─────────────────────────
+
+    private static String persistentPrefix(TestPoint p) {
+        return BacklogReuse.persistentTopicPrefix(BacklogReuse.identity(p));
+    }
+
+    @Test
+    public void persistent_name_is_outside_test_topic_cleanup() throws Exception {
+        String prefix = persistentPrefix(points("scenarios:\n  - name: s\n").get(0));
+        assertTrue(prefix, prefix.startsWith(KafkaCluster.PERSISTENT_TOPIC_PREFIX + "-"));
+        assertFalse(prefix, prefix.startsWith(KafkaCluster.TOPIC_PREFIX));
+    }
+
+    @Test
+    public void workloads_with_equal_build_settings_share_a_persistent_name() throws Exception {
+        TestPoint a = points("scenarios:\n  - name: first\n    label: [x]\n    consumersPerGroup: [4]\n").get(0);
+        DrainBacklogWorkload other = YAML.readValue(BASE.replace("name: reuse", "name: another workload")
+                .replace("reuseBacklog: true", "reuseTopic: true")
+                + "scenarios:\n  - name: second\n", DrainBacklogWorkload.class);
+        TestPoint b = ScenarioExpander.expand(other.baseWorkload, other.scenarios, null, other.drainBacklogConfig)
+                .get(0);
+        assertEquals(persistentPrefix(a), persistentPrefix(b));
+    }
+
+    @Test
+    public void build_settings_change_the_persistent_name() throws Exception {
+        var pts = points("""
+                scenarios:
+                  - name: none
+                    kafkaConfig:
+                      producerConfig:
+                        compression.type: none
+                  - name: zstd
+                    kafkaConfig:
+                      producerConfig:
+                        compression.type: zstd
+                """);
+        assertNotEquals(persistentPrefix(pts.get(0)), persistentPrefix(pts.get(1)));
+    }
+
+    @Test
+    public void reuse_topic_rejects_transactional_producers() throws Exception {
+        var pts = points("""
+                scenarios:
+                  - name: s
+                    kafkaConfig:
+                      producerConfig:
+                        dimster.transactions: true
+                """);
+        var e = assertThrows(IllegalArgumentException.class, () -> BacklogReuse.validate(pts, true));
+        assertTrue(e.getMessage().contains("transactional"));
+        // Without kept topics, the record count comes from the producers, not the offsets.
+        BacklogReuse.validate(pts, false);
+    }
+
+    @Test
     public void rejects_production_during_the_drain() throws Exception {
         var pts = points("""
                 scenarios:
@@ -143,7 +224,7 @@ public class BacklogReuseTest {
                     drainBacklogConfig:
                       backlogProducerRate: [1000]
                 """);
-        var e = assertThrows(IllegalArgumentException.class, () -> BacklogReuse.validate(pts));
+        var e = assertThrows(IllegalArgumentException.class, () -> BacklogReuse.validate(pts, false));
         assertTrue(e.getMessage().contains("backlogProducerRate"));
     }
 
@@ -156,13 +237,13 @@ public class BacklogReuseTest {
                       classicConsumerConfig:
                         auto.offset.reset: latest
                 """);
-        var e = assertThrows(IllegalArgumentException.class, () -> BacklogReuse.validate(pts));
+        var e = assertThrows(IllegalArgumentException.class, () -> BacklogReuse.validate(pts, false));
         assertTrue(e.getMessage().contains("auto.offset.reset"));
     }
 
     @Test
     public void accepts_a_reusable_workload() throws Exception {
-        BacklogReuse.validate(points("scenarios:\n  - name: s\n    consumersPerGroup: [1, 2]\n"));
+        BacklogReuse.validate(points("scenarios:\n  - name: s\n    consumersPerGroup: [1, 2]\n"), false);
     }
 
     // ─── Intactness ────────────────────────────────────────────────────
