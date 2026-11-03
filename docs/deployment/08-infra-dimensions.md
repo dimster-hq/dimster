@@ -50,6 +50,8 @@ Pass any extra dimensions that are outside of the workload, via the `-d key=valu
 
 If the infrastructure is part of the `dimster-config.yaml`, such as number of brokers, the amount of memory, JVM options, etc, you can use the `dimster deploy` argument `--env-override` which will override the value of a field in the chosen environment. For example: `dimster deploy local --env-override kafka.replicas=5`
 
+Whether the brokers keep their data across these redeploys depends on the field. An override that only needs a restart, such as `kafka.brokerConfig` or `kafka.heap`, keeps it. One that shapes storage, such as `kafka.replicas`, `kafka.version` or `kafka.pvcSize`, deletes it, so each case starts from empty brokers. See [deploy](../reference/cli.md#deploy). Broker settings that only apply when a topic is created, such as internal topics' replication factors, don't change topics that already exist.
+
 ### Examples
 
 #### Example 1 -  Broker count

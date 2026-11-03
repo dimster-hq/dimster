@@ -15,9 +15,36 @@ use crate::kubectl::Kubectl;
 /// Annotation that records the exact Kafka manifest shape Dimster last
 /// deployed. Kafka owns persistent state, so deploy uses this small piece of
 /// state to decide whether a Kafka deploy can be an ordinary apply or must
-/// first delete the StatefulSet and its generated data PVCs.
+/// first delete the StatefulSet, and with the storage hash below, whether
+/// its generated data PVCs go too.
 const KAFKA_SPEC_HASH_ANNOTATION: &str = "dimster.dev/kafka-spec-hash";
+/// Annotation that records the part of the Kafka spec that shapes the
+/// brokers' on-disk state (see `storage_view`). A spec change that leaves
+/// it alone, such as a new broker config, restarts Kafka on its existing
+/// PVCs instead of deleting them.
+const KAFKA_STORAGE_HASH_ANNOTATION: &str = "dimster.dev/kafka-storage-hash";
 const KAFKA_DATA_PVC_PREFIX: &str = "kafka-data-kafka-";
+
+/// The only kafka container env vars the entrypoint reads that shape
+/// storage: the KRaft quorum, the cluster id and broker config overrides.
+/// Every other env var (heap, CPU, JVM options, log4j, TLS listeners,
+/// user `kafka.env`) only needs a restart.
+const KAFKA_STORAGE_ENV: [&str; 3] = ["KAFKA_REPLICAS", "KAFKA_CLUSTER_ID", "KAFKA_EXTRA_CONFIG"];
+
+/// Broker config keys that change where or as whom a broker stores its
+/// data. KAFKA_EXTRA_CONFIG is appended last to server.properties, so a
+/// broker config can override them; any other key only needs a restart.
+const KAFKA_STORAGE_CONFIG_KEYS: [&str; 9] = [
+    "log.dirs",
+    "log.dir",
+    "metadata.log.dir",
+    "node.id",
+    "broker.id",
+    "process.roles",
+    "controller.quorum.voters",
+    "controller.quorum.bootstrap.servers",
+    "controller.listener.names",
+];
 
 /// Same `name:` + `properties:` shape as broker configs, but consumed by
 /// the entrypoint as pipe-separated key=value pairs (commas appear in
@@ -51,16 +78,31 @@ pub(crate) enum Component {
 #[derive(Debug, PartialEq, Eq)]
 enum LiveKafkaSpecHash {
     Missing,
-    Present(Option<String>),
+    Present {
+        spec: Option<String>,
+        storage: Option<String>,
+    },
+}
+
+/// The hashes of a rendered Kafka spec: `spec` covers all of it, `storage`
+/// only what shapes the brokers' on-disk state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KafkaSpecHashes {
+    spec: String,
+    storage: String,
 }
 
 /// Recreate decision for the Kafka part of a deploy.
 ///
 /// This enum keeps the policy separate from the kubectl mechanics so the
-/// behavior is easy to test: only known, matching hashes preserve PVCs.
+/// behavior is easy to test: only known, matching storage hashes preserve
+/// PVCs.
 #[derive(Debug, PartialEq, Eq)]
 enum KafkaRecreateDecision {
     ApplyOnly,
+    /// Restart every broker on its existing PVCs.
+    Restart,
+    /// Delete the brokers and their PVCs.
     Recreate(&'static str),
 }
 
@@ -1680,7 +1722,7 @@ images:
         let rendered = kubectl
             .run_no_ns(&["kustomize", &tmp.to_string_lossy()])
             .context("Failed to render deploy overlay for Kafka drift detection")?;
-        let desired_hash = kafka_spec_hash_from_rendered_yaml(&rendered)
+        let desired_hash = kafka_spec_hashes_from_rendered_yaml(&rendered)
             .context("Failed to hash rendered Kafka resources")?;
         let live_hash = live_kafka_spec_hash(kubectl)?;
         match kafka_recreate_decision(&live_hash, &desired_hash) {
@@ -1690,6 +1732,13 @@ images:
                 } else {
                     println!("==> Kafka spec unchanged; preserving Kafka PVCs.");
                 }
+            }
+            KafkaRecreateDecision::Restart => {
+                println!(
+                    "==> Kafka spec changed without affecting its data; restarting Kafka and keeping its PVCs..."
+                );
+                delete_kafka_pods(kubectl)
+                    .context("Failed to stop existing Kafka brokers before deploy")?;
             }
             KafkaRecreateDecision::Recreate(reason) => {
                 println!("==> Kafka spec {reason}; recreating Kafka and deleting Kafka PVCs...");
@@ -1769,19 +1818,7 @@ pub(crate) fn cleanup_kafka_cluster(
     kubectl: &Kubectl,
     reset_local_storage_pvs: bool,
 ) -> Result<()> {
-    kubectl.run(&[
-        "delete",
-        "statefulset",
-        "kafka",
-        "--cascade=foreground",
-        "--ignore-not-found",
-    ])?;
-
-    // Delete by label as well as deleting the StatefulSet. Older Dimster
-    // deploys used --cascade=orphan for Kafka, so a cluster can legitimately
-    // contain kafka pods with no StatefulSet owner left to garbage collect.
-    kubectl.run(&["delete", "pods", "-l", "app=kafka", "--ignore-not-found"])?;
-    wait_for_kafka_pods_deleted(kubectl)?;
+    delete_kafka_pods(kubectl)?;
 
     let pvcs = kafka_data_pvc_names(kubectl)?;
     for pvc in pvcs {
@@ -1794,6 +1831,24 @@ pub(crate) fn cleanup_kafka_cluster(
     }
 
     Ok(())
+}
+
+/// Delete the Kafka StatefulSet and its pods, leaving the data PVCs, which a
+/// StatefulSet applied next adopts again by name.
+fn delete_kafka_pods(kubectl: &Kubectl) -> Result<()> {
+    kubectl.run(&[
+        "delete",
+        "statefulset",
+        "kafka",
+        "--cascade=foreground",
+        "--ignore-not-found",
+    ])?;
+
+    // Delete by label as well as deleting the StatefulSet. Older Dimster
+    // deploys used --cascade=orphan for Kafka, so a cluster can legitimately
+    // contain kafka pods with no StatefulSet owner left to garbage collect.
+    kubectl.run(&["delete", "pods", "-l", "app=kafka", "--ignore-not-found"])?;
+    wait_for_kafka_pods_deleted(kubectl)
 }
 
 fn wait_for_kafka_pods_deleted(kubectl: &Kubectl) -> Result<()> {
@@ -1888,52 +1943,84 @@ fn live_kafka_spec_hash(kubectl: &Kubectl) -> Result<LiveKafkaSpecHash> {
         return Ok(LiveKafkaSpecHash::Missing);
     }
 
-    let hash = value
-        .pointer(&format!(
-            "/metadata/annotations/{}",
-            json_pointer_escape(KAFKA_SPEC_HASH_ANNOTATION)
-        ))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    Ok(LiveKafkaSpecHash::Present(hash))
+    let annotation = |key: &str| {
+        value
+            .pointer(&format!(
+                "/metadata/annotations/{}",
+                json_pointer_escape(key)
+            ))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+    Ok(LiveKafkaSpecHash::Present {
+        spec: annotation(KAFKA_SPEC_HASH_ANNOTATION),
+        storage: annotation(KAFKA_STORAGE_HASH_ANNOTATION),
+    })
 }
 
 fn json_pointer_escape(s: &str) -> String {
     s.replace('~', "~0").replace('/', "~1")
 }
 
-fn kafka_recreate_decision(live: &LiveKafkaSpecHash, desired_hash: &str) -> KafkaRecreateDecision {
-    match live {
-        LiveKafkaSpecHash::Missing => KafkaRecreateDecision::ApplyOnly,
-        LiveKafkaSpecHash::Present(Some(live_hash)) if live_hash == desired_hash => {
-            KafkaRecreateDecision::ApplyOnly
+fn kafka_recreate_decision(
+    live: &LiveKafkaSpecHash,
+    desired: &KafkaSpecHashes,
+) -> KafkaRecreateDecision {
+    let LiveKafkaSpecHash::Present { spec, storage } = live else {
+        return KafkaRecreateDecision::ApplyOnly;
+    };
+    match (spec.as_deref(), storage.as_deref()) {
+        // An unchanged spec needs no storage hash: nothing about it changed.
+        (Some(spec), _) if spec == desired.spec => KafkaRecreateDecision::ApplyOnly,
+        (None, _) => KafkaRecreateDecision::Recreate("has no recorded spec hash"),
+        // Deployed by a Dimster that recorded only the spec hash.
+        (Some(_), None) => {
+            KafkaRecreateDecision::Recreate("changed and has no recorded storage hash")
         }
-        LiveKafkaSpecHash::Present(Some(_)) => KafkaRecreateDecision::Recreate("changed"),
-        LiveKafkaSpecHash::Present(None) => {
-            KafkaRecreateDecision::Recreate("has no recorded spec hash")
+        (Some(_), Some(storage)) if storage == desired.storage => KafkaRecreateDecision::Restart,
+        (Some(_), Some(_)) => {
+            KafkaRecreateDecision::Recreate("changed in a way that affects its data")
         }
     }
 }
 
-fn annotate_kafka_spec_hash(kubectl: &Kubectl, hash: &str) -> Result<()> {
-    let annotation = format!("{KAFKA_SPEC_HASH_ANNOTATION}={hash}");
+fn annotate_kafka_spec_hash(kubectl: &Kubectl, hashes: &KafkaSpecHashes) -> Result<()> {
+    let spec = format!("{KAFKA_SPEC_HASH_ANNOTATION}={}", hashes.spec);
+    let storage = format!("{KAFKA_STORAGE_HASH_ANNOTATION}={}", hashes.storage);
     kubectl.run(&[
         "annotate",
         "statefulset",
         "kafka",
-        &annotation,
+        &spec,
+        &storage,
         "--overwrite",
     ])?;
     Ok(())
 }
 
-fn kafka_spec_hash_from_rendered_yaml(rendered: &str) -> Result<String> {
+fn kafka_spec_hashes_from_rendered_yaml(rendered: &str) -> Result<KafkaSpecHashes> {
     let mut resources = extract_kafka_resources(rendered)?;
     if resources.is_empty() {
         bail!("rendered overlay did not contain any Kafka resources");
     }
     resources.sort_by(|a, b| a.key.cmp(&b.key));
 
+    let storage_views: Vec<KafkaResourceForHash> = resources
+        .iter()
+        .filter_map(|r| {
+            storage_view(r).map(|value| KafkaResourceForHash {
+                key: r.key.clone(),
+                value,
+            })
+        })
+        .collect();
+    Ok(KafkaSpecHashes {
+        spec: hash_resources(&resources)?,
+        storage: hash_resources(&storage_views)?,
+    })
+}
+
+fn hash_resources(resources: &[KafkaResourceForHash]) -> Result<String> {
     let mut hash = Fnv1a64::new();
     for resource in resources {
         hash.update(resource.key.as_bytes());
@@ -1944,6 +2031,86 @@ fn kafka_spec_hash_from_rendered_yaml(rendered: &str) -> Result<String> {
         hash.update(b"\n---\n");
     }
     Ok(format!("{:016x}", hash.finish()))
+}
+
+/// The part of a Kafka resource that shapes the brokers' on-disk state, or
+/// None for a resource with no part in it. It is the resource minus what the
+/// environment config can change with only a restart, so anything not
+/// listed here (replicas, image, volumeClaimTemplates, server.properties and
+/// the entrypoint, the rest of the pod template) counts and still wipes.
+fn storage_view(resource: &KafkaResourceForHash) -> Option<serde_yaml::Value> {
+    match resource.key.as_str() {
+        "StatefulSet/kafka" => {}
+        // Networking and metrics only.
+        "Service/kafka-headless" | "Service/kafka-bootstrap" | "ConfigMap/kafka-jmx-config" => {
+            return None;
+        }
+        _ => return Some(resource.value.clone()),
+    }
+    let mut value = resource.value.clone();
+    let Some(pod) = yaml_path_mut(&mut value, &["spec", "template", "spec"]) else {
+        return Some(value);
+    };
+    yaml_remove(pod, "affinity");
+    yaml_retain(pod, "volumes", |v| {
+        yaml_field_as_str(v, "name") != Some("kafka-tls")
+    });
+    if let Some(serde_yaml::Value::Sequence(containers)) = yaml_mapping_get_mut(pod, "containers") {
+        for container in containers
+            .iter_mut()
+            .filter(|c| yaml_field_as_str(c, "name") == Some("kafka"))
+        {
+            yaml_remove(container, "resources");
+            yaml_retain(container, "ports", |p| {
+                yaml_field_as_str(p, "name") != Some("broker-ssl")
+            });
+            yaml_retain(container, "volumeMounts", |m| {
+                yaml_field_as_str(m, "name") != Some("kafka-tls")
+            });
+            if let Some(serde_yaml::Value::Sequence(env)) = yaml_mapping_get_mut(container, "env") {
+                env.retain_mut(storage_env_var);
+            }
+        }
+    }
+    Some(value)
+}
+
+/// Whether a kafka container env var shapes storage, reducing
+/// KAFKA_EXTRA_CONFIG to its storage keys in place.
+fn storage_env_var(var: &mut serde_yaml::Value) -> bool {
+    match yaml_field_as_str(var, "name") {
+        Some("KAFKA_EXTRA_CONFIG") => {
+            let storage = yaml_field_as_str(var, "value").and_then(storage_extra_config);
+            match (storage, var) {
+                (Some(storage), serde_yaml::Value::Mapping(map)) => {
+                    map.insert("value".into(), storage.into());
+                    true
+                }
+                _ => false,
+            }
+        }
+        Some(name) => KAFKA_STORAGE_ENV.contains(&name),
+        None => true,
+    }
+}
+
+/// The storage keys (KAFKA_STORAGE_CONFIG_KEYS) of a KAFKA_EXTRA_CONFIG
+/// value, the comma-joined `key=value` pairs of the broker config, sorted;
+/// None when it sets none of them.
+fn storage_extra_config(extra_config: &str) -> Option<String> {
+    let mut pairs: Vec<&str> = extra_config
+        .split(',')
+        .map(str::trim)
+        .filter(|pair| {
+            pair.split_once('=')
+                .is_some_and(|(key, _)| KAFKA_STORAGE_CONFIG_KEYS.contains(&key.trim()))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    pairs.sort();
+    Some(pairs.join(","))
 }
 
 #[derive(Debug)]
@@ -2000,6 +2167,41 @@ fn yaml_mapping_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a s
         return None;
     };
     map.get(serde_yaml::Value::String(key.to_string()))
+}
+
+fn yaml_mapping_get_mut<'a>(
+    value: &'a mut serde_yaml::Value,
+    key: &str,
+) -> Option<&'a mut serde_yaml::Value> {
+    let serde_yaml::Value::Mapping(map) = value else {
+        return None;
+    };
+    map.get_mut(serde_yaml::Value::String(key.to_string()))
+}
+
+fn yaml_path_mut<'a>(
+    value: &'a mut serde_yaml::Value,
+    path: &[&str],
+) -> Option<&'a mut serde_yaml::Value> {
+    path.iter()
+        .try_fold(value, |v, key| yaml_mapping_get_mut(v, key))
+}
+
+fn yaml_remove(value: &mut serde_yaml::Value, key: &str) {
+    if let serde_yaml::Value::Mapping(map) = value {
+        map.remove(serde_yaml::Value::String(key.to_string()));
+    }
+}
+
+/// Keeps the elements of the sequence under `key` that match `keep`.
+fn yaml_retain(
+    value: &mut serde_yaml::Value,
+    key: &str,
+    keep: impl Fn(&serde_yaml::Value) -> bool,
+) {
+    if let Some(serde_yaml::Value::Sequence(items)) = yaml_mapping_get_mut(value, key) {
+        items.retain(|item| keep(item));
+    }
 }
 
 /// Tiny deterministic hash implementation to avoid pulling a new dependency
@@ -2276,16 +2478,17 @@ spec:
             "log.retention.hours=2",
         );
 
-        let base_hash = kafka_spec_hash_from_rendered_yaml(base).unwrap();
+        let base_hash = kafka_spec_hashes_from_rendered_yaml(base).unwrap();
         assert_eq!(
             base_hash,
-            kafka_spec_hash_from_rendered_yaml(&worker_changed).unwrap(),
-            "worker-only changes must not trigger a Kafka PVC recreate"
+            kafka_spec_hashes_from_rendered_yaml(&worker_changed).unwrap(),
+            "worker-only changes must not touch Kafka"
         );
+        let changed = kafka_spec_hashes_from_rendered_yaml(&kafka_changed).unwrap();
+        assert_ne!(base_hash.spec, changed.spec);
         assert_ne!(
-            base_hash,
-            kafka_spec_hash_from_rendered_yaml(&kafka_changed).unwrap(),
-            "Kafka config changes must trigger a Kafka PVC recreate"
+            base_hash.storage, changed.storage,
+            "server.properties changes must trigger a Kafka PVC recreate"
         );
     }
 
@@ -2327,28 +2530,249 @@ spec:
 "#;
 
         assert_eq!(
-            kafka_spec_hash_from_rendered_yaml(first).unwrap(),
-            kafka_spec_hash_from_rendered_yaml(reversed).unwrap()
+            kafka_spec_hashes_from_rendered_yaml(first).unwrap(),
+            kafka_spec_hashes_from_rendered_yaml(reversed).unwrap()
         );
     }
 
+    fn live(spec: Option<&str>, storage: Option<&str>) -> LiveKafkaSpecHash {
+        LiveKafkaSpecHash::Present {
+            spec: spec.map(String::from),
+            storage: storage.map(String::from),
+        }
+    }
+
     #[test]
-    fn kafka_recreate_decision_preserves_only_known_matching_hash() {
+    fn kafka_recreate_decision_preserves_pvcs_only_for_a_known_matching_storage_hash() {
+        let desired = KafkaSpecHashes {
+            spec: "spec".into(),
+            storage: "storage".into(),
+        };
+        let decide = |live| kafka_recreate_decision(&live, &desired);
         assert_eq!(
-            kafka_recreate_decision(&LiveKafkaSpecHash::Missing, "abc"),
+            decide(LiveKafkaSpecHash::Missing),
             KafkaRecreateDecision::ApplyOnly
         );
         assert_eq!(
-            kafka_recreate_decision(&LiveKafkaSpecHash::Present(Some("abc".into())), "abc"),
+            decide(live(Some("spec"), Some("storage"))),
             KafkaRecreateDecision::ApplyOnly
         );
         assert_eq!(
-            kafka_recreate_decision(&LiveKafkaSpecHash::Present(Some("old".into())), "abc"),
-            KafkaRecreateDecision::Recreate("changed")
+            decide(live(Some("old"), Some("storage"))),
+            KafkaRecreateDecision::Restart
         );
         assert_eq!(
-            kafka_recreate_decision(&LiveKafkaSpecHash::Present(None), "abc"),
+            decide(live(Some("old"), Some("old"))),
+            KafkaRecreateDecision::Recreate("changed in a way that affects its data")
+        );
+        assert_eq!(
+            decide(live(None, None)),
             KafkaRecreateDecision::Recreate("has no recorded spec hash")
+        );
+    }
+
+    /// A StatefulSet deployed before the storage hash existed is left alone
+    /// while its spec is unchanged, and only wiped once it changes, since
+    /// what changed can't be told.
+    #[test]
+    fn kafka_recreate_decision_without_a_recorded_storage_hash() {
+        let desired = KafkaSpecHashes {
+            spec: "spec".into(),
+            storage: "storage".into(),
+        };
+        assert_eq!(
+            kafka_recreate_decision(&live(Some("spec"), None), &desired),
+            KafkaRecreateDecision::ApplyOnly
+        );
+        assert_eq!(
+            kafka_recreate_decision(&live(Some("old"), None), &desired),
+            KafkaRecreateDecision::Recreate("changed and has no recorded storage hash")
+        );
+    }
+
+    /// Kafka resources shaped like a rendered deploy overlay: the base
+    /// StatefulSet with the env, resources, affinity and TLS additions that
+    /// deploy patches in, and the other Kafka-owned resources.
+    const RENDERED_KAFKA: &str = r#"
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+spec:
+  serviceName: kafka-headless
+  replicas: 3
+  template:
+    spec:
+      affinity:
+        nodeAffinity: {zone: a}
+      containers:
+        - name: kafka
+          image: apache/kafka:4.2.0
+          env:
+            - name: KAFKA_REPLICAS
+              value: "3"
+            - name: KAFKA_CLUSTER_ID
+              value: "dimster-benchmark-cluster-001"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xms1G -Xmx1G"
+            - name: KAFKA_CPU
+              value: "4"
+            - name: KAFKA_OPTS
+              value: "-javaagent:jmx.jar"
+            - name: USER_VAR
+              value: "a"
+            - name: KAFKA_EXTRA_CONFIG
+              value: "log.segment.bytes=104857600,num.partitions=1"
+            - name: KAFKA_LOG4J_CONFIG
+              value: "log4j.rootLogger=INFO"
+            - name: KAFKA_TLS_CONFIG
+              value: "listeners=SSL://:9094"
+          ports:
+            - containerPort: 9092
+              name: broker
+            - containerPort: 9094
+              name: broker-ssl
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/kafka-data
+            - name: kafka-tls
+              mountPath: /etc/kafka-tls
+          resources:
+            limits: {cpu: "4", memory: 8Gi}
+      volumes:
+        - name: kafka-config
+          configMap: {name: kafka-config}
+        - name: kafka-tls
+          secret: {secretName: kafka-broker-tls}
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+data:
+  server.properties: "log.dirs=/var/kafka-data/kafka-logs"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-jmx-config
+data:
+  jmx-exporter.yml: "rules: []"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-bootstrap
+spec:
+  ports:
+    - name: broker
+      port: 9092
+"#;
+
+    fn hashes_with(from: &str, to: &str) -> KafkaSpecHashes {
+        assert!(RENDERED_KAFKA.contains(from), "fixture has no {from:?}");
+        kafka_spec_hashes_from_rendered_yaml(&RENDERED_KAFKA.replacen(from, to, 1)).unwrap()
+    }
+
+    #[test]
+    fn restart_only_changes_keep_the_storage_hash() {
+        let base = kafka_spec_hashes_from_rendered_yaml(RENDERED_KAFKA).unwrap();
+        for (what, from, to) in [
+            (
+                "broker config",
+                "log.segment.bytes=104857600",
+                "log.segment.bytes=1073741824",
+            ),
+            ("heap", "-Xms1G -Xmx1G", "-Xms4G -Xmx4G"),
+            (
+                "KAFKA_CPU",
+                "value: \"4\"\n            - name: KAFKA_OPTS",
+                "value: \"8\"\n            - name: KAFKA_OPTS",
+            ),
+            ("resources", "memory: 8Gi", "memory: 16Gi"),
+            ("affinity", "zone: a", "zone: b"),
+            ("user env", "value: \"a\"", "value: \"b\""),
+            ("log4j", "rootLogger=INFO", "rootLogger=DEBUG"),
+            ("TLS config", "SSL://:9094", "SSL://:9095"),
+            ("TLS port", "containerPort: 9094", "containerPort: 9095"),
+            ("TLS secret", "kafka-broker-tls", "kafka-broker-tls-2"),
+            ("JMX config", "rules: []", "rules: [x]"),
+            ("Service", "port: 9092\n", "port: 9093\n"),
+        ] {
+            let changed = hashes_with(from, to);
+            assert_ne!(base.spec, changed.spec, "{what} must change the spec hash");
+            assert_eq!(
+                base.storage, changed.storage,
+                "{what} must keep the storage hash"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_changes_change_the_storage_hash() {
+        let base = kafka_spec_hashes_from_rendered_yaml(RENDERED_KAFKA).unwrap();
+        for (what, from, to) in [
+            ("replicas", "replicas: 3", "replicas: 1"),
+            ("KAFKA_REPLICAS", "value: \"3\"", "value: \"1\""),
+            ("Kafka version", "apache/kafka:4.2.0", "apache/kafka:4.1.0"),
+            ("PVC size", "storage: 10Gi", "storage: 20Gi"),
+            (
+                "storage class",
+                "storageClassName: standard",
+                "storageClassName: fast",
+            ),
+            ("cluster id", "cluster-001", "cluster-002"),
+            (
+                "server.properties",
+                "log.dirs=/var/kafka-data/kafka-logs",
+                "log.dirs=/data",
+            ),
+            (
+                "data mount",
+                "mountPath: /var/kafka-data",
+                "mountPath: /data",
+            ),
+            (
+                "broker log.dirs",
+                "num.partitions=1",
+                "num.partitions=1,log.dirs=/data",
+            ),
+            (
+                "broker node.id",
+                "num.partitions=1",
+                "num.partitions=1,node.id=7",
+            ),
+        ] {
+            assert_ne!(
+                base.storage,
+                hashes_with(from, to).storage,
+                "{what} must change the storage hash"
+            );
+        }
+    }
+
+    #[test]
+    fn storage_extra_config_keeps_only_storage_keys_in_order() {
+        assert_eq!(
+            storage_extra_config("num.partitions=1,log.segment.bytes=1"),
+            None
+        );
+        assert_eq!(storage_extra_config(""), None);
+        assert_eq!(
+            storage_extra_config("node.id=2,num.partitions=1,log.dirs=/data"),
+            Some("log.dirs=/data,node.id=2".into())
+        );
+        assert_eq!(
+            storage_extra_config("log.dirs=/data,node.id=2"),
+            storage_extra_config("node.id=2,log.dirs=/data")
         );
     }
 
