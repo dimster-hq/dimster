@@ -32,6 +32,12 @@ public class KafkaCluster implements AutoCloseable {
     public static final String TOPIC_PREFIX = "dimster";
     public static final String TEST_GROUP_PREFIX = "dimster-grp-";
     public static final String AVAIL_PROBE_TOPIC = "dimster-avail-probe";
+    /**
+     * Prefix of drain-backlog backlogs kept across workloads and runs
+     * ({@code drainBacklogConfig.reuseTopic}). Deliberately not under
+     * {@link #TOPIC_PREFIX}, so test-topic cleanup never deletes them.
+     */
+    public static final String PERSISTENT_TOPIC_PREFIX = "dimst-no-delete";
 
     private final RawAdmin admin;
     private final KafkaConfig config;
@@ -78,6 +84,19 @@ public class KafkaCluster implements AutoCloseable {
             }
         } catch (Throwable t) {
             throw new RuntimeException("Failed to delete test topics", t);
+        }
+    }
+
+    /** Deletes the given topics, e.g. a persistent backlog that cannot be drained as-is. */
+    public void deleteTopics(Collection<String> topics) {
+        if (topics.isEmpty()) return;
+        try {
+            log.info("Deleting {} topic(s): {}", topics.size(), topics);
+            admin.deleteTopics(new HashSet<>(topics));
+            // Allow metadata propagation before creating topics of the same name
+            Thread.sleep(2000);
+        } catch (Throwable t) {
+            throw new RuntimeException("Failed to delete topics " + topics, t);
         }
     }
 
@@ -213,6 +232,15 @@ public class KafkaCluster implements AutoCloseable {
     /** Log end offsets of every partition of the given topics. */
     public Map<TopicPartition, Long> endOffsets(Collection<String> topics) {
         return admin.endOffsets(partitionsOf(topics));
+    }
+
+    /** Partition count of each of the given topics, which must exist. */
+    public Map<String, Integer> partitionCounts(Collection<String> topics) {
+        Map<String, Integer> counts = new HashMap<>();
+        for (TopicPartition tp : partitionsOf(topics)) {
+            counts.merge(tp.topic(), 1, Integer::sum);
+        }
+        return counts;
     }
 
     private Set<TopicPartition> partitionsOf(Collection<String> topics) {

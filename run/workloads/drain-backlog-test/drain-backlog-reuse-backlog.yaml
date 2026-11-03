@@ -2,7 +2,7 @@
 # consumers. Before every drain (including the first, right after the build)
 # the evict-topic-cache hook drops the backlog's page cache on every broker,
 # so each drain starts cold. See docs/modes/drain-backlog.md#reusing-a-backlog.
-name: drain-backlog reuse across consumer counts
+name: drain-backlog reuse backlog across test points
 
 engineConfig:
   hooks:

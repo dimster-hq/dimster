@@ -35,6 +35,16 @@ public class DrainBacklogConfig {
     public boolean reuseBacklog = false;
 
     /**
+     * As reuseBacklog, but each backlog is kept on the cluster under a name
+     * derived from its build settings ({@link BacklogReuse#persistentTopicPrefix})
+     * and never deleted, so any later test point, workload or run with the
+     * same build settings drains it instead of building one (see
+     * {@link TopicReuse}). Deleting these topics is left to the user.
+     * Workload-level only: not sweepable in scenarios.
+     */
+    public boolean reuseTopic = false;
+
+    /**
      * Before a drain that a beforeDrain hook may have disturbed, or of a
      * reused backlog, how long to wait for every partition to have a full ISR
      * and its preferred leader. Workload-level only.

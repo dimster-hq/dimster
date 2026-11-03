@@ -63,6 +63,9 @@ class BuildCellTest(unittest.TestCase):
         self.assertEqual(charts.build_cell({"buildDurationMs": 0, "reusedBacklogFrom": 0}),
                          "reused (test point 1)")
 
+    def test_a_kept_topic_has_no_build(self):
+        self.assertEqual(charts.build_cell({"buildDurationMs": 0, "reusedTopic": True}), "kept topic")
+
 
 if __name__ == "__main__":
     unittest.main()

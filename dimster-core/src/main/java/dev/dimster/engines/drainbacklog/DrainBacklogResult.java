@@ -20,7 +20,7 @@ public class DrainBacklogResult {
     public DrainBacklogWorkload config;
     public List<ScenarioResult> scenarioResults = new ArrayList<>();
     /**
-     * With reuseBacklog, the backlog the next test point may drain again.
+     * With reuseBacklog or reuseTopic, the backlog the next test point may drain again.
      * Only present in the in-progress result, so a resumed run can reuse it.
      */
     @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
@@ -50,7 +50,7 @@ public class DrainBacklogResult {
     }
 
     @JsonPropertyOrder({"backlogSizeGB", "backlogSizeBytes", "backlogMessages",
-            "buildRate", "buildDurationMs", "reusedBacklogFrom", "drainedByWarmUp",
+            "buildRate", "buildDurationMs", "reusedBacklogFrom", "drainedByWarmUp", "reusedTopic", "backlogTopics",
             "drainStartTime", "drainEndTime",
             "drainDurationMs", "drainTimeoutMinutes", "backlogProducerRate", "sampleRateMillis",
             "backlogMessagesOverTime", "backlogBytesOverTime"})
@@ -80,6 +80,17 @@ public class DrainBacklogResult {
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
         public Boolean drainedByWarmUp;
+        /**
+         * True when the backlog was found complete on the cluster (reuseTopic)
+         * rather than built for this drain: built by an earlier workload or
+         * run, or for an earlier, non-adjacent test point of this workload.
+         * Its build time is then not reported (buildDurationMs 0).
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        public Boolean reusedTopic;
+        /** With reuseTopic, the kept topics holding the backlog, which Dimster never deletes. */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        public List<String> backlogTopics;
         /** ISO-8601 wall-clock bounds of the drain, for correlating with Prometheus. */
         public String drainStartTime;
         public String drainEndTime;

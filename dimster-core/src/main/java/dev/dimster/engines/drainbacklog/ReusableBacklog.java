@@ -1,6 +1,7 @@
 package dev.dimster.engines.drainbacklog;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.apache.kafka.common.TopicPartition;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,6 +23,12 @@ public class ReusableBacklog {
     public String builtAtLabel;
     /** Built for the warm-up, before the workload's first test point. */
     public boolean builtForWarmUp;
+    /**
+     * Found complete on the cluster (reuseTopic) rather than built: by an
+     * earlier workload or run, or earlier in this workload. Then
+     * {@code builtAt*} is the test point it was found for.
+     */
+    public boolean adopted;
     /** How long the build took; reported on the backlog's first recorded drain. */
     public long buildDurationMs;
     /** The topics holding the backlog (Flink input topics when there is a Flink stage). */
@@ -35,6 +42,18 @@ public class ReusableBacklog {
     public Integer firstDrainedAt;
     /** The warm-up drained it (the warm-up is never recorded). */
     public boolean drainedByWarmUp;
+
+    /** A backlog in {@code topics} whose partitions end at {@code endOffsets}, for the given test point. */
+    public static ReusableBacklog of(String identity, int testPoint, String label, List<String> topics,
+                                     Map<TopicPartition, Long> endOffsets) {
+        var b = new ReusableBacklog();
+        b.identity = identity;
+        b.builtAtTestPoint = testPoint;
+        b.builtAtLabel = label;
+        b.topics = new ArrayList<>(topics);
+        endOffsets.forEach((tp, offset) -> b.endOffsets.put(tp.toString(), offset));
+        return b;
+    }
 
     /**
      * What a recorded drain reports about its backlog: the earlier recorded

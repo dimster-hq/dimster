@@ -671,6 +671,7 @@ Measures how quickly consumers can drain a pre-built backlog. The engine first b
 | `drainTimeoutMinutes` | integer | `0` | Maximum minutes to wait for the drain to complete. `0` means no timeout (wait indefinitely). |
 | `warmup` | boolean | `false` | Run each scenario's first test point once, unrecorded and without hooks, before the scenario, so its first recorded drain runs on warm JVMs. Also settable per scenario (`scenarios[].drainBacklogConfig.warmup`), but not sweepable. See [Warm-up](../modes/drain-backlog.md#warm-up). |
 | `reuseBacklog` | boolean | `false` | Build a backlog once and drain it again in each following test point that differs only in drain-side settings. Requires `backlogProducerRate: 0`. Workload-level only. See [Reusing a backlog](../modes/drain-backlog.md#reusing-a-backlog). |
+| `reuseTopic` | boolean | `false` | Keep each backlog on the cluster, in topics named from a hash of its build settings (`dimst-no-delete-<hash>-NNNN`) that Dimster never deletes. Any later test point, workload or run with the same build settings drains them instead of building. Same requirements as `reuseBacklog`, and no transactional producers. Workload-level only. See [Keeping backlogs across workloads and runs](../modes/drain-backlog.md#keeping-backlogs-across-workloads-and-runs). |
 | `settleTimeoutMinutes` | integer | `10` | Before a drain that follows a `beforeDrain` hook or reuses a backlog, the maximum minutes to wait for every partition to have a full ISR and its preferred leader. Workload-level only. |
 
 ### Drain Backlog Mode Example
