@@ -77,6 +77,14 @@ Use the `--env-override` argument to override specific environment field values.
 ./dimster deploy myEnv --env-override kafka.replicas=5
 ```
 
+Redeploying over a running Kafka compares the new Kafka spec with the one last deployed, and does one of three things:
+
+- **Nothing changed**: applies the resources, and Kafka keeps running.
+- **Only settings that need a restart changed**: restarts every broker together on its existing data. These are broker config, heap, `kafka.env`, CPU and memory, `nodeLabel`, log config and TLS. Topics, including drain-backlog [kept topics](../modes/drain-backlog.md#keeping-backlogs-across-workloads-and-runs), survive.
+- **Settings that shape the brokers' storage changed**: deletes Kafka and its data PVCs, then deploys it fresh. These are `kafka.replicas`, `kafka.version`, `kafka.pvcSize`, `kafka.pvcStorageClass` and the broker config keys that set where or as whom a broker stores data (`log.dirs`, `log.dir`, `metadata.log.dir`, `node.id`, `broker.id`, `process.roles`, `controller.quorum.voters`, `controller.quorum.bootstrap.servers`, `controller.listener.names`). A change to Dimster's own Kafka manifests does the same, and so does adding or removing `kafka.brokerConfig` on a 1-broker env, which switches its base server.properties.
+
+The deploy log says which one happened. Kafka deployed by a Dimster release without this distinction is deleted and deployed fresh the first time its spec changes. To start from empty brokers whatever changed, run `dimster teardown <env>` first.
+
 ---
 
 ### All engine commands (run, explore, drain-backlog, correctness)

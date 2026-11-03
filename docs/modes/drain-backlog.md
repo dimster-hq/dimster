@@ -263,6 +263,10 @@ kafka-topics.sh --bootstrap-server <broker> --delete --topic 'dimst-no-delete-.*
 
 A Dimster upgrade that adds a build-side workload setting changes the hash, so the new version builds its own backlogs rather than draining the old ones.
 
+Kept topics survive a `dimster deploy` that only restarts Kafka, such as a new broker config or heap size, so a campaign that redeploys with a different broker config before each run drains the same backlogs. A redeploy that changes the brokers' storage deletes them along with the rest of Kafka's data; see [deploy](../reference/cli.md#deploy).
+
+Broker config isn't part of the build settings, so a kept backlog is drained whatever the brokers' config is. That is what a comparison of broker read paths needs. Keeping broker defaults that shape the data on disk consistent is up to you: a backlog built under one broker-level `compression.type` or `log.segment.bytes` is drained as-is under another.
+
 ## Results
 
 The output includes:
