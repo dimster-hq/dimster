@@ -20,7 +20,7 @@ Local-cluster deployment is fully covered by the [Getting Started](../getting-st
 
 - Anything where the *number that comes out* matters — local default storage and shared-with-everything CPU mean throughput and latency figures are noise.
 - Anything that needs more than ~3 brokers' worth of memory.
-- Anything that wants to test storage-class behaviour, or instance-type-specific behaviour. None of those exist on a laptop.
+- Anything that wants to test storage-class behaviour, or instance-type-specific behaviour. None of those exist on a laptop. (For disk latency and IOPS/throughput caps alone, [09 — Emulated network-attached storage](09-emulated-network-storage.md) gets close on a Linux machine or in Colima.)
 - Comparisons between two configurations — even if your laptop is fast, background processes (browser, video calls, OS updates) make run-to-run variance dominate the signal.
 
 If any of those describe what you're trying to do, jump straight to [05 — AWS EKS](05-aws-eks.md), or — if you're on GKE / AKS / on-prem — bring your own cluster, label its nodegroups, define a StorageClass, and use the same env-block shape as the `exampleRemoteFull` template.

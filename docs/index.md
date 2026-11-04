@@ -37,6 +37,7 @@
 - [04 — Local](deployment/04-local.md) — the laptop story (pointer back to Getting Started).
 - [05 — AWS EKS](deployment/05-aws-eks.md) — production-scale benchmarks via the `eks-setup` wizard.
 - [06 — External Kafka](deployment/06-external-kafka.md) — point Dimster workers at Confluent Cloud, MSK, or any other managed Kafka.
+- [09 — Emulated network-attached storage](deployment/09-emulated-network-storage.md) — gp3-like disk latency and caps for local brokers.
 
 ## Reference
 
