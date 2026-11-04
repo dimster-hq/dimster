@@ -55,6 +55,13 @@ Commands:
       Show volumes, their delay tables, caps and the cgroups they apply to.
   check NAME
       Measure read latency, IOPS and throughput on the volume, under its caps.
+  node-mount NAME --container CONTAINER [--path PATH]
+      Mount the volume inside a running, privileged Kubernetes node container
+      (minikube, k3d, kind) at PATH (default the host mount path), so no
+      cluster has to be recreated with a bind mount. Lasts until the
+      container restarts; run it again then. Needs the docker CLI.
+  node-umount NAME --container CONTAINER [--path PATH]
+      Undo node-mount (stop the pods using the volume first).
   pv-yaml NAME --node NODE --size SIZE [--count N] [--node-path PATH]
       Create pv-<i> directories on the volume and print a local-storage
       StorageClass and N local PersistentVolumes for kubectl apply.
@@ -349,7 +356,12 @@ cmd_down() {
     if findmnt -n "$MOUNT" >/dev/null 2>&1; then
       umount "$MOUNT" || die "cannot unmount $MOUNT (in use? stop the pods or containers using it first)"
     fi
-    dmsetup remove "$(dm_name "$NAME")"
+    if ! dmsetup remove "$(dm_name "$NAME")" 2>/dev/null; then
+      # still open elsewhere, e.g. a node-mount: put the volume back as it was
+      mount_volume
+      apply_caps
+      die "cannot remove $(dm_name "$NAME"): still mounted in a container? run node-umount for each node-mount"
+    fi
   fi
   if [ "$KIND" = file ]; then
     local loop
@@ -532,6 +544,53 @@ EOF
   done
 }
 
+# Parses node-mount / node-umount arguments into CONTAINER and NODE_PATH.
+parse_node_args() {
+  CONTAINER="" NODE_PATH=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --container) CONTAINER="$2"; shift 2 ;;
+      --path) NODE_PATH="$2"; shift 2 ;;
+      *) die "unknown argument $1" ;;
+    esac
+  done
+  [ -n "$CONTAINER" ] || die "--container is required"
+  NODE_PATH="${NODE_PATH:-$MOUNT}"
+  command -v docker >/dev/null 2>&1 || die "docker CLI not found"
+  [ "$(docker inspect -f '{{.HostConfig.Privileged}}' "$CONTAINER" 2>/dev/null)" = true ] ||
+    die "$CONTAINER is not a running, privileged container"
+}
+
+# Mounts the volume inside a node container: the container cannot see the
+# host's /dev/mapper, so a device node with the dm device's numbers is made
+# in its /dev. Mounting the same filesystem in a second mount namespace
+# shares the one superblock, so host and node see the same files. PVs point
+# at pv-<i> subdirectories, which exist only on the volume, so a pod whose
+# node lost the mount (container restart) fails to start rather than writing
+# to the container's own filesystem.
+cmd_node_mount() {
+  load_state "${1:?node-mount needs a NAME}"; shift
+  parse_node_args "$@"
+  dm_exists "$NAME" || die "$NAME is down; run up first"
+  local maj min
+  IFS=: read -r maj min <<<"$(dm_devno "$NAME")"
+  docker exec "$CONTAINER" sh -c "
+    set -e
+    [ -b /dev/$(dm_name "$NAME") ] || mknod /dev/$(dm_name "$NAME") b $maj $min
+    mkdir -p '$NODE_PATH'
+    if grep -q ' $NODE_PATH ' /proc/mounts; then echo 'already mounted'; else mount -o noatime /dev/$(dm_name "$NAME") '$NODE_PATH'; fi"
+  info "$NAME mounted at $NODE_PATH in container $CONTAINER (until it restarts)"
+}
+
+cmd_node_umount() {
+  load_state "${1:?node-umount needs a NAME}"; shift
+  parse_node_args "$@"
+  docker exec "$CONTAINER" sh -c "
+    if grep -q ' $NODE_PATH ' /proc/mounts; then umount '$NODE_PATH'; fi
+    rm -f /dev/$(dm_name "$NAME")"
+  info "$NAME unmounted from $NODE_PATH in container $CONTAINER"
+}
+
 cmd_destroy() {
   local name="${1:?destroy needs a NAME}"
   [ "${2:-}" = --yes ] || die "destroy deletes the data of '$name'; add --yes"
@@ -558,6 +617,8 @@ main() {
     set) cmd_set "$@" ;;
     status) cmd_status "$@" ;;
     check) cmd_check "$@" ;;
+    node-mount) cmd_node_mount "$@" ;;
+    node-umount) cmd_node_umount "$@" ;;
     pv-yaml) cmd_pv_yaml "$@" ;;
     destroy) cmd_destroy "$@" ;;
     *) usage >&2; exit 1 ;;

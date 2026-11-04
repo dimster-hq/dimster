@@ -18,6 +18,7 @@ failures=0
 dmd() { "$here/dm-delay.sh" "$@"; }
 
 cleanup() {
+  docker rm -f "dm-delay-test-node-$$" >/dev/null 2>&1 || true
   dmd destroy "$name" --yes >/dev/null 2>&1 || true
   rmdir "$cg" 2>/dev/null || true
   rm -rf "$tmp"
@@ -98,6 +99,27 @@ if grep -q 'read latency' <<<"$out" && ! ls -d /sys/fs/cgroup/dm-delay-check-* >
   pass "check reports measurements and removes its cgroup"
 else
   fail "check: $out"
+fi
+
+echo "== node-mount"
+if command -v docker >/dev/null 2>&1; then
+  node="dm-delay-test-node-$$"
+  docker run -d --rm --privileged --name "$node" busybox:1.36 sleep 600 >/dev/null
+  dmd node-mount "$name" --container "$node" --path /mnt/vol >/dev/null
+  docker exec "$node" sh -c 'echo from-node > /mnt/vol/node-file'
+  if [ "$(cat "$mnt/node-file" 2>/dev/null)" = from-node ]; then pass "node-mount shares the volume with the container"; else fail "file written in the container is not on the volume"; fi
+  if dmd down "$name" >/dev/null 2>&1; then
+    fail "down succeeded while node-mounted"; dmd up "$name" >/dev/null
+  elif findmnt -n "$mnt" >/dev/null && grep -q "riops=3000" "$cg/io.max"; then
+    pass "down refuses while node-mounted and leaves the volume as it was"
+  else
+    fail "a refused down left the volume unmounted or uncapped"
+  fi
+  dmd node-umount "$name" --container "$node" --path /mnt/vol >/dev/null
+  if ! docker exec "$node" grep -q ' /mnt/vol ' /proc/mounts; then pass "node-umount unmounts in the container"; else fail "still mounted in the container"; fi
+  docker rm -f "$node" >/dev/null
+else
+  echo "skip  node-mount (no docker CLI)"
 fi
 
 echo "== down and up"

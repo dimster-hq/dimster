@@ -71,6 +71,7 @@ dm-delay.sh set NAME --profile gp3 --rbps 250M                  # profile plus o
 dm-delay.sh check NAME                                          # measure latency, IOPS, throughput
 dm-delay.sh status [NAME]                                       # devices, tables, caps per cgroup
 dm-delay.sh down NAME / up NAME                                 # detach / reattach (e.g. after a reboot)
+dm-delay.sh node-mount NAME --container C / node-umount ...     # mount inside a Kubernetes node container
 dm-delay.sh pv-yaml NAME --node NODE --size 300Gi [--count N]   # local-storage StorageClass + PVs
 dm-delay.sh destroy NAME --yes                                  # delete the volume and its data
 dm-delay.sh profiles
@@ -88,34 +89,35 @@ Kafka brokers use the `local-storage` StorageClass: `pv-yaml` prints the Storage
 
 A PV is a directory on the volume (`pv-0`, `pv-1`, …). The brokers sharing one volume share its caps. For per-broker caps, as with one EBS volume per broker, create one volume per broker and run `pv-yaml --count 1` for each. Give each PV its broker's node with `--node`.
 
-### k3d (Linux, or Colima)
+### Clusters whose nodes are containers (minikube, k3d, kind)
 
-k3d nodes are containers, so the mount point has to be bind-mounted into the node. k3d only accepts volumes when the cluster is created, so the cluster has to be created (or recreated) after the delay volume exists:
+A pod on a local PV sees the PV's path inside the node, and here the node is a container that doesn't see the host's mounts. `node-mount` mounts the volume inside a running node container at the same path. It works because these node containers are privileged, and no cluster has to be recreated.
 
 ```bash
 sudo scripts/dm-delay/dm-delay.sh create ebs --size 400G --mount /mnt/dimster-ebs
-k3d cluster delete dimster    # if it exists: this deletes its data, including backlogs
-k3d cluster create dimster --servers 1 --agents 0 \
-  --k3s-arg "--disable=traefik@server:0" \
-  --volume /mnt/dimster-ebs:/mnt/dimster-ebs@server:0    # plus your usual flags (kubelet args, ...)
+sudo scripts/dm-delay/dm-delay.sh node-mount ebs --container k3d-dimster-server-0   # minikube: --container minikube
 sudo scripts/dm-delay/dm-delay.sh pv-yaml ebs --node k3d-dimster-server-0 --size 300Gi | kubectl apply -f -
 ```
 
-Then set `pvcStorageClass: local-storage` and `pvcSize: 300Gi` (or less than the PV) on the env's `kafka` block, and deploy.
+Then set `pvcStorageClass: local-storage` and a `pvcSize` no larger than the PV on the env's `kafka` block, and deploy. Changing `pvcStorageClass` makes the next deploy delete the brokers' existing data PVCs.
 
-After a reboot, run `dm-delay.sh up ebs`, then `k3d cluster stop dimster && k3d cluster start dimster`, so the node sees the remounted volume.
+The PV must name the node, and the node container must be given as `--container`:
 
-### kind
+| Distro | Node and container name |
+|--------|-------------------------|
+| minikube (docker driver) | `minikube` |
+| k3d | `k3d-<cluster>-server-0` |
+| kind | `<cluster>-control-plane` |
 
-Add the mount point to the node with `extraMounts` in the kind config (`hostPath: /mnt/dimster-ebs`, `containerPath: /mnt/dimster-ebs`). Then create the cluster and continue as for k3d, with `--node dimster-control-plane`.
+**Restarts:** a node-mount lasts until the node container restarts (`minikube stop`/`start`, `k3d cluster stop`/`start`, a reboot), so run `node-mount` again after one, and `up` first after a reboot. Until then, pods using the PVs fail to start: each PV points at a `pv-<i>` directory that only exists on the volume. They never write to the container's own filesystem by mistake.
+
+**Bind mount alternative:** bind-mount the mount point into the node when the cluster is created. For k3d that's `--volume /mnt/dimster-ebs:/mnt/dimster-ebs@server:0`; for kind, `extraMounts`. That survives node restarts once the volume is `up` before the node starts, but needs a new cluster.
+
+**Removing:** `down` and `destroy` refuse while a container still has the volume mounted; run `node-umount` first, after stopping the pods.
 
 ### k3s or kubeadm on the host
 
-There's no node container, so no bind mount is needed. Run `pv-yaml` with the host's node name.
-
-### minikube
-
-minikube is untested. With the docker driver, the mount point would have to be passed into the node container when it is created.
+There's no node container, so `node-mount` isn't needed. Run `pv-yaml` with the host's node name.
 
 ### Containers and the Kafka storage harness
 

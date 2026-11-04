@@ -9,7 +9,7 @@ Both apply below the page cache, so only real device I/O pays.
 
 | File | Purpose |
 |------|---------|
-| `dm-delay.sh` | The tool. Run as root on Linux: `create`, `set`, `check`, `status`, `up`/`down`, `pv-yaml`, `destroy`, `profiles`. |
+| `dm-delay.sh` | The tool. Run as root on Linux: `create`, `set`, `check`, `status`, `up`/`down`, `node-mount`/`node-umount`, `pv-yaml`, `destroy`, `profiles`. |
 | `colima.sh` | Runs `dm-delay.sh` (or `test.sh`) inside the Colima VM, installing `dmsetup` there if needed. |
 | `test.sh` | Integration test: builds a small volume and checks latency, caps, down/up and cleanup. Run as root, or with `colima.sh test`. |
 
@@ -27,4 +27,4 @@ Requirements:
 - cgroup v2
 - `dmsetup`, `losetup` and `mkfs.ext4`
 
-The guide is [docs/deployment/09-emulated-network-storage.md](../../docs/deployment/09-emulated-network-storage.md). It covers the emulation model and its limitations, putting brokers on a volume with k3d or kind, and a gp3 run on a reused backlog.
+The guide is [docs/deployment/09-emulated-network-storage.md](../../docs/deployment/09-emulated-network-storage.md). It covers the emulation model and its limitations, putting brokers on a volume with minikube, k3d or kind, and a gp3 run on a reused backlog.
