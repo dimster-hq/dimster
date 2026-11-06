@@ -16,6 +16,7 @@ The pages split into two halves: **concepts** (01–03) build the mental model o
 | [06 — External Kafka](06-external-kafka.md) | Connecting to Confluent Cloud, MSK, self-managed Kafka, or local Docker Compose |
 | [07 — In-cluster mTLS](07-mtls-full-mode.md) | Enable mTLS for `deploy: full` — auto-generated certs, per-workload opt-in, side-by-side TLS vs PLAINTEXT runs |
 | [08 — Infrastructure dimensions](08-infra-dimensions.md) | Learn how to include infrastructure in dimensional testing |
+| [09 — Emulated network-attached storage](09-emulated-network-storage.md) | Give local brokers gp3-like disk latency, IOPS and throughput caps with dm-delay and cgroup `io.max` |
 
 Read pages 01–03 once. After that, pick the one target page that matches what you're shipping to.
 
@@ -32,4 +33,5 @@ There's also one un-numbered reference page that's optional reading:
 | Benchmark Kafka on AWS EKS using the wizard | [05 — AWS EKS](05-aws-eks.md) |
 | Benchmark on GKE / AKS / on-prem | Bring your own cluster — read [03 — Scheduling and storage](03-scheduling-and-storage.md) for the env-block requirements, then refer to your cloud provider's docs for cluster setup |
 | Benchmark Confluent Cloud, MSK, or another managed Kafka | [06 — External Kafka](06-external-kafka.md) |
+| Benchmark locally against gp3-like disks | [09 — Emulated network-attached storage](09-emulated-network-storage.md) |
 | Just smoke-test on a laptop | [Getting Started](../getting-started/) (you don't need this section) |
