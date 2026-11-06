@@ -26,6 +26,10 @@
 #   DM_DELAY_STATE_DIR  where volume state and backing files live (default /var/lib/dimster-dm-delay)
 set -euo pipefail
 
+# Keep the check and integration tests on the same direct-I/O implementation.
+# shellcheck source=io-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/io-helpers.sh"
+
 STATE_DIR="${DM_DELAY_STATE_DIR:-/var/lib/dimster-dm-delay}"
 CGROUP_ROOT=/sys/fs/cgroup
 # Parent cgroups that container runtimes and kubelets put workloads under,
@@ -482,21 +486,24 @@ in_check_cgroup() {
 # Prints the mean ops per second of PAR parallel dd readers, each reading
 # COUNT blocks of BS from its own region of the scratch file.
 parallel_rate() {
-  local bs="$1" count="$2" par="$3" scratch="$4" blocks start end i
+  local direct_dd="$1" bs="$2" count="$3" par="$4" scratch="$5" blocks start end i
+  local pids=()
   blocks="$(($(stat -c %s "$scratch") / $(to_bytes "$bs")))"
   start="$(date +%s%N)"
   for ((i = 0; i < par; i++)); do
-    in_check_cgroup dd if="$scratch" of=/dev/null bs="$bs" count="$count" skip=$((i * blocks / par)) iflag=direct status=none &
+    in_check_cgroup "$direct_dd" if="$scratch" of=/dev/null bs="$bs" count="$count" skip=$((i * blocks / par)) iflag=direct status=none &
+    pids+=("$!")
   done
-  wait
+  wait_for_io "${pids[@]}" || return 1
   end="$(date +%s%N)"
   echo $((par * count * 1000000000 / (end - start)))
 }
 
 cmd_check() {
-  local scratch t0 t1 lat iops mbps
+  local scratch t0 t1 lat iops mbps direct_dd
   load_state "${1:?check needs a NAME}"
   dm_exists "$NAME" || die "$NAME is down; run up first"
+  direct_dd="$(find_gnu_dd)"
   describe
   scratch="$MOUNT/.dm-delay-check"
   CHECK_CG="$CGROUP_ROOT/dm-delay-check-$$"
@@ -506,13 +513,13 @@ cmd_check() {
   trap "rm -f '$scratch'; rmdir '$CHECK_CG' 2>/dev/null || true" EXIT
   echo "$(dm_devno "$NAME") rbps=$RBPS wbps=$WBPS riops=$RIOPS wiops=$WIOPS" >"$CHECK_CG/io.max"
   info "Writing a 256 MiB scratch file (direct, under the caps)"
-  in_check_cgroup dd if=/dev/zero of="$scratch" bs=1M count=256 oflag=direct status=none
+  in_check_cgroup "$direct_dd" if=/dev/zero of="$scratch" bs=1M count=256 oflag=direct status=none
   t0="$(date +%s%N)"
-  in_check_cgroup dd if="$scratch" of=/dev/null bs=4k count=200 iflag=direct status=none
+  in_check_cgroup "$direct_dd" if="$scratch" of=/dev/null bs=4k count=200 iflag=direct status=none
   t1="$(date +%s%N)"
   lat=$(((t1 - t0) / 200 / 1000))
-  iops="$(parallel_rate 4k 500 16 "$scratch")"
-  mbps="$(parallel_rate 1M 32 4 "$scratch")"
+  iops="$(parallel_rate "$direct_dd" 4k 500 16 "$scratch")"
+  mbps="$(parallel_rate "$direct_dd" 1M 32 4 "$scratch")"
   printf '  4 KiB read latency: %d us (configured %d ms)\n' "$lat" "$READ_MS"
   printf '  4 KiB read IOPS (16 readers): %d (cap %s)\n' "$iops" "$(fmt_cap iops "$RIOPS")"
   printf '  1 MiB read throughput (4 readers): %d MiB/s (cap %s)\n' "$mbps" "$(fmt_cap bps "$RBPS")"

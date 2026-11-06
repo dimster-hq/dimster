@@ -8,6 +8,9 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=io-helpers.sh
+. "$here/io-helpers.sh"
+direct_dd="$(find_gnu_dd)"
 tmp="$(mktemp -d /var/tmp/dm-delay-test.XXXXXX)"
 export DM_DELAY_STATE_DIR="$tmp/state"
 name="dmtest$$"
@@ -40,7 +43,7 @@ now_ns() { date +%s%N; }
 latency_us() {
   local t0 t1
   t0="$(now_ns)"
-  in_cg dd if="$mnt/data" of=/dev/null bs=4k count="$1" iflag=direct status=none
+  in_cg "$direct_dd" if="$mnt/data" of=/dev/null bs=4k count="$1" iflag=direct status=none
   t1="$(now_ns)"
   echo $(((t1 - t0) / $1 / 1000))
 }
@@ -48,11 +51,13 @@ latency_us() {
 # Ops per second of PAR parallel direct readers reading COUNT blocks of BS.
 rate() {
   local bs="$1" count="$2" par="$3" t0 t1 i
+  local pids=()
   t0="$(now_ns)"
   for ((i = 0; i < par; i++)); do
-    in_cg dd if="$mnt/data" of=/dev/null bs="$bs" count="$count" skip=$((i * count)) iflag=direct status=none &
+    in_cg "$direct_dd" if="$mnt/data" of=/dev/null bs="$bs" count="$count" skip=$((i * count)) iflag=direct status=none &
+    pids+=("$!")
   done
-  wait
+  wait_for_io "${pids[@]}" || return 1
   t1="$(now_ns)"
   echo $((par * count * 1000000000 / (t1 - t0)))
 }
@@ -67,7 +72,7 @@ mkdir "$cg"
 echo "== create"
 dmd create "$name" --size 512M --mount "$mnt" >/dev/null
 if findmnt -n "$mnt" >/dev/null && [ -b "/dev/mapper/dimster-$name" ]; then pass "volume created and mounted"; else fail "volume not mounted"; fi
-dd if=/dev/urandom of="$mnt/data" bs=1M count=128 oflag=direct status=none
+"$direct_dd" if=/dev/urandom of="$mnt/data" bs=1M count=128 oflag=direct status=none
 sha="$(sha256sum "$mnt/data" | cut -d' ' -f1)"
 
 echo "== latency"

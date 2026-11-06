@@ -116,6 +116,8 @@ To use delay volumes, the following prequisites are needed:
     - Supported: Minikube, k3d, kind
     - Not supported/not tested: Docker Desktop, OrbStack
 
+`check` and the integration test require GNU `dd`, detected as `dd`, `gnudd` or `gdd`. Some uutils `dd` versions fail direct I/O on loop/device-mapper volumes with `IO error: Invalid input`; the scripts select GNU `dd` automatically when it is installed alongside uutils.
+
 ## Commands
 
 Run as root on Linux. On macOS, use `scripts/dm-delay/colima.sh` with the same arguments; it runs the script inside the Colima VM.
