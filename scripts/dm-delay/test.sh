@@ -134,6 +134,15 @@ echo "== pv-yaml"
 yaml="$(dmd pv-yaml "$name" --node test-node --size 1Gi --count 2)"
 if [ "$(grep -c '^kind: PersistentVolume$' <<<"$yaml")" -eq 2 ] && [ -d "$mnt/pv-1" ] && grep -q "path: $mnt/pv-0" <<<"$yaml"; then pass "pv-yaml prints 2 PVs and creates their directories"; else fail "pv-yaml output"; fi
 
+echo "== space check"
+avail_g=$(($(df --output=avail -B1 "$DM_DELAY_STATE_DIR" | tail -1) / 1024 ** 3))
+if ! dmd create "${name}big" --size "$((avail_g + 1))G" --mount "$tmp/mnt-big" >/dev/null 2>&1 && ! [ -e "$DM_DELAY_STATE_DIR/${name}big.img" ]; then
+  pass "create refuses a size its filesystem cannot hold"
+else
+  dmd destroy "${name}big" --yes >/dev/null 2>&1 || true
+  fail "create accepted $((avail_g + 1))G with ${avail_g}G free"
+fi
+
 echo "== destroy"
 backing="$DM_DELAY_STATE_DIR/$name.img"
 dmd destroy "$name" --yes >/dev/null

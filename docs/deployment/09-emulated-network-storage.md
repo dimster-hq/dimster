@@ -1,16 +1,61 @@
 # 09 — Emulated network-attached storage
 
-Local NVMe drives are much faster than the network-attached volumes most cloud deployments use. A Samsung 9100 PRO answers a 4 KiB read in well under 100 µs and has no practical IOPS or throughput limit. An AWS gp3 volume takes roughly 0.5–1 ms per read and is capped at 3,000 IOPS and 125 MiB/s by default. Results that depend on read latency or read volume can rank configurations differently on the two, so it is worth running on something gp3-like without leaving your machine.
+Local NVMe drives are much faster than the network-attached volumes most cloud deployments use. A fast SSD answers a 4 KiB read in well under 100 µs and has no practical IOPS or throughput limit. An AWS gp3 volume takes roughly 0.5–1 ms per read and is capped at 3,000 IOPS and 125 MiB/s by default. Results that depend on read latency or read volume can rank configurations differently on the two, so it is worth running on something gp3-like without leaving your machine.
 
 `scripts/dm-delay/dm-delay.sh` builds such a volume on any Linux machine, including the Colima VM on macOS. Broker data, or any container's data, can then live on it.
 
 ## How it works
 
-A delay volume is a filesystem on a Linux device-mapper `delay` device, stacked on a loop file (or a spare partition):
+A delay volume is a filesystem on a Linux device-mapper `delay` device, stacked on a loop file (or a spare partition). A broker reaches it through an ordinary Kubernetes local PersistentVolume. The picture shows one broker, `kafka-0`, on minikube with volume `ebs0`; the right-hand column says which command or setting makes each piece.
 
 ```
-filesystem (your mount point)  ->  /dev/mapper/dimster-NAME (delay)  ->  /dev/loopN (direct I/O)  ->  backing file
+  Kafka broker: pod kafka-0
+    log.dirs=/var/kafka-data/kafka-logs
+        |
+        |  the pod mounts its volume kafka-data at /var/kafka-data
+        v
+  PVC kafka-data-kafka-0                 the StatefulSet's claim template;
+    storageClassName: local-storage      class and size from the env's
+    request: 7Gi                         pvcStorageClass and pvcSize
+        |
+        |  binds to an Available PV of that class, at least that size
+        v
+  PV dimster-ebs0-pv-0                   pv-yaml
+    local.path: /mnt/dimster-ebs0/pv-0
+    nodeAffinity: minikube               the pod runs on this node
+        |
+        |  the kubelet bind-mounts local.path into the pod
+        v
++-- node: the minikube container ------------------------------------+
+|  /mnt/dimster-ebs0                     node-mount                  |
++--------------------------------------------------------------------+
+        |
+        |  the same filesystem, mounted in both places
+        v
++-- host: Linux, or the Colima VM -----------------------------------+
+|  /mnt/dimster-ebs0                     create                      |
+|      |                                                             |
+|      |  ext4 and the page cache: cache hits stop here              |
+|      v                                                             |
+|  /dev/mapper/dimster-ebs0              delay target: holds each    |
+|      |                                 read or write N ms (set)    |
+|      |  io.max caps for this device, on the docker cgroup (set)    |
+|      v                                                             |
+|  /dev/loopN                            direct I/O, so the backing  |
+|      |                                 file isn't cached twice     |
+|      v                                                             |
+|  backing file ebs0.img                 sparse (create)             |
++--------------------------------------------------------------------+
 ```
+
+From the top:
+
+1. **Broker to claim.** The Kafka StatefulSet has a claim template, `kafka-data`, so each broker gets its own PVC, `kafka-data-kafka-<N>`, mounted where `log.dirs` points. With `pvcStorageClass: local-storage` in the env, the PVC asks for that class.
+2. **Claim to PV.** The `local-storage` class has no provisioner, so Kubernetes never creates volumes for it. A PVC can only bind to a PV that already exists, and `pv-yaml` makes those: one `local` PV per `pv-<i>` directory on the volume, pinned to a node. Binding waits until the pod is scheduled (`WaitForFirstConsumer`). Kubernetes chooses which PV each broker gets, so with one volume per broker, `kafka-0` may land on `ebs2`. They're configured alike, so it doesn't matter.
+3. **PV to node.** A local PV's path is a path on the node. With minikube, k3d or kind, the node is a container with its own mounts, and it doesn't see the host's. `node-mount` mounts the same device inside that container at the same path. With k3s or kubeadm on the host, the node is the host, and this layer goes away.
+4. **Filesystem to device.** Both mounts are one ext4 filesystem in the host kernel, so the broker's file I/O goes through the host's page cache. Only cache misses and writeback reach the delay device.
+
+What's applied at the device:
 
 - **Latency:** the `delay` target holds each read, and separately each write, for a fixed number of milliseconds.
 - **Caps:** IOPS and throughput are capped with cgroup v2 `io.max` on that device.
@@ -25,7 +70,7 @@ Both sit below the page cache, so cache hits stay fast and only reads and writes
 | `/sys/fs/cgroup/system.slice` | Docker with the systemd driver, and system services |
 | `/sys/fs/cgroup/kubepods.slice` / `kubepods` | Bare k3s or kubeadm pods |
 
-k3d and kind nodes are Docker containers, so their pods fall under one of the first two. Pass `--cgroup` to choose the cgroups yourself.
+`io.max` counts I/O by the cgroup of the process that issues it, and a cap on a cgroup covers every cgroup below it. minikube, k3d and kind nodes are Docker containers, so their pods fall under one of the first two. In Colima, for example, a broker runs in `/docker/<minikube container>/kubepods/burstable/<pod>/<container>`, so the cap on `docker` covers it. Pass `--cgroup` to choose the cgroups yourself.
 
 ## What you can configure
 
@@ -60,6 +105,17 @@ Other volume types and instance limits are just different flags. For example, an
 - **Latency is fixed per I/O.** There is no variance, and no growth with I/O size or load except the queueing that the caps cause.
 - **The caps are per cgroup.** Each cgroup in the target list gets its own budget for the volume. With k3d, all broker I/O comes from Docker's cgroup, so that budget is the volume's budget.
 
+## Prerequisites
+
+To use delay volumes, the following prequisites are needed:
+
+- OS:
+    - Linux: Install `dmsetup` (`apt-get install dmsetup`, or `dnf install device-mapper`). Check for kernel 6.8 or newer (`uname -r`) and cgroup v2 (`stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`).
+    - MacOS: Use Colima. Start colima with enough disk for your delay volumes.
+- Kubernetes distros:
+    - Supported: Minikube, k3d, kind
+    - Not supported/not tested: Docker Desktop, OrbStack
+
 ## Commands
 
 Run as root on Linux. On macOS, use `scripts/dm-delay/colima.sh` with the same arguments; it runs the script inside the Colima VM.
@@ -70,14 +126,20 @@ dm-delay.sh set NAME --profile gp3                              # live, even whi
 dm-delay.sh set NAME --profile gp3 --rbps 250M                  # profile plus overrides
 dm-delay.sh check NAME                                          # measure latency, IOPS, throughput
 dm-delay.sh status [NAME]                                       # devices, tables, caps per cgroup
-dm-delay.sh down NAME / up NAME                                 # detach / reattach (e.g. after a reboot)
-dm-delay.sh node-mount NAME --container C / node-umount ...     # mount inside a Kubernetes node container
-dm-delay.sh pv-yaml NAME --node NODE --size 300Gi [--count N]   # local-storage StorageClass + PVs
+dm-delay.sh down NAME                                           # detach, keeping the data
+dm-delay.sh up NAME                                             # reattach (e.g. after a reboot)
+dm-delay.sh node-mount NAME --container minikube                # mount inside a Kubernetes node container
+dm-delay.sh node-umount NAME --container minikube               # unmount from it
+dm-delay.sh pv-yaml NAME --node minikube --size 300Gi [--count N]   # local-storage StorageClass + PVs
 dm-delay.sh destroy NAME --yes                                  # delete the volume and its data
 dm-delay.sh profiles
 ```
 
-- **Backing:** the backing file is sparse, in `/var/lib/dimster-dm-delay` by default, so it only uses the space that's written. `create --device /dev/nvme1n1p3 --force` uses a spare partition instead and destroys its contents.
+`--container` is the node's container, and `--node` is the Kubernetes node name. Both are `minikube` on minikube. For k3d and kind, see the [table of node names](#clusters-whose-nodes-are-containers-minikube-k3d-kind). 
+
+- **Backing:** the backing file is sparse, in `/var/lib/dimster-dm-delay` by default (`DM_DELAY_STATE_DIR` changes it), so it only uses the space that's written. `create --device /dev/nvme1n1p3 --force` uses a spare partition instead and destroys its contents.
+- **Space:** if the filesystem holding a backing file fills up, the volume fails writes with I/O errors, and Kafka takes the log dir offline. So `create` refuses a size that filesystem can't hold, counting the unwritten part of the other volumes there. `--overcommit` skips the check. The check can't see other users of that filesystem, such as Docker, so leave room for them.
+- **Colima:** `colima.sh` puts backing files and state on Colima's data disk (`/mnt/lima-colima/dimster-dm-delay`, the disk `colima start --disk` sizes), not the VM's small root disk.
 - **TRIM:** discard passes through to the backing file, so `fstrim` on the mount point works as usual.
 - **Reboots:** volumes don't survive a reboot until you run `up`, which re-applies the last settings.
 

@@ -37,10 +37,11 @@ usage() {
 Usage: dm-delay.sh <command> [args]
 
 Commands:
-  create NAME --size SIZE --mount DIR [--backing FILE | --device DEV --force] [--fs ext4|xfs]
+  create NAME --size SIZE --mount DIR [--backing FILE | --device DEV --force] [--fs ext4|xfs] [--overcommit]
       Create a delay volume (0 ms, no caps) and mount it. SIZE like 400G.
-      The backing file is sparse; --device uses a spare partition instead
-      (its data is destroyed, so --force is required).
+      The backing file is sparse; create refuses a SIZE its filesystem
+      cannot hold unless --overcommit. --device uses a spare partition
+      instead (its data is destroyed, so --force is required).
   up NAME
       Reattach and mount a volume after a reboot, re-applying its settings.
   down NAME
@@ -277,6 +278,28 @@ attach() {
   dm_exists "$NAME" || dmsetup create "$(dm_name "$NAME")" --table "$(delay_table)"
 }
 
+# Refuses a backing file the filesystem under it cannot hold. The file is
+# sparse, so it takes space only as it is written; if that filesystem fills
+# first, the loop device fails the writes and the volume returns I/O errors.
+# Counts the unwritten part of the other sparse volumes on the same
+# filesystem, which they may still claim.
+check_space() {
+  local bytes="$1" dir avail claimed=0 f img dev size blocks blksize
+  dir="$(dirname "$BACKING")"
+  dev="$(stat -c %d "$dir")"
+  avail="$(df --output=avail -B1 "$dir" | tail -1 | tr -d ' ')"
+  for f in "$STATE_DIR"/*.env; do
+    [ -f "$f" ] || continue
+    img="$(sed -n "s/^BACKING='\(.*\)'$/\1/p" "$f")"
+    if ! [ -f "$img" ] || [ "$(stat -c %d "$img")" != "$dev" ]; then continue; fi
+    read -r size blocks blksize <<<"$(stat -c '%s %b %B' "$img")"
+    claimed=$((claimed + size - blocks * blksize))
+  done
+  if [ $((bytes + claimed)) -gt "$avail" ]; then
+    die "$dir has $((avail / 1024 ** 3))G free, but this volume needs $((bytes / 1024 ** 3))G and other sparse volumes there may still claim $((claimed / 1024 ** 3))G; use a smaller --size or --backing on a bigger filesystem (add --overcommit to create it anyway)"
+  fi
+}
+
 mount_volume() {
   mkdir -p "$MOUNT"
   findmnt -n "$MOUNT" >/dev/null 2>&1 || mount -o noatime "/dev/mapper/$(dm_name "$NAME")" "$MOUNT"
@@ -296,7 +319,7 @@ describe() {
 # ---- commands ----
 
 cmd_create() {
-  local size="" fs=ext4 force=0 device=""
+  local size="" fs=ext4 force=0 overcommit=0 device=""
   NAME="${1:-}"; [ -n "$NAME" ] || die "create needs a NAME"; shift
   valid_name "$NAME"
   KIND=file BACKING="" MOUNT=""
@@ -308,6 +331,7 @@ cmd_create() {
       --device) device="$2"; shift 2 ;;
       --fs) fs="$2"; shift 2 ;;
       --force) force=1; shift ;;
+      --overcommit) overcommit=1; shift ;;
       *) die "create: unknown argument $1" ;;
     esac
   done
@@ -325,6 +349,7 @@ cmd_create() {
     BACKING="${BACKING:-$STATE_DIR/$NAME.img}"
     [ -e "$BACKING" ] && die "$BACKING already exists"
     mkdir -p "$(dirname "$BACKING")"
+    [ "$overcommit" -eq 1 ] || check_space "$(to_bytes "$size")"
     truncate -s "$(to_bytes "$size")" "$BACKING"
   fi
   FS="$fs" PROFILE=none CGROUPS=""
@@ -351,6 +376,13 @@ cmd_up() {
 
 cmd_down() {
   load_state "${1:?down needs a NAME}"
+  detach
+  save_state
+  info "$NAME is down (data kept in $BACKING)"
+}
+
+# Clears the caps, unmounts and detaches the loaded volume.
+detach() {
   if dm_exists "$NAME"; then
     clear_caps
     if findmnt -n "$MOUNT" >/dev/null 2>&1; then
@@ -368,8 +400,6 @@ cmd_down() {
     for loop in $(losetup -j "$BACKING" | cut -d: -f1); do losetup -d "$loop"; done
     LOOP=""
   fi
-  save_state
-  info "$NAME is down (data kept in $BACKING)"
 }
 
 cmd_set() {
@@ -594,10 +624,11 @@ cmd_node_umount() {
 cmd_destroy() {
   local name="${1:?destroy needs a NAME}"
   [ "${2:-}" = --yes ] || die "destroy deletes the data of '$name'; add --yes"
-  cmd_down "$name" >/dev/null
   load_state "$name"
+  # no state save on the way, so this works on a full filesystem
+  detach
   [ "$KIND" = file ] && rm -f "$BACKING"
-  rm -f "$(state_file "$name")"
+  rm -f "$(state_file "$name")" "$(state_file "$name").tmp"
   info "$name destroyed"
 }
 
