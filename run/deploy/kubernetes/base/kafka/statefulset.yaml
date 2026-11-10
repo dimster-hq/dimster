@@ -27,6 +27,15 @@ spec:
           volumeMounts:
             - name: jmx-exporter
               mountPath: /jmx-exporter
+          # Every container needs equal requests/limits for Guaranteed QoS.
+          # The fractional init CPU stays shared while the broker can be pinned.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
       containers:
         - name: kafka
           image: apache/kafka:4.2.0
