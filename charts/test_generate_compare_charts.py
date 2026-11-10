@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -148,6 +149,26 @@ class GenerateCompareChartsTest(unittest.TestCase):
         self.assertGreater(len(chart_configs), 0)
         self.assertIn("run-4", html)
         self.assertIn("Dimster Compare", html)
+
+    def test_page_is_named_after_name_else_the_labels(self):
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "generate_compare_charts.py")
+        with tempfile.TemporaryDirectory() as directory:
+            entry_args = []
+            for label in ("A", "B"):
+                path = os.path.join(directory, f"{label}.json")
+                with open(path, "w") as fh:
+                    json.dump(_run_result(label), fh)
+                entry_args += ["--entry", f"{label}={path}"]
+
+            for extra, expected in (([], "compare-A-vs-B.html"),
+                                    (["--name", "sweep"], "compare-sweep.html")):
+                out = os.path.join(directory, expected + ".d")
+                proc = subprocess.run(
+                    [sys.executable, script, *entry_args, "--output", out, *extra],
+                    capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(os.listdir(out), [expected])
 
     def test_build_correctness_compare_charts_uses_totals_and_weighted_events(self):
         start_ms = 1784635200000

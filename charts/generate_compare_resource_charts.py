@@ -5,7 +5,8 @@ drain-backlog results.
 
 Usage:
     python3 generate_compare_resource_charts.py \
-        --entry LABEL1=FILE1 --entry LABEL2=FILE2 [--entry ...] --output <dir>
+        --entry LABEL1=FILE1 --entry LABEL2=FILE2 [--entry ...] --output <dir> \
+        [--name NAME]
 
 The companion of generate_compare_charts.py, which `dimster compare` runs
 first with the same entries. Each result's resources report data
@@ -14,9 +15,11 @@ analysed as the resources report does (generate_resource_charts.py), and the
 entries are set side by side in three tables: the per-service summary, page
 cache vs disk and bottlenecks. Writes, in --output:
 
-    compare-<labels>-resources.html
-    compare-<labels>-resources.csv     the resources CSV rows of every entry,
+    compare-<name>-resources.html
+    compare-<name>-resources.csv       the resources CSV rows of every entry,
                                        with a leading compare_label column
+
+where <name> is --name, else the labels joined by -vs-.
 
 Run and drain-backlog results have resource data. Fewer than two entries
 with it, or a comparison of another mode, write nothing.
@@ -147,6 +150,8 @@ def main():
     parser.add_argument("--entry", action="append", required=True,
                         help="LABEL=FILE entry (specify at least twice)")
     parser.add_argument("--output", required=True, help="Output directory")
+    parser.add_argument("--name",
+                        help="Writes compare-NAME-resources.* (default: the labels joined by -vs-)")
     args = parser.parse_args()
 
     entries = parse_entries(args.entry)
@@ -159,13 +164,15 @@ def main():
             print(f"Resource comparison skipped: only {measured[0][0]} has resource data")
         return
 
-    labels = "-vs-".join(e[0] for e in entries)
+    # `dimster compare` always passes --name, so its output files share one
+    # name; the label default is for running this script by hand.
+    name = args.name or "-vs-".join(e[0] for e in entries)
     os.makedirs(args.output, exist_ok=True)
-    out_path = os.path.join(args.output, f"compare-{labels}-resources.html")
+    out_path = os.path.join(args.output, f"compare-{name}-resources.html")
     with open(out_path, "w") as fh:
         fh.write(build_html(measured, missing))
     print(f"Generated: {out_path}")
-    write_csv(os.path.join(args.output, f"compare-{labels}-resources.csv"), compare_rows(measured))
+    write_csv(os.path.join(args.output, f"compare-{name}-resources.csv"), compare_rows(measured))
 
 
 if __name__ == "__main__":
