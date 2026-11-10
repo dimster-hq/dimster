@@ -2873,6 +2873,34 @@ spec:
     }
 
     #[test]
+    fn kafka_init_containers_preserve_guaranteed_qos() {
+        // CPU Manager eligibility is pod-wide: an unbounded init container
+        // silently puts even a whole-CPU broker into the shared pool.
+        let manifest: serde_yaml::Value = serde_yaml::from_str(include_str!(
+            "../../../run/deploy/kubernetes/base/kafka/statefulset.yaml"
+        ))
+        .unwrap();
+        let pod = &manifest["spec"]["template"]["spec"];
+        for kind in ["containers", "initContainers"] {
+            for container in pod[kind].as_sequence().unwrap() {
+                for resource in ["cpu", "memory"] {
+                    let requests = &container["resources"]["requests"][resource];
+                    let limits = &container["resources"]["limits"][resource];
+                    assert!(
+                        !requests.is_null(),
+                        "{} needs {resource}",
+                        container["name"].as_str().unwrap()
+                    );
+                    assert_eq!(
+                        requests, limits,
+                        "requests and limits must match for Guaranteed QoS"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn whole_cpu_request_accepts_integer_and_whole_millicores() {
         assert_eq!(require_whole_cpu_request("workers", "1").unwrap(), 1);
         assert_eq!(require_whole_cpu_request("workers", "2").unwrap(), 2);
