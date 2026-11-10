@@ -5,7 +5,10 @@ Generate HTML comparison charts from two or more Dimster result JSON files.
 Usage:
     python3 generate_compare_charts.py \
         --entry LABEL1=FILE1 --entry LABEL2=FILE2 [--entry LABEL3=FILE3 ...] \
-        --output <dir>
+        --output <dir> [--name NAME]
+
+Writes compare-<name>.html, where <name> is --name, else the labels joined
+by -vs-.
 
 Validates that all files have matching scenario names and test labels,
 then generates a single HTML page with comparison charts. Run results use
@@ -1621,6 +1624,8 @@ def main():
     parser.add_argument("--entry", action="append", required=True,
                         help="LABEL=FILE entry (specify at least twice)")
     parser.add_argument("--output", required=True, help="Output directory for HTML file")
+    parser.add_argument("--name",
+                        help="Writes compare-NAME.html (default: the labels joined by -vs-)")
 
     # Support legacy --t1-label/--t1-file/--t2-label/--t2-file args
     parser.add_argument("--t1-label", help=argparse.SUPPRESS)
@@ -1650,9 +1655,11 @@ def main():
     chart_configs, chart_sections = build_compare_chart_configs(entries)
     html = build_compare_html(entries, chart_configs, chart_sections)
 
-    labels = [e[0] for e in entries]
+    # `dimster compare` always passes --name, so its output files share one
+    # name; the label default is for running this script by hand.
+    name = args.name or "-vs-".join(e[0] for e in entries)
     os.makedirs(args.output, exist_ok=True)
-    out_path = os.path.join(args.output, f"compare-{'-vs-'.join(labels)}.html")
+    out_path = os.path.join(args.output, f"compare-{name}.html")
     with open(out_path, "w") as f:
         f.write(html)
 

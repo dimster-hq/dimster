@@ -324,6 +324,11 @@ enum Commands {
         /// Output directory (default: directory of first file)
         #[arg(short, long)]
         output: Option<String>,
+
+        /// Name for the output files, which become compare-NAME.html,
+        /// compare-NAME.csv, etc. (default: the labels joined by -vs-)
+        #[arg(short, long)]
+        name: Option<String>,
     },
 
     /// Pivot a single result file: scenarios become the comparison axis,
@@ -841,8 +846,15 @@ fn run_command(cli: Cli) -> Result<()> {
             files,
             directory,
             output,
+            name,
         } => {
-            commands::compare::run(&files, directory.as_deref(), output.as_deref(), &script_dir)?;
+            commands::compare::run(
+                &files,
+                directory.as_deref(),
+                output.as_deref(),
+                name.as_deref(),
+                &script_dir,
+            )?;
         }
 
         Commands::Pivot {

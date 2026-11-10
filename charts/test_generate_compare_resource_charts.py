@@ -43,10 +43,12 @@ def doc(cpu0, cpu1):
 
 class CompareResourcesTest(unittest.TestCase):
 
-    def run_script(self, *entries, output):
+    def run_script(self, *entries, output, name=None):
         args = [sys.executable, SCRIPT, "--output", output]
         for label, path in entries:
             args += ["--entry", f"{label}={path}"]
+        if name is not None:
+            args += ["--name", name]
         proc = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout
@@ -97,6 +99,15 @@ class CompareResourcesTest(unittest.TestCase):
         for heading in ("Summary", "Page cache vs disk", "Bottlenecks"):
             self.assertIn(f"<h2>{heading}</h2>", page)
         self.assertNotIn("<canvas", page)
+
+    def test_name_sets_the_file_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = write_run(os.path.join(d, "a"), "a", doc(1.0, 2.0))
+            b = write_run(os.path.join(d, "b"), "b", doc(3.0, 4.0))
+            out = os.path.join(d, "out")
+            self.run_script(("A", a), ("B", b), output=out, name="sweep")
+            self.assertEqual(sorted(os.listdir(out)),
+                             ["compare-sweep-resources.csv", "compare-sweep-resources.html"])
 
     def test_fewer_than_two_entries_with_data_write_nothing(self):
         with tempfile.TemporaryDirectory() as d:

@@ -279,7 +279,8 @@ Generate side-by-side comparison charts from two or more compatible `run`,
 You can specify a directory (it will recursively search for result JSON files), or pass label=result-file-path.
 
 ```
-dimster compare <LABEL=FILE> <LABEL=FILE> [LABEL=FILE ...] [-o <output>]
+dimster compare <LABEL=FILE> <LABEL=FILE> [LABEL=FILE ...] [-o <output>] [-n <name>]
+dimster compare --directory <dir> [-o <output>] [-n <name>]
 ```
 
 | Argument / Flag | Description |
@@ -287,10 +288,13 @@ dimster compare <LABEL=FILE> <LABEL=FILE> [LABEL=FILE ...] [-o <output>]
 | `LABEL=FILE` | A short label and the path to a result JSON file (e.g. `baseline=results/2026-04-20/run.json`). |
 | `--directory` | The parent directory of a set of result directories to recursively search |
 | `-o`, `--output <dir>` | Output directory for the generated charts. Defaults to the directory of the first input file. |
+| `-n`, `--name <name>` | Name for the output files, which become `compare-<name>.html`, `compare-<name>.csv` and, with resource data, `compare-<name>-resources.html` and `compare-<name>-resources.csv`. Defaults to the labels joined by `-vs-`. |
 
 Runs `charts/generate_compare_charts.py`. Requires Python with dependencies
 from `charts/requirements.txt`. Each input file must exist; missing files fail
 before the script runs.
+
+A file name can be at most 255 bytes. With many entries, the default name (every label joined by `-vs-`) can make the output file names longer than that. The command then fails before writing anything and asks for a shorter name with `--name`. A `--name` that is too long, empty or contains a path separator also fails.
 
 For correctness results, the comparison contains aggregate bars for message
 loss, duplicates, out-of-order records, and CRC failures. It also contains
@@ -307,7 +311,7 @@ For drain-backlog results, each scenario's comparison holds:
 
 With `--directory`, drain-backlog results need a `metadata.label`, set with `--metadata label=...` when running, as run results do.
 
-For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<labels>-resources.html` and `compare-<labels>-resources.csv`. The page sets the entries side by side in three tables: the per-service summary, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
+For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<name>-resources.html` and `compare-<name>-resources.csv`. The page sets the entries side by side in three tables: the per-service summary, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
 
 Example:
 
@@ -319,6 +323,12 @@ Compare all compatible correctness results found recursively under a directory:
 
 ```bash
 dimster compare --directory results/correctness-protocols
+```
+
+Compare many results under one short name, writing `compare-read-strategies.html` and `compare-read-strategies.csv`:
+
+```bash
+dimster compare --directory results/read-strategies --name read-strategies
 ```
 
 ---

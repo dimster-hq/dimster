@@ -15,10 +15,14 @@ pub fn run(
     files: &[String],
     directory: Option<&str>,
     output: Option<&str>,
+    name: Option<&str>,
     script_dir: &Path,
 ) -> Result<()> {
     let entries = compare_entries(files, directory)?;
     validate_entry_count(&entries)?;
+    // Resolved before anything is written, so a name too long for the
+    // filesystem fails the command up front rather than midway through.
+    let name = compare_name(&entries, name)?;
 
     let output_dir = match output {
         Some(d) => d.to_string(),
@@ -46,6 +50,7 @@ pub fn run(
             script_dir,
             COMPARE_SCRIPT,
             &entries,
+            &name,
             &output_dir,
         ))
         .status()?;
@@ -53,7 +58,7 @@ pub fn run(
         bail!("Comparison chart generation failed");
     }
 
-    let csv_path = write_combined_csv(&entries, &output_dir)?;
+    let csv_path = write_combined_csv(&entries, &name, &output_dir)?;
 
     println!("==> Comparison charts saved to {}/", output_dir);
     println!("==> Comparison CSV saved to {}", csv_path.display());
@@ -65,6 +70,7 @@ pub fn run(
             script_dir,
             RESOURCES_SCRIPT,
             &entries,
+            &name,
             &output_dir,
         ))
         .status()
@@ -81,12 +87,76 @@ const COMPARE_SCRIPT: &str = "charts/generate_compare_charts.py";
 /// The comparison of the entries' resources report data, where they have it.
 const RESOURCES_SCRIPT: &str = "charts/generate_compare_resource_charts.py";
 
+/// The most bytes a single file name may have: NAME_MAX on Linux and the
+/// APFS limit on macOS (which counts characters, so bytes is the safe side).
+const MAX_FILE_NAME_BYTES: usize = 255;
+
+/// The longest suffix any comparison output file adds after `compare-NAME`
+/// (the resources page from RESOURCES_SCRIPT).
+const LONGEST_OUTPUT_SUFFIX: &str = "-resources.html";
+
+/// The NAME in the comparison's output file names (`compare-NAME.html`,
+/// `compare-NAME.csv`, `compare-NAME-resources.html`, ...). It is the
+/// `--name` given, else the entries' labels joined by `-vs-`. The CLI decides
+/// it and hands it to every script, so all output files share one name.
+///
+/// Fails when the longest output file name would exceed the filesystem
+/// limit, which a default name over many entries easily does.
+fn compare_name(entries: &[CompareEntry], name: Option<&str>) -> Result<String> {
+    let resolved = match name {
+        Some(n) => {
+            if n.is_empty() {
+                bail!("--name must not be empty");
+            }
+            if n.contains(['/', '\\']) {
+                bail!(
+                    "--name '{n}' must not contain a path separator; set the directory with --output"
+                );
+            }
+            n.to_string()
+        }
+        None => entries
+            .iter()
+            .map(|e| e.label.as_str())
+            .collect::<Vec<_>>()
+            .join("-vs-"),
+    };
+
+    let longest = output_file_name(&resolved, LONGEST_OUTPUT_SUFFIX);
+    if longest.len() > MAX_FILE_NAME_BYTES {
+        // The over-long name itself is left out: with many entries it would
+        // bury the advice.
+        let given = if name.is_some() {
+            "The --name given is too long".to_string()
+        } else {
+            format!(
+                "The default comparison name, the {} labels joined by '-vs-', is too long",
+                entries.len()
+            )
+        };
+        bail!(
+            "{given}: output file names would be up to {} bytes, over the {MAX_FILE_NAME_BYTES}-byte file name limit. \
+             Use --name NAME to set a shorter name (at most {} bytes); the output files are then compare-NAME.html, compare-NAME.csv, etc.",
+            longest.len(),
+            MAX_FILE_NAME_BYTES - output_file_name("", LONGEST_OUTPUT_SUFFIX).len(),
+        );
+    }
+    Ok(resolved)
+}
+
+/// An output file name of the comparison called `name`.
+fn output_file_name(name: &str, suffix: &str) -> String {
+    format!("compare-{name}{suffix}")
+}
+
 /// python3 arguments for a comparison script: the script, then one
-/// `--entry LABEL=FILE` per entry and the output directory.
+/// `--entry LABEL=FILE` per entry, the comparison name and the output
+/// directory.
 fn script_args(
     script_dir: &Path,
     script: &str,
     entries: &[CompareEntry],
+    name: &str,
     output_dir: &str,
 ) -> Vec<String> {
     let mut args = vec![script_dir.join(script).to_string_lossy().to_string()];
@@ -94,14 +164,15 @@ fn script_args(
         args.push("--entry".to_string());
         args.push(format!("{}={}", entry.label, entry.file.to_string_lossy()));
     }
+    args.push("--name".to_string());
+    args.push(name.to_string());
     args.push("--output".to_string());
     args.push(output_dir.to_string());
     args
 }
 
-fn write_combined_csv(entries: &[CompareEntry], output_dir: &str) -> Result<PathBuf> {
-    let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-    let out_path = Path::new(output_dir).join(format!("compare-{}.csv", labels.join("-vs-")));
+fn write_combined_csv(entries: &[CompareEntry], name: &str, output_dir: &str) -> Result<PathBuf> {
+    let out_path = Path::new(output_dir).join(output_file_name(name, ".csv"));
 
     let mut header: Option<String> = None;
     let mut rows = Vec::new();
@@ -584,7 +655,12 @@ mod tests {
             },
         ];
 
-        let csv_path = write_combined_csv(&entries, &output_dir.to_string_lossy()).unwrap();
+        let csv_path = write_combined_csv(
+            &entries,
+            "tls-none-vs-tls-all",
+            &output_dir.to_string_lossy(),
+        )
+        .unwrap();
         let csv = std::fs::read_to_string(csv_path).unwrap();
 
         assert!(csv.contains("metadata_label"));
@@ -614,7 +690,12 @@ mod tests {
             },
         ];
 
-        let csv_path = write_combined_csv(&entries, &output_dir.to_string_lossy()).unwrap();
+        let csv_path = write_combined_csv(
+            &entries,
+            "tls-none-vs-tls-all",
+            &output_dir.to_string_lossy(),
+        )
+        .unwrap();
         let csv = std::fs::read_to_string(csv_path).unwrap();
 
         assert!(csv.contains("lost_messages,duplicate_count,out_of_order_count"));
@@ -660,6 +741,101 @@ mod tests {
         );
     }
 
+    fn entries_labelled(labels: &[&str]) -> Vec<CompareEntry> {
+        labels
+            .iter()
+            .map(|label| CompareEntry {
+                label: label.to_string(),
+                file: PathBuf::from(format!("{label}.json")),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn compare_name_defaults_to_the_labels_joined() {
+        let entries = entries_labelled(&["tls-none", "tls-client", "tls-all"]);
+        assert_eq!(
+            compare_name(&entries, None).unwrap(),
+            "tls-none-vs-tls-client-vs-tls-all"
+        );
+    }
+
+    #[test]
+    fn compare_name_uses_the_given_name_however_many_entries() {
+        let labels: Vec<String> = (0..24).map(|i| format!("columnar-read-T{i}")).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        assert_eq!(
+            compare_name(&entries_labelled(&labels), Some("read-strategies")).unwrap(),
+            "read-strategies"
+        );
+    }
+
+    #[test]
+    fn compare_name_rejects_a_default_name_too_long_and_suggests_name() {
+        let labels: Vec<String> = (0..24).map(|i| format!("columnar-read-T{i}")).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+
+        let err = compare_name(&entries_labelled(&labels), None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("the 24 labels joined"), "{err}");
+        assert!(err.contains("over the 255-byte file name limit"), "{err}");
+        assert!(err.contains("Use --name NAME"), "{err}");
+    }
+
+    #[test]
+    fn compare_name_limit_counts_the_longest_output_file() {
+        // compare- (8) + name + -resources.html (15) may total 255 bytes.
+        let fits = "x".repeat(232);
+        assert_eq!(
+            compare_name(&entries_labelled(&["a", "b"]), Some(&fits)).unwrap(),
+            fits
+        );
+
+        let err = compare_name(&entries_labelled(&["a", "b"]), Some(&"x".repeat(233)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("The --name given is too long"), "{err}");
+        assert!(err.contains("256 bytes"), "{err}");
+        assert!(err.contains("at most 232 bytes"), "{err}");
+    }
+
+    #[test]
+    fn compare_name_rejects_an_empty_name_or_a_path() {
+        let entries = entries_labelled(&["a", "b"]);
+        assert!(compare_name(&entries, Some("")).is_err());
+        let err = compare_name(&entries, Some("out/x"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("path separator"), "{err}");
+    }
+
+    #[test]
+    fn write_combined_csv_is_named_after_the_comparison() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tmp.path().join("first.json");
+        let second = tmp.path().join("second.json");
+        write(&first, &run_result("a"));
+        write(&second, &run_result("b"));
+        let entries = vec![
+            CompareEntry {
+                label: "a".into(),
+                file: first,
+            },
+            CompareEntry {
+                label: "b".into(),
+                file: second,
+            },
+        ];
+
+        let csv_path =
+            write_combined_csv(&entries, "my-sweep", &tmp.path().to_string_lossy()).unwrap();
+
+        assert_eq!(csv_path, tmp.path().join("compare-my-sweep.csv"));
+        assert!(csv_path.is_file());
+    }
+
     #[test]
     fn script_args_pass_every_entry_and_the_output() {
         let entries = vec![
@@ -673,13 +849,21 @@ mod tests {
             },
         ];
         assert_eq!(
-            script_args(Path::new("/repo"), RESOURCES_SCRIPT, &entries, "out"),
+            script_args(
+                Path::new("/repo"),
+                RESOURCES_SCRIPT,
+                &entries,
+                "A-vs-B",
+                "out"
+            ),
             vec![
                 "/repo/charts/generate_compare_resource_charts.py",
                 "--entry",
                 "A=r/a.json",
                 "--entry",
                 "B=r/b.json",
+                "--name",
+                "A-vs-B",
                 "--output",
                 "out",
             ]

@@ -127,6 +127,8 @@ Initial public release.
 
 - `dimster compare` accepts drain-backlog results. The comparison shows each entry's drain table, then grouped bars for drain duration, consumer throughput during the drain and, where `drain-disk-reads.json` exists, the disk read fraction. Each test point also gets overlays of backlog messages and consume rate over time. With `--directory`, drain-backlog results are found by their `metadata.label`, as run results are.
 
+- `dimster compare --name NAME` (`-n`) names the output files `compare-NAME.html`, `compare-NAME.csv` and `compare-NAME-resources.*`, in place of every label joined by `-vs-`. Without it, a comparison whose file names would exceed the 255-byte limit now fails before writing anything and suggests `--name`.
+
 - Client dashboard: a Bytes Received panel beside Bytes Sent, and the panels above Consumer Details are grouped into a Throughput row (message and byte rates, totals, errors, client counts) and a Latencies row (every latency panel). Saved dashboard HTML now shows each row's title as a heading over its panels.
 
 ### Changed
