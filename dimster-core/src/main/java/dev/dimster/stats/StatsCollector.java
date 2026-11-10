@@ -21,9 +21,11 @@ import dev.dimster.worker.commands.CountersStats;
 import dev.dimster.worker.commands.PerPartitionStats;
 import dev.dimster.worker.commands.PeriodStats;
 
+/** Collects worker counters and bounded latency histograms for benchmark reporting. */
 public class StatsCollector implements ConsumerCallback {
 
     public static final long NON_E2E_LATENCY_MAX_MICROS = TimeUnit.MINUTES.toMicros(5);
+    // Cap consumer and Flink latencies here so old records from reused topics cannot overflow histograms.
     public static final long E2E_LATENCY_MAX_MICROS = TimeUnit.HOURS.toMicros(12);
 
     /**
@@ -227,7 +229,7 @@ public class StatsCollector implements ConsumerCallback {
             if (endToEndLatencyMicros > 0) {
                 ppE2eLatencyRecorders
                         .computeIfAbsent(key, k -> new Recorder(E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS))
-                        .recordValue(endToEndLatencyMicros);
+                        .recordValue(Math.min(endToEndLatencyMicros, E2E_LATENCY_MAX_MICROS));
                 ppMessagesReceived
                         .computeIfAbsent(key, k -> new LongAdder())
                         .increment();
@@ -242,7 +244,7 @@ public class StatsCollector implements ConsumerCallback {
                 if (deliveryLatencyMicros > 0) {
                     ppE2eDeliveryLatencyRecorders
                             .computeIfAbsent(key, k -> new Recorder(E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS))
-                            .recordValue(deliveryLatencyMicros);
+                            .recordValue(Math.min(deliveryLatencyMicros, E2E_LATENCY_MAX_MICROS));
                 }
             }
         }
@@ -261,7 +263,7 @@ public class StatsCollector implements ConsumerCallback {
         long processingStartTimeNanos = TimeUnit.SECONDS.toNanos(processingStartTime.getEpochSecond()) + processingStartTime.getNano();
         long endToEndLatencyMicros = TimeUnit.NANOSECONDS.toMicros(processingStartTimeNanos - publishTimeNanos);
         if (endToEndLatencyMicros > 0) {
-            endToEndLatencyRecorder.recordValue(endToEndLatencyMicros);
+            endToEndLatencyRecorder.recordValue(Math.min(endToEndLatencyMicros, E2E_LATENCY_MAX_MICROS));
         }
 
         // Delivery e2e latency: from publish to when poll() returns
@@ -270,7 +272,7 @@ public class StatsCollector implements ConsumerCallback {
             long deliveryTimeNanos = TimeUnit.SECONDS.toNanos(deliveryTime.getEpochSecond()) + deliveryTime.getNano();
             long endToEndDeliveryLatencyMicros = TimeUnit.NANOSECONDS.toMicros(deliveryTimeNanos - publishTimeNanos);
             if (endToEndDeliveryLatencyMicros > 0) {
-                endToEndDeliveryLatencyRecorder.recordValue(endToEndDeliveryLatencyMicros);
+                endToEndDeliveryLatencyRecorder.recordValue(Math.min(endToEndDeliveryLatencyMicros, E2E_LATENCY_MAX_MICROS));
             }
         }
     }
@@ -284,13 +286,13 @@ public class StatsCollector implements ConsumerCallback {
         // Like e2e, non-positive values (clock skew between hosts) are dropped.
         long producerToFlinkMicros = flinkEmitMicros - TimeUnit.MILLISECONDS.toMicros(publishTimestampMillis);
         if (producerToFlinkMicros > 0) {
-            producerToFlinkLatencyRecorder.recordValue(producerToFlinkMicros);
+            producerToFlinkLatencyRecorder.recordValue(Math.min(producerToFlinkMicros, E2E_LATENCY_MAX_MICROS));
         }
         long processingStartMicros = TimeUnit.SECONDS.toMicros(processingStartTime.getEpochSecond())
                 + processingStartTime.getNano() / 1_000;
         long flinkToConsumerMicros = processingStartMicros - flinkEmitMicros;
         if (flinkToConsumerMicros > 0) {
-            flinkToConsumerLatencyRecorder.recordValue(flinkToConsumerMicros);
+            flinkToConsumerLatencyRecorder.recordValue(Math.min(flinkToConsumerMicros, E2E_LATENCY_MAX_MICROS));
         }
     }
 
