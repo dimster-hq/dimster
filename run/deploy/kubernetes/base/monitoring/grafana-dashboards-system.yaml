@@ -976,7 +976,7 @@ data:
         },
         {
           "title": "Disk Read Throughput per Pod",
-          "description": "Bytes the pod's containers read from block devices; page cache hits are not counted.",
+          "description": "Bytes the pod's containers read from block devices; page cache hits are not counted. Whole disks only, so I/O through a dm volume counts once.",
           "type": "timeseries",
           "gridPos": {
             "h": 8,
@@ -1003,14 +1003,14 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{container!=\"\", container!=\"POD\"}[1m]))",
+              "expr": "sum by (pod) (rate(container_fs_reads_bytes_total{container!=\"\", container!=\"POD\", device=~\"(/dev/)?(nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+)\"}[1m]))",
               "legendFormat": "{{pod}}"
             }
           ]
         },
         {
           "title": "Disk Write Throughput per Pod",
-          "description": "Bytes written to block devices on behalf of the pod's containers, including the kernel's later writeback of their dirty pages.",
+          "description": "Bytes written to block devices on behalf of the pod's containers, including the kernel's later writeback of their dirty pages. Whole disks only, so I/O through a dm volume counts once.",
           "type": "timeseries",
           "gridPos": {
             "h": 8,
@@ -1037,14 +1037,14 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{container!=\"\", container!=\"POD\"}[1m]))",
+              "expr": "sum by (pod) (rate(container_fs_writes_bytes_total{container!=\"\", container!=\"POD\", device=~\"(/dev/)?(nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+)\"}[1m]))",
               "legendFormat": "{{pod}}"
             }
           ]
         },
         {
           "title": "Disk IOPS per Pod",
-          "description": "Read and write operations the pod's containers issued to block devices.",
+          "description": "Read and write operations the pod's containers issued to block devices. Whole disks only, so I/O through a dm volume counts once.",
           "type": "timeseries",
           "gridPos": {
             "h": 8,
@@ -1071,11 +1071,11 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (pod) (rate(container_fs_reads_total{container!=\"\", container!=\"POD\"}[1m]))",
+              "expr": "sum by (pod) (rate(container_fs_reads_total{container!=\"\", container!=\"POD\", device=~\"(/dev/)?(nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+)\"}[1m]))",
               "legendFormat": "read {{pod}}"
             },
             {
-              "expr": "sum by (pod) (rate(container_fs_writes_total{container!=\"\", container!=\"POD\"}[1m]))",
+              "expr": "sum by (pod) (rate(container_fs_writes_total{container!=\"\", container!=\"POD\", device=~\"(/dev/)?(nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+)\"}[1m]))",
               "legendFormat": "write {{pod}}"
             }
           ]

@@ -140,3 +140,4 @@ Initial public release.
 ### Fixed
 
 - The drain-backlog docs and chart table treated `backlogProducerRate: -1` as "paused"; the default is 0, and any value of 0 or less pauses producers.
+- With `monitoring.cgroupMetrics`, per-pod disk I/O (the resources report's disk MB/s, IOPS and page cache estimates, and the Containers dashboard) counted each operation once per block device layer. On a dm volume, such as an emulated network volume, that tripled it: cAdvisor reports the dm device, the disk under it and a series with no device. Per-pod disk I/O now counts whole disks only, as the node disk metrics do.
