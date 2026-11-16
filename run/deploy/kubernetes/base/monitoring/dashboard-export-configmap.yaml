@@ -1207,6 +1207,12 @@ data:
     # Whole-disk device names: NVMe namespaces, SCSI, Xen and virtio disks.
     # Partitions and md/dm devices are left out, as they would count reads twice.
     WHOLE_DISK_DEVICES = 'nvme[0-9]+n[0-9]+|sd[a-z]+|xvd[a-z]+|vd[a-z]+'
+    # The same disks in cAdvisor's device label (/dev/<name>). cAdvisor
+    # reports a container's I/O once per device of its cgroup's io.stat, plus
+    # a series with no device, so on a dm volume (such as an emulated network
+    # volume) summing every series counts each read three times: the dm
+    # device, the disk under it and the device-less series.
+    CADVISOR_WHOLE_DISKS = f'device=~"(/dev/)?({WHOLE_DISK_DEVICES})"'
 
     # How far past a drain's end to evaluate, so the scrape after the end
     # (scrape interval 10s) is included; the extra seconds are idle.
@@ -1356,17 +1362,19 @@ data:
         are totals over the window (CPU seconds, bytes, operations, CFS
         periods); peak CPU, the CPU limit and the page cache are gauges.
         Container series only (container!=""), which leaves out the
-        pod-level cgroup and the pause container, so each pod counts once."""
+        pod-level cgroup and the pause container, so each pod counts once.
+        Disk counters count whole disks only (CADVISOR_WHOLE_DISKS)."""
         sel = f'{{namespace="{ns}", container!="", container!="POD"}}'
+        disk_sel = f'{{namespace="{ns}", container!="", container!="POD", {CADVISOR_WHOLE_DISKS}}}'
         pod_sel = f'{{namespace="{ns}"}}'
         def total(metric, selector=sel, dedupe_by=''):
             return deltas(prom_url, f'{metric}{selector}', at, offset_s, 'pod', dedupe_by)
         metrics = {
             'cpuSeconds': total('container_cpu_usage_seconds_total'),
-            'diskReadBytes': total('container_fs_reads_bytes_total'),
-            'diskWriteBytes': total('container_fs_writes_bytes_total'),
-            'diskReadOps': total('container_fs_reads_total'),
-            'diskWriteOps': total('container_fs_writes_total'),
+            'diskReadBytes': total('container_fs_reads_bytes_total', disk_sel),
+            'diskWriteBytes': total('container_fs_writes_bytes_total', disk_sel),
+            'diskReadOps': total('container_fs_reads_total', disk_sel),
+            'diskWriteOps': total('container_fs_writes_total', disk_sel),
             'netRxBytes': total('container_network_receive_bytes_total', pod_sel,
                                 'pod, interface'),
             'netTxBytes': total('container_network_transmit_bytes_total', pod_sel,
@@ -1512,6 +1520,7 @@ data:
         value averages the rate_s seconds before its time, which the series
         records as rateSeconds so charts can centre it."""
         sel = f'{{namespace="{ns}", container!="", container!="POD"}}'
+        disk_sel = f'{{namespace="{ns}", container!="", container!="POD", {CADVISOR_WHOLE_DISKS}}}'
         pod_sel = f'{{namespace="{ns}"}}'
         disks = f'{{device=~"{WHOLE_DISK_DEVICES}"}}'
         r = f'{rate_s}s'
@@ -1522,10 +1531,10 @@ data:
             'cpuThrottledShare': (
                 f'sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{sel}[{r}])) / '
                 f'sum by (pod) (rate(container_cpu_cfs_periods_total{sel}[{r}]))'),
-            'diskReadBytesPerSec': f'sum by (pod) (rate(container_fs_reads_bytes_total{sel}[{r}]))',
-            'diskWriteBytesPerSec': f'sum by (pod) (rate(container_fs_writes_bytes_total{sel}[{r}]))',
-            'diskReadIops': f'sum by (pod) (rate(container_fs_reads_total{sel}[{r}]))',
-            'diskWriteIops': f'sum by (pod) (rate(container_fs_writes_total{sel}[{r}]))',
+            'diskReadBytesPerSec': f'sum by (pod) (rate(container_fs_reads_bytes_total{disk_sel}[{r}]))',
+            'diskWriteBytesPerSec': f'sum by (pod) (rate(container_fs_writes_bytes_total{disk_sel}[{r}]))',
+            'diskReadIops': f'sum by (pod) (rate(container_fs_reads_total{disk_sel}[{r}]))',
+            'diskWriteIops': f'sum by (pod) (rate(container_fs_writes_total{disk_sel}[{r}]))',
             'netRxBytesPerSec': net.format('container_network_receive_bytes_total', pod_sel),
             'netTxBytesPerSec': net.format('container_network_transmit_bytes_total', pod_sel),
         }

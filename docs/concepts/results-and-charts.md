@@ -172,7 +172,7 @@ environments:
       cgroupMetrics: true
 ```
 
-Prometheus then scrapes every kubelet's cAdvisor, which reads each container's cgroup counters: CPU time and throttling, block device reads and writes, page cache and network. These are per container even when services share a node. Disk counters only include I/O that reaches a block device, so page cache hits aren't counted. The kernel's later writeback of a container's dirty pages is charged to that container.
+Prometheus then scrapes every kubelet's cAdvisor, which reads each container's cgroup counters: CPU time and throttling, block device reads and writes, page cache and network. These are per container even when services share a node. Disk counters only include I/O that reaches a block device, so page cache hits aren't counted. The kernel's later writeback of a container's dirty pages is charged to that container. Only whole disks (`nvme*n*`, `sd*`, `xvd*`, `vd*`) are counted: cAdvisor reports I/O once per device it passes through, so I/O to a dm volume (such as an emulated network volume) would otherwise count once for the dm device and again for the disk under it.
 
 Scraping the kubelets needs a ClusterRole on nodes (`get`, `list` and `watch` on `nodes`, `nodes/proxy` and `nodes/metrics`), bound to the Prometheus ServiceAccount. `dimster deploy` creates it as `dimster-prometheus-<namespace>`, and `dimster teardown` removes it. Because it's a cluster-scoped permission, it's off by default. Only the namespace's containers and the metrics the report uses are stored.
 

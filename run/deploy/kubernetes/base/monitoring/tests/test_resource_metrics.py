@@ -124,6 +124,41 @@ class ResourceMetricsTests(unittest.TestCase):
         self.assertNotIn('container!=""', rx)
         self.assertIn('max by (pod, interface)', rx)
 
+    def test_cadvisor_disk_selector_matches_whole_disks_only(self):
+        # Prometheus regexes are fully anchored, like re.fullmatch.
+        regex = self.ns['CADVISOR_WHOLE_DISKS'].split('=~', 1)[1].strip('"')
+        for device in ('/dev/nvme1n1', '/dev/sda', '/dev/xvdb', '/dev/vda', 'nvme0n1'):
+            self.assertRegex(device, f'^(?:{regex})$')
+        # dm volumes, partitions, loop devices and the device-less series
+        # would each count the same I/O again.
+        for device in ('/dev/dm-0', '/dev/nvme1n1p1', '/dev/sda1', '/dev/loop0', ''):
+            self.assertNotRegex(device, f'^(?:{regex})$')
+
+    def test_pod_disk_totals_count_whole_disks_once(self):
+        # cAdvisor's series for one read through a dm volume: the dm device,
+        # the disk under it and the device-less series. Only the disk's
+        # series match the whole-disk selector the query must carry.
+        whole = self.ns['CADVISOR_WHOLE_DISKS']
+        self.prom.on_instant(f'container_fs_reads_total{{namespace="bench", container!="", '
+                             f'container!="POD", {whole}}}', [({'pod': 'kafka-0'}, 1000.0)])
+        self.prom.on_instant('container_fs_reads_total{namespace="bench", container!="", '
+                             'container!="POD"}', [({'pod': 'kafka-0'}, 3000.0)])
+
+        pods, _ = self.ns['pod_window_metrics']('p', 'bench', START, 300)
+
+        self.assertEqual(pods['kafka-0']['diskReadOps'], 1000.0)
+        disk_exprs = [q for q, _ in self.prom.queries if 'container_fs_' in q]
+        self.assertEqual(len(disk_exprs), 4)
+        for expr in disk_exprs:
+            self.assertIn(whole, expr)
+
+    def test_timeseries_disk_rates_count_whole_disks_once(self):
+        self.ns['resource_timeseries']('p', 'dimster', START, START, 15)
+        disk_exprs = [q for q, _ in self.prom.queries if 'container_fs_' in q]
+        self.assertEqual(len(disk_exprs), 4)
+        for expr in disk_exprs:
+            self.assertIn(self.ns['CADVISOR_WHOLE_DISKS'], expr)
+
     def test_window_places_pods_and_names_nodes(self):
         self.prom.on_instant('group by (pod, node)', [
             ({'pod': 'kafka-0', 'node': 'k3d-dimster-server-0'}, 1)])
