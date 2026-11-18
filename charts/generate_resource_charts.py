@@ -129,6 +129,14 @@ DISK_BUSY_SATURATED = 0.90      # busiest whole disk's busy time
 IO_PRESSURE_HIGH = 0.25         # PSI: share of time some task waited on IO
 NETWORK_SATURATED = 0.80        # node rx or tx / link speed
 
+# Per-pod disk bytes above their node's whole-disk bytes by this factor mean
+# the export counted each operation once per device layer (dm volume, the
+# disk under it, the device-less series), as exports before per-pod disk
+# I/O was limited to whole disks did. Below DISK_OVERCOUNT_MIN_BYTES the
+# comparison is noise.
+DISK_OVERCOUNT_RATIO = 1.5
+DISK_OVERCOUNT_MIN_BYTES = 100 * 1_000_000
+
 # resource-metrics.json holds counters as totals over each window; the report
 # shows them as totals and as per-second rates over the window's
 # measuredSeconds: {rate key: total key}.
@@ -369,6 +377,23 @@ def find_bottlenecks(window):
     return flags
 
 
+def disk_overcount(window):
+    """The largest ratio of the disk bytes (read and written) of the pods on
+    a node to that node's whole-disk bytes, when it shows the pods' disk
+    I/O was counted more than once; None otherwise."""
+    disk = lambda m: m.get("diskReadBytes", 0.0) + m.get("diskWriteBytes", 0.0)  # noqa: E731
+    on_node = {}
+    for pod, node in window.get("podNodes", {}).items():
+        on_node[node] = on_node.get(node, 0.0) + disk(window.get("pods", {}).get(pod, {}))
+    worst = None
+    for node, pod_bytes in on_node.items():
+        node_bytes = disk(window.get("nodes", {}).get(node, {}))
+        if (node_bytes and pod_bytes >= DISK_OVERCOUNT_MIN_BYTES
+                and pod_bytes > DISK_OVERCOUNT_RATIO * node_bytes):
+            worst = max(worst or 0.0, pod_bytes / node_bytes)
+    return worst
+
+
 def _flag(resource, where, services, detail):
     return {"resource": resource, "where": where, "services": services, "detail": detail,
             "shared": len(services) > 1}
@@ -431,6 +456,7 @@ def analyze(data, resources):
                                         dict_or_empty(test.get("drain")).get("backlogSizeBytes"),
                                         cgroup),
                 "bottlenecks": find_bottlenecks(window),
+                "diskOvercount": disk_overcount(raw),
                 # The test point's own series (finer, around its window).
                 "timeseries": raw.get("timeseries"),
             })
@@ -752,6 +778,21 @@ def measured_span_note(points):
             f'that slack: {spans}. Totals (page cache vs disk) are not diluted.</p>')
 
 
+def disk_overcount_note(points):
+    """A warning naming test points whose pods read and wrote more than their
+    nodes' whole disks did: their per-pod disk figures are inflated."""
+    over = [p for p in points if p.get("diskOvercount")]
+    if not over:
+        return ""
+    names = ", ".join(f"{html.escape(p['display'])} ({p['diskOvercount']:.1f}x)" for p in over)
+    return (f'<p class="note warning">Per-pod disk I/O exceeds the whole-disk I/O of the nodes '
+            f'the pods ran on: {names}. Exports from before per-pod disk I/O was limited to whole '
+            f'disks count each operation once per device layer (on a dm volume, 2-3 times), so the '
+            f'per-pod and per-service disk figures, and the page cache estimates, are inflated. '
+            f'Re-export resource-metrics.json from the run\'s Prometheus snapshot to correct '
+            f'them.</p>')
+
+
 def single(points):
     """One run's test points as table groups: each its own group, unlabelled."""
     return [[(None, p)] for p in points]
@@ -929,6 +970,7 @@ def build_html(data, points, resources):
 peak pod CPU is the busiest pod's 1-minute peak. CPU throttled is the share of CFS periods in which
 the service's pods were held back by their CPU limits (– without limits). CPU cost is core-seconds
 per GB of client throughput. <b>All</b> sums brokers, Flink and workers.</p>
+{disk_overcount_note(points)}
 {measured_span_note(points)}
 {summary_table(single(points))}
 <h3>Totals</h3>
@@ -1039,6 +1081,7 @@ h2 {{ font-size: 18px; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 
 h3 {{ font-size: 15px; color: #4a4a6a; margin: 24px 0 12px; }}
 .note {{ font-size: 13px; color: #6a6a7a; padding: 10px 14px; background: #f0f1f3; border-radius: 6px;
         margin-bottom: 14px; }}
+.note.warning {{ background: #fdecea; color: #8a1c12; }}
 .note code {{ background: #e0e2e6; padding: 1px 5px; border-radius: 3px; }}
 .table-wrap {{ overflow-x: auto; margin-bottom: 20px; }}
 table {{ width: 100%; border-collapse: collapse; font-size: 12px; background: #fff; border-radius: 8px;
