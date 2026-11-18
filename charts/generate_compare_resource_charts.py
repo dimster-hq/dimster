@@ -43,6 +43,7 @@ from generate_resource_charts import (  # noqa: E402
     measured_span_note,
     service_rows,
     summary_table,
+    totals_table,
     write_csv,
 )
 from generate_run_charts import dict_or_empty, text_or_empty  # noqa: E402
@@ -93,7 +94,7 @@ def compare_rows(measured):
 
 
 def build_html(measured, missing):
-    """The comparison page: the three tables, entries side by side."""
+    """The comparison page: the four tables, entries side by side."""
     groups = test_point_groups(measured)
     labels = [label for label, *_ in measured]
     no_cgroup = [label for label, _d, res, _p in measured if not res.get("cgroupMetrics")]
@@ -116,6 +117,9 @@ def build_html(measured, missing):
 with each entry's row side by side. See each run's resources report for its charts.</p>
 {measured_span_note(labelled_points)}
 {summary_table(groups)}</section>""",
+        f"""<section id="totals"><h2>Totals</h2>
+<p class="note">Totals over each test point's measured span, summed over each service's pods.</p>
+{totals_table(groups)}</section>""",
         f"""<section id="cache"><h2>Page cache vs disk</h2>
 <p class="note">Totals over each test point's window. Estimates: broker logical reads are what
 brokers served to consumers and followers; what they did not read from disk is assumed to come from
@@ -125,7 +129,7 @@ the page cache.</p>
         f'<section id="bottlenecks"><h2>Bottlenecks</h2>{bottleneck_table(groups)}</section>',
     ]
     nav = "".join(f'<a class="nav-link" href="#{sid}">{name}</a>' for sid, name in
-                  (("summary", "Summary"), ("cache", "Page cache vs disk"),
+                  (("summary", "Summary"), ("totals", "Totals"), ("cache", "Page cache vs disk"),
                    ("bottlenecks", "Bottlenecks")))
     meta = "".join(
         f'<div><span class="label">{html.escape(label)}:</span> '

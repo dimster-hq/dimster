@@ -313,7 +313,7 @@ For drain-backlog results, each scenario's comparison holds:
 
 With `--directory`, drain-backlog results need a `metadata.label`, set with `--metadata label=...` when running, as run results do.
 
-For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<name>-resources.html` and `compare-<name>-resources.csv`. The page sets the entries side by side in three tables: the per-service summary, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
+For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<name>-resources.html` and `compare-<name>-resources.csv`. The page sets the entries side by side in four tables: the per-service summary, the per-service totals, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
 
 #### Pivoted comparison
 

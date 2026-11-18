@@ -80,8 +80,11 @@ class ServicesTest(unittest.TestCase):
                         nodes={"n1": {"diskReadBytes": 2.99e9, "cpuUtil": 0.4}}),
                  measuredSeconds=299)
         rated = charts.rated_window(w)
-        self.assertEqual(rated["pods"]["kafka-0"], {"cpuCores": 2.0, "cpuCoresPeak": 2.5})
-        self.assertEqual(rated["nodes"]["n1"], {"diskReadBytesPerSec": 1e7, "cpuUtil": 0.4})
+        # Each total is kept beside its rate.
+        self.assertEqual(rated["pods"]["kafka-0"],
+                         {"cpuSeconds": 598.0, "cpuCores": 2.0, "cpuCoresPeak": 2.5})
+        self.assertEqual(rated["nodes"]["n1"],
+                         {"diskReadBytes": 2.99e9, "diskReadBytesPerSec": 1e7, "cpuUtil": 0.4})
 
     def test_service_usage_sums_its_pods_and_keeps_the_busiest_peak(self):
         w = window(pods={"kafka-0": pod(2.0, read=1e6, cpuCoresPeak=3.0),
@@ -94,6 +97,21 @@ class ServicesTest(unittest.TestCase):
         self.assertEqual(usage["cpuCoresPeakPod"], 3.0)
         self.assertIsNone(charts.service_usage(charts.rated_window(w), "flink"))
 
+
+    def test_service_totals_sum_the_pods_window_totals(self):
+        # Totals are the stored counters, not rates times the window length.
+        w = dict(window(pods={"kafka-0": {"diskReadOps": 600.0, "diskReadBytes": 2e9,
+                                          "cpuSeconds": 90.0},
+                              "kafka-1": {"diskReadOps": 400.0, "netTxBytes": 5e9},
+                              "benchmark-worker-a": {"diskReadOps": 7.0}}),
+                 measuredSeconds=100, seconds=50)
+        services = charts.analyze(run_result("p0"), resources(w))[0]["services"]
+        brokers, total = services["brokers"], services["all"]
+        self.assertEqual((brokers["diskReadOps"], brokers["diskReadBytes"],
+                          brokers["cpuSeconds"], brokers["netTxBytes"]),
+                         (1000.0, 2e9, 90.0, 5e9))
+        self.assertEqual(brokers["diskReadIops"], 10.0)
+        self.assertEqual(total["diskReadOps"], 1007.0)
 
     def test_throttling_is_the_share_of_the_services_periods(self):
         # 3 of 10 periods and 1 of 30: 4 of 40, weighted by periods, not averaged per pod.
@@ -272,6 +290,19 @@ class OutputTest(unittest.TestCase):
         logical = header.index("kafka_logical_read_mb")
         self.assertEqual([r[logical] for r in body], ["", "", 1.0, "", ""])
 
+    def test_service_csv_totals_follow_the_existing_columns(self):
+        data = run_result("p0")
+        res = resources(window(pods={"kafka-0": {"cpuSeconds": 30.0, "diskReadBytes": 2.5e9,
+                                                 "diskWriteOps": 1200.0}}))
+        header, row = charts.service_rows(charts.analyze(data, res))[:2]
+        self.assertEqual(header[-7:], ["cpu_core_s", "disk_read_gb", "disk_write_gb",
+                                       "disk_read_ops", "disk_write_ops", "net_rx_gb",
+                                       "net_tx_gb"])
+        self.assertEqual(header.index("disk_read_per_backlog_byte"), len(header) - 8)
+        values = dict(zip(header, row))
+        self.assertEqual((values["cpu_core_s"], values["disk_read_gb"], values["disk_write_ops"]),
+                         (30.0, 2.5, 1200.0))
+
     def test_node_csv_is_in_percent_and_mb_with_the_raw_test_label(self):
         data = run_result("p0")
         data["scenarioResults"].append({"name": "other", "tests": []})
@@ -283,6 +314,8 @@ class OutputTest(unittest.TestCase):
         row = dict(zip(rows[0], rows[1]))
         self.assertEqual((row["label"], row["node"], row["services"]), ("p0", "n1", "Brokers"))
         self.assertEqual((row["cpu_util_pct"], row["disk_read_mb_s"]), (50.0, 2.0))
+        # 2 MB/s over the 300s window.
+        self.assertEqual(row["disk_read_gb"], 0.6)
 
     def test_timeseries_rows_skip_gaps_and_other_pods(self):
         ts = {"times": [T0, T0 + 15], "nodes": {"n1": {"cpuUtil": [0.5, None]}},
@@ -342,6 +375,41 @@ class OutputTest(unittest.TestCase):
         self.assertIn('"bands": [{"from": 0.0, "to": 300.0, "label": "p0"}]', page)
         self.assertIn("CPU Throttled (% of periods)", page)
         self.assertIn("CPU, Sum of Pods (cores)", page)
+
+    def test_bars_label_scenarios_on_their_own_line_and_fill_the_card(self):
+        data = run_result("p0")
+        data["scenarioResults"].append({"name": "zstd", "tests": [{"label": "p0", "results": {}}]})
+        res = resources(window(pods={"kafka-0": pod(1.0)}),
+                        window(scenario="zstd", pods={"kafka-0": pod(2.0)}))
+        points = charts.analyze(data, res)
+        bars = charts.service_charts("brokers", points, res, [])[0][1]
+        self.assertEqual(bars[0]["config"]["data"]["labels"], [["sweep", "p0"], ["zstd", "p0"]])
+        self.assertFalse(bars[0]["config"]["options"]["maintainAspectRatio"])
+        # One scenario: the label alone.
+        single = charts.analyze(run_result("p0"), resources(window(pods={"kafka-0": pod(1.0)})))
+        self.assertEqual(charts.axis_label(single[0]), "p0")
+
+    def test_page_shows_totals_beside_averages(self):
+        data = run_result("p0", "p1")
+        res = resources(window(index=0, pods={"kafka-0": {"diskReadOps": 1500.0}},
+                               nodes={"n1": {"netTxBytes": 3e9}}),
+                        window(index=1, pods={"kafka-0": {"diskReadOps": 2500.0}}))
+        points = charts.analyze(data, res)
+        page = charts.build_html(data, points, res)
+        brokers = page[page.index('<section id="brokers">'):page.index('<section id="nodes">')]
+        self.assertLess(brokers.index("<h3>Averages</h3>"), brokers.index("<h3>Totals</h3>"))
+        # No time series in the fixture: the empty Over time group is left out.
+        self.assertNotIn("<h3>Over time</h3>", brokers)
+        configs = {c["id"]: c["config"] for _t, charts_ in
+                   charts.service_charts("brokers", points, res, []) for c in charts_}
+        ops = configs["brokers-total-3"]
+        self.assertEqual(ops["options"]["plugins"]["title"]["text"], "Disk Read Ops (ops)")
+        self.assertEqual(ops["data"]["datasets"][0]["data"], [1500.0, 2500.0])
+        nodes = {c["id"]: c["config"] for _t, charts_ in charts.node_charts(points, res, [])
+                 for c in charts_}
+        self.assertEqual(nodes["nodes-total-3"]["data"]["datasets"][0]["data"], [3.0, 0])
+        self.assertIn("<th>Read ops</th>", page)
+        self.assertIn('<td class="num">1,500</td>', page)
 
     def test_bands_accept_java_nanosecond_instants(self):
         # Instant.toString() writes up to nine fractional digits.
