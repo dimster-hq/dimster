@@ -329,12 +329,23 @@ enum Commands {
         /// compare-NAME.csv, etc. (default: the labels joined by -vs-)
         #[arg(short, long)]
         name: Option<String>,
+
+        /// Pivot the comparison: one section per test point, with the
+        /// scenarios on the x-axis and a series per scenario per entry
+        /// (run and drain-backlog results). Writes compare-NAME-pivot.html
+        #[arg(long)]
+        pivot: bool,
+
+        /// With --pivot, CSV of 0-indexed scenario positions to include
+        /// (e.g. "0,3,5"). Order is preserved, so this also reorders the legend.
+        #[arg(short, long, requires = "pivot")]
+        scenarios: Option<String>,
     },
 
     /// Pivot a single result file: scenarios become the comparison axis,
     /// each array index (test label) becomes its own section
     Pivot {
-        /// Path to a single run result JSON file
+        /// Path to a single run or drain-backlog result JSON file
         file: String,
 
         /// Output directory (default: directory of input file)
@@ -847,12 +858,16 @@ fn run_command(cli: Cli) -> Result<()> {
             directory,
             output,
             name,
+            pivot,
+            scenarios,
         } => {
             commands::compare::run(
                 &files,
                 directory.as_deref(),
                 output.as_deref(),
                 name.as_deref(),
+                pivot,
+                scenarios.as_deref(),
                 &script_dir,
             )?;
         }

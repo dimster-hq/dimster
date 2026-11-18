@@ -16,6 +16,8 @@ pub fn run(
     directory: Option<&str>,
     output: Option<&str>,
     name: Option<&str>,
+    pivot: bool,
+    scenarios: Option<&str>,
     script_dir: &Path,
 ) -> Result<()> {
     let entries = compare_entries(files, directory)?;
@@ -43,15 +45,21 @@ pub fn run(
     std::fs::create_dir_all(&output_dir)?;
 
     let labels: Vec<&str> = entries.iter().map(|e| e.label.as_str()).collect();
-    println!("==> Comparing {}...", labels.join(" vs "));
+    let pivoted = if pivot {
+        " (pivoted by test point)"
+    } else {
+        ""
+    };
+    println!("==> Comparing {}{pivoted}...", labels.join(" vs "));
 
     let status = Command::new("python3")
-        .args(script_args(
+        .args(chart_args(
             script_dir,
-            COMPARE_SCRIPT,
             &entries,
             &name,
             &output_dir,
+            pivot,
+            scenarios,
         ))
         .status()?;
     if !status.success() {
@@ -84,6 +92,9 @@ pub fn run(
 
 /// The run comparison's charts.
 const COMPARE_SCRIPT: &str = "charts/generate_compare_charts.py";
+/// The `--pivot` comparison's charts: one section per test point, with the
+/// scenarios as the x-axis (writes `compare-NAME-pivot.html`).
+const PIVOT_SCRIPT: &str = "charts/generate_pivot_charts.py";
 /// The comparison of the entries' resources report data, where they have it.
 const RESOURCES_SCRIPT: &str = "charts/generate_compare_resource_charts.py";
 
@@ -92,8 +103,30 @@ const RESOURCES_SCRIPT: &str = "charts/generate_compare_resource_charts.py";
 const MAX_FILE_NAME_BYTES: usize = 255;
 
 /// The longest suffix any comparison output file adds after `compare-NAME`
-/// (the resources page from RESOURCES_SCRIPT).
+/// (the resources page from RESOURCES_SCRIPT; the pivot's `-pivot.html` is
+/// shorter).
 const LONGEST_OUTPUT_SUFFIX: &str = "-resources.html";
+
+/// python3 arguments for the script that draws the comparison's charts: the
+/// scenario-first comparison, or with `--pivot` the test-point-first one,
+/// which alone takes the `--scenarios` filter (clap rejects it without
+/// `--pivot`). The CSV and resource comparison always cover every scenario.
+fn chart_args(
+    script_dir: &Path,
+    entries: &[CompareEntry],
+    name: &str,
+    output_dir: &str,
+    pivot: bool,
+    scenarios: Option<&str>,
+) -> Vec<String> {
+    let script = if pivot { PIVOT_SCRIPT } else { COMPARE_SCRIPT };
+    let mut args = script_args(script_dir, script, entries, name, output_dir);
+    if let (true, Some(scenarios)) = (pivot, scenarios) {
+        args.push("--scenarios".to_string());
+        args.push(scenarios.to_string());
+    }
+    args
+}
 
 /// The NAME in the comparison's output file names (`compare-NAME.html`,
 /// `compare-NAME.csv`, `compare-NAME-resources.html`, ...). It is the
@@ -834,6 +867,35 @@ mod tests {
 
         assert_eq!(csv_path, tmp.path().join("compare-my-sweep.csv"));
         assert!(csv_path.is_file());
+    }
+
+    #[test]
+    fn pivot_selects_the_pivot_chart_script_and_its_scenarios_filter() {
+        let entries = vec![
+            CompareEntry {
+                label: "A".into(),
+                file: PathBuf::from("r/a.json"),
+            },
+            CompareEntry {
+                label: "B".into(),
+                file: PathBuf::from("r/b.json"),
+            },
+        ];
+        let args = |pivot, scenarios| {
+            chart_args(Path::new("/repo"), &entries, "n", "out", pivot, scenarios)
+        };
+
+        let plain = args(false, None);
+        assert_eq!(plain[0], "/repo/charts/generate_compare_charts.py");
+        assert!(!plain.contains(&"--scenarios".to_string()));
+
+        let pivoted = args(true, Some("2,0"));
+        assert_eq!(pivoted[0], "/repo/charts/generate_pivot_charts.py");
+        assert_eq!(pivoted[pivoted.len() - 2..], ["--scenarios", "2,0"]);
+        assert_eq!(args(true, None).len(), plain.len());
+
+        // The pivot page's file name must fit within the name limit too.
+        assert!("-pivot.html".len() <= LONGEST_OUTPUT_SUFFIX.len());
     }
 
     #[test]

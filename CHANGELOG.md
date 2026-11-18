@@ -129,6 +129,9 @@ Initial public release.
 
 - `dimster compare --name NAME` (`-n`) names the output files `compare-NAME.html`, `compare-NAME.csv` and `compare-NAME-resources.*`, in place of every label joined by `-vs-`. Without it, a comparison whose file names would exceed the 255-byte limit now fails before writing anything and suggests `--name`.
 
+- `dimster compare --pivot` lays a comparison out by test point rather than by scenario: one section per test point, with the scenarios on the x-axis of the aggregate bars and a bar per entry, and time series with a line per scenario per entry (colour for the scenario, dash for the entry). Each scenario has its own colour; entries are told apart by dash, then past four entries by shade, and the chart legends draw each line's style. It writes `compare-NAME-pivot.html` and takes run and drain-backlog results whose scenarios share the same test points. `--scenarios` (`-s`) picks and orders the scenarios to include, as for `dimster pivot`.
+- `dimster pivot` accepts drain-backlog results: per test point, drain duration, consumer throughput and disk read fraction bars across the scenarios, a drain table per scenario, and backlog and consume rate over time. Its page header now shows the same metadata as the compare page, and each scenario has its own colour (the previous palette paired each hue with a lighter shade of it, so two scenarios could both be blue).
+
 - Client dashboard: a Bytes Received panel beside Bytes Sent, and the panels above Consumer Details are grouped into a Throughput row (message and byte rates, totals, errors, client counts) and a Latencies row (every latency panel). Saved dashboard HTML now shows each row's title as a heading over its panels.
 
 ### Changed

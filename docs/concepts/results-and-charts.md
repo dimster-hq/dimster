@@ -188,4 +188,4 @@ Without `cgroupMetrics`, the report shows only the node-level figures, and the p
 
 `dimster csv <result-file.json>` converts the JSON result file into a CSV file, which can be used with other charting options / placing in a spreadsheet.
 
-`dimster pivot <result-file.json>` creates charts which create a plot per dimension index and each scenario is a series (rather than a plot per scenario with test points as series).
+`dimster pivot <result-file.json>` creates charts which create a plot per dimension index and each scenario is a series (rather than a plot per scenario with test points as series). It takes run and drain-backlog results. `dimster compare --pivot` does the same over several results, with a series per scenario per result.
