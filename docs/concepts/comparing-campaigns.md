@@ -105,6 +105,10 @@ results/2026-04-23-09-47-15/run-classic-scaling-10-120MBs-2026-04-23-09-47-15.js
 
 The labels (`3.7.2`, `4.2.0`) become the series names on the comparison charts. Output charts default to the directory of the first file; pass `--output <dir>` to write them somewhere else.
 
+### Pivoted comparison
+
+The comparison page has a section per scenario, with the test points on the x-axis. When the workload's scenarios sweep the same test points (say, batch sizes) and differ in something else (say, the read strategy), it can be clearer to compare the scenarios at each test point instead. `--pivot` does that: one section per test point, with the scenarios on the x-axis and a bar per entry, and time series with a line per scenario per entry (colour for the scenario, dash for the entry). It writes `compare-<name>-pivot.html`, and takes run and drain-backlog results. See [`compare --pivot`](../reference/cli.md#pivoted-comparison).
+
 The same pattern works for any cluster-level comparison: swap the broker config, swap the instance type, swap the broker count, swap the storage class. One env block per variant, same workload, then `dimster compare`.
 
 ## Where to go next

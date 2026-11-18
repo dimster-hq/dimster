@@ -1060,36 +1060,36 @@ def build_compare_scenario_sections(entries, chart_configs, chart_sections):
     return "\n".join(sections)
 
 
-def build_legend_hint(entries):
-    """Build a legend showing line style per file."""
-    n = len(entries)
-    labels = [e[0] for e in entries]
-
-    def dash_css(file_index):
-        color = file_palette(file_index)[0]
-        style_index = file_index % len(FILE_DASHES)
-        if style_index == 0:
-            return f"background: {color};"
-        if style_index == 1:
-            return (
-                f"background: repeating-linear-gradient(90deg, {color} 0, "
-                f"{color} 6px, transparent 6px, transparent 9px);"
-            )
-        if style_index == 2:
-            return (
-                f"background: repeating-linear-gradient(90deg, {color} 0, "
-                f"{color} 2px, transparent 2px, transparent 5px);"
-            )
+def dash_swatch_css(color, dash_index):
+    """CSS background drawing a short line in a FILE_DASHES style, for
+    legend hints outside the charts."""
+    style_index = dash_index % len(FILE_DASHES)
+    if style_index == 0:
+        return f"background: {color};"
+    if style_index == 1:
         return (
             f"background: repeating-linear-gradient(90deg, {color} 0, "
-            f"{color} 6px, transparent 6px, transparent 9px, {color} 9px, "
-            f"{color} 11px, transparent 11px, transparent 14px);"
+            f"{color} 6px, transparent 6px, transparent 9px);"
         )
+    if style_index == 2:
+        return (
+            f"background: repeating-linear-gradient(90deg, {color} 0, "
+            f"{color} 2px, transparent 2px, transparent 5px);"
+        )
+    return (
+        f"background: repeating-linear-gradient(90deg, {color} 0, "
+        f"{color} 6px, transparent 6px, transparent 9px, {color} 9px, "
+        f"{color} 11px, transparent 11px, transparent 14px);"
+    )
 
+
+def build_legend_hint(entries):
+    """Build a legend showing line style per file."""
     items = []
-    for i in range(n):
+    for i, (label, _path, _data) in enumerate(entries):
         items.append(
-            f'<span class="swatch" style="{dash_css(i)}"></span> {labels[i]} ({file_dash_name(i)})'
+            f'<span class="swatch" style="{dash_swatch_css(file_palette(i)[0], i)}"></span> '
+            f'{label} ({file_dash_name(i)})'
         )
     return f'<div class="legend-hint">{" &nbsp;&nbsp; ".join(items)}</div>'
 

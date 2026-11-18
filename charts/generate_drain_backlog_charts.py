@@ -406,34 +406,43 @@ def drain_table(tests, disk_reads, s_idx):
     """A scenario's drain summary table: per test point its backlog, build
     and drain times, disk reads, drain producer rate and topology. Shared
     with the drain-backlog comparison (generate_compare_charts.py)."""
-    rows = []
-    for t_idx, t in enumerate(tests):
+    return drain_rows_table("Label", [
+        (t.get("label", ""), t, disk_reads.get((s_idx, t_idx)))
+        for t_idx, t in enumerate(tests)])
+
+
+def drain_rows_table(first_heading, rows):
+    """A drain summary table over (name, test, disk reading) rows. The scenario
+    view names each row by test point; the pivot view (generate_pivot_charts.py)
+    names each row by scenario at one test point."""
+    cells = []
+    for name, t, reading in rows:
         wc = t.get("workloadConfig", {})
         d = t.get("drain", {})
-        rows.append(
+        cells.append(
             f'<tr>'
-            f'<td>{t.get("label", "")}</td>'
+            f'<td>{name}</td>'
             f'<td>{d.get("backlogMessages", 0):,}</td>'
             f'<td>{round(d.get("backlogSizeBytes", 0) / 1_000_000):,} MB</td>'
             f'<td>{build_cell(d)}</td>'
             f'<td>{round(d.get("drainDurationMs", 0) / 1000, 1)}s</td>'
-            f'<td>{disk_cell(disk_reads.get((s_idx, t_idx)))}</td>'
+            f'<td>{disk_cell(reading)}</td>'
             f'<td>{"paused" if d.get("backlogProducerRate", 0) <= 0 else str(d.get("backlogProducerRate")) + " msg/s"}</td>'
             f'<td>{wc.get("partitionsPerTopic", "")}</td>'
             f'<td>{wc.get("consumersPerGroup", "")}</td>'
             f'</tr>'
         )
-    if not rows:
+    if not cells:
         return ""
     return f"""
             <div class="config-table-wrap">
                 <table class="config-table">
                     <thead><tr>
-                        <th>Label</th><th>Backlog Msgs</th><th>Backlog Size</th>
+                        <th>{first_heading}</th><th>Backlog Msgs</th><th>Backlog Size</th>
                         <th>Build Time</th><th>Drain Time</th><th>Disk Reads</th><th>Producer Rate (drain)</th>
                         <th>Partitions</th><th>Consumers/Group</th>
                     </tr></thead>
-                    <tbody>{"".join(rows)}</tbody>
+                    <tbody>{"".join(cells)}</tbody>
                 </table>
             </div>
             """

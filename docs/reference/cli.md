@@ -279,8 +279,8 @@ Generate side-by-side comparison charts from two or more compatible `run`,
 You can specify a directory (it will recursively search for result JSON files), or pass label=result-file-path.
 
 ```
-dimster compare <LABEL=FILE> <LABEL=FILE> [LABEL=FILE ...] [-o <output>] [-n <name>]
-dimster compare --directory <dir> [-o <output>] [-n <name>]
+dimster compare <LABEL=FILE> <LABEL=FILE> [LABEL=FILE ...] [-o <output>] [-n <name>] [--pivot [-s <scenarios>]]
+dimster compare --directory <dir> [-o <output>] [-n <name>] [--pivot [-s <scenarios>]]
 ```
 
 | Argument / Flag | Description |
@@ -289,6 +289,8 @@ dimster compare --directory <dir> [-o <output>] [-n <name>]
 | `--directory` | The parent directory of a set of result directories to recursively search |
 | `-o`, `--output <dir>` | Output directory for the generated charts. Defaults to the directory of the first input file. |
 | `-n`, `--name <name>` | Name for the output files, which become `compare-<name>.html`, `compare-<name>.csv` and, with resource data, `compare-<name>-resources.html` and `compare-<name>-resources.csv`. Defaults to the labels joined by `-vs-`. |
+| `--pivot` | Lay the comparison out by test point rather than by scenario, writing `compare-<name>-pivot.html` in place of `compare-<name>.html`. See [Pivoted comparison](#pivoted-comparison). Run and drain-backlog results only. |
+| `-s`, `--scenarios <list>` | With `--pivot`, the comma-separated 0-based scenario positions to include, e.g. `0,3,5`, in every entry. The order sets the legend and colour order. Only the pivot page is filtered; the CSV and resources comparison cover every scenario. Use `--name` to keep differently filtered pages apart. |
 
 Runs `charts/generate_compare_charts.py`. Requires Python with dependencies
 from `charts/requirements.txt`. Each input file must exist; missing files fail
@@ -311,7 +313,17 @@ For drain-backlog results, each scenario's comparison holds:
 
 With `--directory`, drain-backlog results need a `metadata.label`, set with `--metadata label=...` when running, as run results do.
 
-For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<name>-resources.html` and `compare-<name>-resources.csv`. The page sets the entries side by side in three tables: the per-service summary, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
+For run and drain-backlog results with [resources report](../concepts/results-and-charts.md#resources-report) data (`resource-metrics.json` beside the result JSON), compare also writes `compare-<name>-resources.html` and `compare-<name>-resources.csv`. The page sets the entries side by side in four tables: the per-service summary, the per-service totals, page cache vs disk, and bottlenecks. The CSV holds every entry's resources CSV rows, with a leading `compare_label` column. Entries without resource data are left out and named on the page. Fewer than two entries with resource data write nothing. These files come from `charts/generate_compare_resource_charts.py`, and if it fails, the command only warns.
+
+#### Pivoted comparison
+
+`--pivot` lays the comparison out the way [`pivot`](#pivot) lays out one result, for several results. It needs every entry's scenarios to have the same number of test points, with the same label at each position, as well as the usual compare checks. With `--scenarios`, only the chosen scenarios need to match.
+
+- One section per test point, opening with each entry's table of how the scenarios differ at that test point.
+- Aggregate bars with the scenarios on the x-axis and one dataset per entry: for run results, throughput (publish and consume per entry) and latency percentiles (a bar per percentile per entry); for drain-backlog results, drain duration, consumer throughput during the drain and, where measured, the disk read fraction.
+- Time series (and for run results, percentile distributions) with one line per scenario per entry. Each scenario has its own colour (up to 16 scenarios; past that, colours repeat). Each entry has its own line style: solid, dashed, dotted, dash-dot, then the same four in a darker shade of the scenario's colour, then a lighter one, and so on. The chart legends draw each line's style, and a note above the charts lists each entry's style.
+
+The CSV and the resources comparison are written as without `--pivot`.
 
 Example:
 
@@ -330,6 +342,38 @@ Compare many results under one short name, writing `compare-read-strategies.html
 ```bash
 dimster compare --directory results/read-strategies --name read-strategies
 ```
+
+The same comparison by test point, writing `compare-read-strategies-pivot.html`:
+
+```bash
+dimster compare --directory results/read-strategies --name read-strategies --pivot
+```
+
+Only the first and third scenarios, by test point:
+
+```bash
+dimster compare --directory results/read-strategies --name read-strategies-0-2 --pivot --scenarios 0,2
+```
+
+---
+
+### pivot
+
+Lay out a single run or drain-backlog result by test point: one section per test point (array index), with the result's scenarios as the comparison series. Use it when a workload's scenarios sweep the same test points and differ in something else, such as consumer count or key distribution.
+
+```
+dimster pivot <FILE> [-o <output>] [-s <scenarios>]
+```
+
+| Argument / Flag | Description |
+|-----------------|-------------|
+| `FILE` | A run or drain-backlog result JSON file. |
+| `-o`, `--output <dir>` | Output directory. Defaults to the directory of the input file. |
+| `-s`, `--scenarios <list>` | Comma-separated 0-based scenario positions to include, e.g. `0,3,5`. The order sets the legend and colour order. The output file name then ends in `-scenarios-<list>`. |
+
+Writes `pivot-<workload name>.html`. The result needs at least two scenarios, each with the same number of test points and the same label at each position; with `--scenarios`, only the chosen scenarios need to match. Each section holds a table of how the scenarios differ, then aggregate bars with the scenarios on the x-axis and the time series with one line per scenario, each scenario in its own colour. Run results get throughput, latency percentile bars, rate and latency series and percentile distributions; drain-backlog results get drain duration, consumer throughput and disk read fraction bars and backlog and consume rate series, as in the [compare](#compare) drain charts.
+
+To lay several results out this way, use `dimster compare --pivot`.
 
 ---
 

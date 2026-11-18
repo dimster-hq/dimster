@@ -80,6 +80,12 @@ class CompareResourcesTest(unittest.TestCase):
                                          ("<b>All</b>", "A", "1.00"), ("<b>All</b>", "B", "3.00"))]
         self.assertEqual(order, sorted(order))
         self.assertIn("<th>Entry</th>", charts.cache_table(groups))
+        totals = charts.totals_table(groups)
+        # CPU core-s: 1 and 3 cores over the fixture's 300s window.
+        self.assertLess(totals.index("<td><b>A</b></td><td class=\"num\">300</td>"
+                                     "<td class=\"num\">300</td>"),
+                        totals.index("<td><b>B</b></td><td class=\"num\">300</td>"
+                                     "<td class=\"num\">900</td>"))
 
     def test_writes_the_page_and_labelled_csv(self):
         with tempfile.TemporaryDirectory() as d:
@@ -96,7 +102,7 @@ class CompareResourcesTest(unittest.TestCase):
         self.assertEqual(rows[0][:3], ["compare_label", "scenario", "test_index"])
         # Per entry: p0 and p1, each Brokers and All.
         self.assertEqual([r[0] for r in rows[1:]], ["A"] * 4 + ["B"] * 4)
-        for heading in ("Summary", "Page cache vs disk", "Bottlenecks"):
+        for heading in ("Summary", "Totals", "Page cache vs disk", "Bottlenecks"):
             self.assertIn(f"<h2>{heading}</h2>", page)
         self.assertNotIn("<canvas", page)
 

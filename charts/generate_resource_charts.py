@@ -74,6 +74,18 @@ POD_METRICS = [
     ("netRxBytesPerSec", "Network Receive", "MB/s", 1 / MB, "net_rx_mb_s"),
     ("netTxBytesPerSec", "Network Transmit", "MB/s", 1 / MB, "net_tx_mb_s"),
 ]
+# Per-pod totals over each test point's measured span, as stored in
+# resource-metrics.json and summed per service like POD_METRICS.
+GB = 1_000_000_000
+POD_TOTALS = [
+    ("cpuSeconds", "CPU Time, Sum of Pods", "core-s", 1, "cpu_core_s"),
+    ("diskReadBytes", "Disk Read, Total", "GB", 1 / GB, "disk_read_gb"),
+    ("diskWriteBytes", "Disk Write, Total", "GB", 1 / GB, "disk_write_gb"),
+    ("diskReadOps", "Disk Read Ops", "ops", 1, "disk_read_ops"),
+    ("diskWriteOps", "Disk Write Ops", "ops", 1, "disk_write_ops"),
+    ("netRxBytes", "Network Receive, Total", "GB", 1 / GB, "net_rx_gb"),
+    ("netTxBytes", "Network Transmit, Total", "GB", 1 / GB, "net_tx_gb"),
+]
 # Per-node usage, charted (the first six) and in the nodes CSV.
 NODE_METRICS = [
     ("cpuUtil", "Node CPU Utilisation", "%", 100, "cpu_util_pct"),
@@ -90,6 +102,13 @@ NODE_METRICS = [
     ("psiIoWaiting", "IO Pressure", "%", 100, "psi_io_waiting_pct"),
 ]
 CHARTED_NODE_METRICS = NODE_METRICS[:6]
+# Per-node totals over each test point's measured span.
+NODE_TOTALS = [
+    ("diskReadBytes", "Node Disk Read, Total", "GB", 1 / GB, "disk_read_gb"),
+    ("diskWriteBytes", "Node Disk Write, Total", "GB", 1 / GB, "disk_write_gb"),
+    ("netRxBytes", "Node Network Receive, Total", "GB", 1 / GB, "net_rx_gb"),
+    ("netTxBytes", "Node Network Transmit, Total", "GB", 1 / GB, "net_tx_gb"),
+]
 
 # CPU throttling: the share of CFS periods in which a container was held back
 # by its CPU limit. Not a sum, so kept out of POD_METRICS: a service's share
@@ -111,8 +130,8 @@ IO_PRESSURE_HIGH = 0.25         # PSI: share of time some task waited on IO
 NETWORK_SATURATED = 0.80        # node rx or tx / link speed
 
 # resource-metrics.json holds counters as totals over each window; the report
-# shows them as per-second rates over the window's measuredSeconds:
-# {rate key: total key}.
+# shows them as totals and as per-second rates over the window's
+# measuredSeconds: {rate key: total key}.
 POD_RATES = {
     "cpuCores": "cpuSeconds",
     "diskReadBytesPerSec": "diskReadBytes",
@@ -186,9 +205,9 @@ def performance(data, test):
 
 
 def with_rates(metrics, rates, seconds):
-    """A pod's or node's metrics with each counter total replaced by its
-    per-second rate over the window; gauges and shares are kept as they are."""
-    out = {k: v for k, v in metrics.items() if k not in rates.values()}
+    """A pod's or node's metrics with each counter total's per-second rate
+    over the window added beside it."""
+    out = dict(metrics)
     for rate, total in rates.items():
         if total in metrics and seconds:
             out[rate] = metrics[total] / seconds
@@ -196,8 +215,8 @@ def with_rates(metrics, rates, seconds):
 
 
 def rated_window(window):
-    """The window with its pods' and nodes' counter totals as rates, as the
-    summary, charts and bottleneck checks use them."""
+    """The window with rates beside its pods' and nodes' counter totals, as
+    the summary, charts and bottleneck checks use them."""
     seconds = window.get("measuredSeconds") or window.get("seconds")
     return dict(window,
                 pods={p: with_rates(m, POD_RATES, seconds) for p, m in window.get("pods", {}).items()},
@@ -211,14 +230,14 @@ def ratio(numerator, denominator):
 
 
 def service_usage(window, service):
-    """Summed usage of a service's pods over a window: each POD_METRICS key
-    in its measured unit, plus the pod count and the busiest pod's peak CPU.
-    None when no pod of the service was measured."""
+    """Summed usage of a service's pods over a window: each POD_METRICS and
+    POD_TOTALS key in its measured unit, plus the pod count and the busiest
+    pod's peak CPU. None when no pod of the service was measured."""
     pods = {p: m for p, m in window.get("pods", {}).items() if service_of(p) == service}
     if not pods:
         return None
     usage = {key: sum(m.get(key, 0.0) for m in pods.values())
-             for key in [k for k, *_ in POD_METRICS] + CFS_KEYS}
+             for key in SUMMED_KEYS}
     usage["pods"] = len(pods)
     peaks = [m["cpuCoresPeak"] for m in pods.values() if "cpuCoresPeak" in m]
     usage["cpuCoresPeakPod"] = max(peaks) if peaks else None
@@ -229,6 +248,8 @@ def service_usage(window, service):
 # CFS period counters, summed so a service's throttled share weighs each pod
 # by its periods.
 CFS_KEYS = ["cfsPeriodsPerSec", "cfsThrottledPeriodsPerSec"]
+# Keys summed over a service's pods, and over the services for All.
+SUMMED_KEYS = [k for k, *_ in POD_METRICS + POD_TOTALS] + CFS_KEYS
 
 
 def throttled_pct(usage):
@@ -381,8 +402,7 @@ def analyze(data, resources):
                         cost_per_gb(usage, measured, perf, produce, consume))
                     services[key] = usage
             if services:
-                total = {key: sum(u[key] for u in services.values())
-                         for key in [k for k, *_ in POD_METRICS] + CFS_KEYS}
+                total = {key: sum(u[key] for u in services.values()) for key in SUMMED_KEYS}
                 total["pods"] = sum(u["pods"] for u in services.values())
                 total["cpuCoresPeakPod"] = None
                 total["cpuThrottledPct"] = throttled_pct(total)
@@ -436,6 +456,7 @@ def service_rows(points):
                "consumed_mb", "kafka_logical_read_mb", "disk_read_source", "broker_disk_read_mb",
                "cache_read_mb_est", "cache_hit_pct_est", "disk_read_per_consumed_byte",
                "disk_read_per_backlog_byte"]
+    header += [column for *_, column in POD_TOTALS]
     rows = [header]
     for p in points:
         for key, usage in p["services"].items():
@@ -457,6 +478,7 @@ def service_rows(points):
                         _num(cache["diskReadPerBacklogByte"])]
             else:
                 row += [""] * 8
+            row += [_num(usage[k], scale) for k, _t, _u, scale, _c in POD_TOTALS]
             rows.append(row)
     return rows
 
@@ -464,12 +486,12 @@ def service_rows(points):
 def node_rows(points):
     """One CSV row per test point and node."""
     rows = [["scenario", "test_index", "label", "node", "services"]
-            + [column for *_, column in NODE_METRICS]]
+            + [column for *_, column in NODE_METRICS + NODE_TOTALS]]
     for p in points:
         for node, m in sorted(p["nodes"].items()):
             rows.append([p["scenario"], p["testIndex"], p["label"], node,
                          " ".join(p["servicesByNode"].get(node, []))]
-                        + [_num(m.get(key), scale) for key, _t, _u, scale, _c in NODE_METRICS])
+                        + [_num(m.get(key), scale) for key, _t, _u, scale, _c in NODE_METRICS + NODE_TOTALS])
     return rows
 
 
@@ -514,11 +536,24 @@ def write_csv(path, rows):
 # Charts
 # ---------------------------------------------------------------------------
 
+# Every chart fills its card's fixed height (see .chart-card in PAGE) rather
+# than keeping an aspect ratio, so rotated x labels can't squash the bars.
+def fill_card(options):
+    options["maintainAspectRatio"] = False
+    return options
+
+
+def axis_label(point):
+    """A test point's x-axis label: its scenario and label on two lines when
+    the result has several scenarios, so the label rotates less."""
+    return [point["scenario"], point["label"]] if point["display"] != point["label"] else point["label"]
+
+
 def bar_chart(chart_id, title, unit, labels, datasets):
     return {"id": chart_id, "config": {
         "type": "bar",
         "data": {"labels": labels, "datasets": datasets},
-        "options": bar_options(title, unit),
+        "options": fill_card(bar_options(title, unit)),
     }}
 
 
@@ -533,7 +568,7 @@ def time_chart(chart_id, title, unit, series, bands, x_label="time since run sta
     band (a test point's window) is shaded by the `testPoints` plugin.
     x_range fixes the axis to (min, max) seconds rather than letting it
     round out to the next tick."""
-    options = line_options(title, unit, x_label)
+    options = fill_card(line_options(title, unit, x_label))
     options["scales"]["x"]["type"] = "linear"
     if x_range:
         options["scales"]["x"]["min"], options["scales"]["x"]["max"] = x_range
@@ -622,32 +657,49 @@ def run_t0(resources):
     return times[0] if times else 0
 
 
-def service_charts(service, points, resources, bands):
-    """Bar charts of a service across test points (one per metric), then
-    each metric over the whole run per pod."""
-    labels = [p["display"] for p in points]
+def service_bars(service, points, metrics, prefix):
+    """A bar chart of the service across test points per metric."""
+    labels = [axis_label(p) for p in points]
     configs = []
-    for i, (key, title, unit, scale, _c) in enumerate(SERVICE_BARS):
+    for i, (key, title, unit, scale, _c) in enumerate(metrics):
         values = [_num(p["services"].get(service, {}).get(key), scale) or 0 for p in points]
-        configs.append(bar_chart(f"{service}-bar-{i}", f"{title} ({unit})", unit, labels,
+        configs.append(bar_chart(f"{prefix}-{i}", f"{title} ({unit})", unit, labels,
                                  [bar_dataset(SERVICE_NAMES[service], values, i)]))
-    return configs + pod_time_charts(service, resources.get("timeseries", {}),
-                                     run_t0(resources), bands, service)
+    return configs
 
 
-def node_charts(points, resources, bands):
-    """Bar charts per node across test points, and node CPU and disk busy
-    over the whole run."""
-    labels = [p["display"] for p in points]
+def service_charts(service, points, resources, bands):
+    """[(heading, charts)] of a service over the whole run: averages and
+    totals across test points, then each metric over the run per pod."""
+    over_time = pod_time_charts(service, resources.get("timeseries", {}),
+                                run_t0(resources), bands, service)
+    return [("Averages", service_bars(service, points, SERVICE_BARS, f"{service}-bar")),
+            ("Totals", service_bars(service, points, POD_TOTALS, f"{service}-total")),
+            ("Over time", over_time)]
+
+
+def node_bars(points, metrics, prefix):
+    """A bar chart per metric across test points, a bar per node."""
+    labels = [axis_label(p) for p in points]
     nodes = sorted({n for p in points for n in p["nodes"]})
     configs = []
-    for i, (key, title, unit, scale, _c) in enumerate(CHARTED_NODE_METRICS):
+    for i, (key, title, unit, scale, _c) in enumerate(metrics):
         datasets = [bar_dataset(node, [_num(p["nodes"].get(node, {}).get(key), scale) or 0
                                        for p in points], n_idx)
                     for n_idx, node in enumerate(nodes)]
-        configs.append(bar_chart(f"nodes-bar-{i}", f"{title} ({unit})", unit, labels, datasets))
-    return configs + node_time_charts(resources.get("timeseries", {}), run_t0(resources),
-                                      bands, "nodes")
+        configs.append(bar_chart(f"{prefix}-{i}", f"{title} ({unit})", unit, labels, datasets))
+    return configs
+
+
+def node_charts(points, resources, bands):
+    """[(heading, charts)] of the nodes over the whole run: averages and
+    totals per node across test points, then node CPU and disk busy over
+    the run."""
+    over_time = node_time_charts(resources.get("timeseries", {}), run_t0(resources),
+                                 bands, "nodes")
+    return [("Averages", node_bars(points, CHARTED_NODE_METRICS, "nodes-bar")),
+            ("Totals", node_bars(points, NODE_TOTALS, "nodes-total")),
+            ("Over time", over_time)]
 
 
 def test_point_charts(index, point):
@@ -747,6 +799,32 @@ def summary_table(groups):
     return table(head, rows)
 
 
+def totals_table(groups):
+    """Per test point and service: totals over the measured span (groups as
+    for summary_table)."""
+    labelled = _is_labelled(groups)
+    head = ("<tr><th>Test point</th><th>Service</th>" + ("<th>Entry</th>" if labelled else "")
+            + "<th>Measured (s)</th><th>CPU (core-s)</th><th>Disk read GB</th>"
+            "<th>Disk write GB</th><th>Read ops</th><th>Write ops</th><th>Net rx GB</th>"
+            "<th>Net tx GB</th></tr>")
+    rows = []
+    for group in groups:
+        keys = list(dict.fromkeys(k for _l, p in group for k in p["services"]))
+        for key in keys:
+            for label, p in group:
+                u = p["services"].get(key)
+                if not u:
+                    continue
+                rows.append(
+                    f"<tr><td>{html.escape(p['display'])}</td>"
+                    f"<td>{SERVICE_NAMES.get(key, '<b>All</b>')}</td>{_entry_cells(label, labelled)}"
+                    + _cell(p["measuredSeconds"], "{:.0f}") + _cell(u["cpuSeconds"], "{:,.0f}")
+                    + _cell(u["diskReadBytes"] / GB) + _cell(u["diskWriteBytes"] / GB)
+                    + _cell(u["diskReadOps"], "{:,.0f}") + _cell(u["diskWriteOps"], "{:,.0f}")
+                    + _cell(u["netRxBytes"] / GB) + _cell(u["netTxBytes"] / GB) + "</tr>")
+    return table(head, rows)
+
+
 def cache_table(groups):
     """Page cache vs disk: totals over each test point's window (groups as
     for summary_table)."""
@@ -827,6 +905,11 @@ def chart_grid(configs):
     return f'<div class="chart-grid">{cards}</div>'
 
 
+def chart_groups(groups):
+    """[(heading, charts)] as headed chart grids, skipping empty groups."""
+    return "".join(f"<h3>{title}</h3>{chart_grid(charts)}" for title, charts in groups if charts)
+
+
 def build_html(data, points, resources):
     """The resources report page for one result."""
     metadata = dict_or_empty(data.get("metadata"))
@@ -848,6 +931,9 @@ the service's pods were held back by their CPU limits (– without limits). CPU 
 per GB of client throughput. <b>All</b> sums brokers, Flink and workers.</p>
 {measured_span_note(points)}
 {summary_table(single(points))}
+<h3>Totals</h3>
+<p class="note">Totals over each test point's measured span, summed over each service's pods.</p>
+{totals_table(single(points))}
 <h3>Page cache vs disk</h3>
 <p class="note">Totals over each test point's window. Estimates: broker logical reads are what
 brokers served to consumers and followers (Kafka bytes out plus replication bytes out); what they did
@@ -872,19 +958,19 @@ redeploy to collect them.</div>
     for key, title, _p in SERVICES:
         if not any(key in p["services"] for p in points):
             continue
-        charts = service_charts(key, points, resources, bands)
-        configs += charts
+        groups = service_charts(key, points, resources, bands)
+        configs += [c for _t, charts in groups for c in charts]
         nav.append(f'<a class="nav-link" href="#{key}">{title}</a>')
-        sections.append(f'<section id="{key}"><h2>{title}: whole run</h2>{chart_grid(charts)}</section>')
+        sections.append(f'<section id="{key}"><h2>{title}: whole run</h2>{chart_groups(groups)}</section>')
 
     if any(p["nodes"] for p in points):
-        charts = node_charts(points, resources, bands)
-        configs += charts
+        groups = node_charts(points, resources, bands)
+        configs += [c for _t, charts in groups for c in charts]
         nav.append('<a class="nav-link" href="#nodes">Nodes</a>')
         sections.append(f"""<section id="nodes"><h2>Nodes: whole run</h2>
 <p class="note">Whole-node usage from node-exporter. On a single-machine cluster every node shares
 one kernel and reports the same machine-wide CPU and disk.</p>
-{node_table(points)}{chart_grid(charts)}</section>""")
+{node_table(points)}{chart_groups(groups)}</section>""")
 
     # Each test point over its own window, at the series' finer step.
     tp_sections = []
@@ -893,7 +979,7 @@ one kernel and reports the same machine-wide CPU and disk.</p>
         if not groups:
             continue
         step = (p.get("timeseries") or {}).get("step")
-        body = "".join(f"<h3>{title}</h3>{chart_grid(charts)}" for title, charts in groups)
+        body = chart_groups(groups)
         configs += [c for _t, charts in groups for c in charts]
         tp_sections.append(f"""<section id="tp-{index}"><h2>Test point: {html.escape(p['display'])}</h2>
 <p class="note">The test point's {p['seconds']:.0f}s window (shaded) and 30s either side, sampled every
@@ -941,7 +1027,7 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Aria
 .nav-link:hover {{ background: #2a2a4e; color: #fff; border-left-color: #4e79a7; }}
 .nav-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #6c6c8a;
              padding: 14px 20px 6px; }}
-.main {{ margin-left: 200px; padding: 32px 40px; max-width: 1500px; }}
+.main {{ margin-left: 200px; padding: 32px 40px; }}
 .header {{ background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
           padding: 24px 32px; margin-bottom: 32px; }}
 .header h1 {{ font-size: 22px; margin-bottom: 14px; }}
@@ -961,7 +1047,8 @@ th {{ background: #f0f1f3; padding: 8px 12px; text-align: left; font-weight: 600
 td {{ padding: 7px 12px; border-top: 1px solid #eee; white-space: nowrap; }}
 td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .chart-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
-.chart-card {{ background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); padding: 20px; }}
+.chart-card {{ background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); padding: 20px;
+               position: relative; height: 460px; min-width: 0; }}
 @media (max-width: 900px) {{ .chart-grid {{ grid-template-columns: 1fr; }} .sidebar {{ display: none; }}
                             .main {{ margin-left: 0; padding: 16px; }} }}
 </style>

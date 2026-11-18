@@ -136,13 +136,13 @@ The chart step then joins those measurements with the result's throughput and wr
 | File | Contents |
 |------|----------|
 | `charts/<result>-resources.html` | The report page (see below). |
-| `<result>-resources.csv` | One row per test point and service, plus an `All` row summing the three. Holds the per-service averages, CPU cost per GB and, on the brokers row, the page cache figures. Only written when per-pod metrics were collected. |
-| `<result>-resources-nodes.csv` | One row per test point and node: CPU utilisation, IO wait, busiest disk's busy %, disk and network throughput, pressure stall (PSI). |
+| `<result>-resources.csv` | One row per test point and service, plus an `All` row summing the three. Holds the per-service averages, CPU cost per GB, the page cache figures on the brokers row and, in its last columns, the per-service totals (`cpu_core_s`, `disk_read_gb`, `disk_write_gb`, `disk_read_ops`, `disk_write_ops`, `net_rx_gb`, `net_tx_gb`). Only written when per-pod metrics were collected. |
+| `<result>-resources-nodes.csv` | One row per test point and node: CPU utilisation, IO wait, busiest disk's busy %, disk and network throughput, pressure stall (PSI), then disk and network totals in GB. |
 | `<result>-resources-timeseries.csv` | Per-pod and per-node usage in long format (`series, scenario, label, timestamp, seconds, scope, name, service, metric, value`), in each metric's raw unit (cores, bytes/s, ops/s, fractions). `series` is `run` for the whole run, or `test point` for a test point's own series (see below), with its scenario and label. `seconds` is since the series' start. |
 
 The report page contains:
 
-- **Summary:** each service's average CPU (cores, summed over its pods), peak pod CPU (the busiest pod's 1-minute peak), CPU throttling, disk read/write MB/s, read/write IOPS and network rx/tx MB/s for every test point. CPU throttling is the share of CFS periods in which the service's pods were held back by their CPU limits, weighted by each pod's periods; pods without a CPU limit have no periods, so it shows as `–` for a service without limits. It also shows CPU cost as core-seconds per GB produced and per GB consumed. Throughput comes from the result's client byte rates.
+- **Summary:** each service's average CPU (cores, summed over its pods), peak pod CPU (the busiest pod's 1-minute peak), CPU throttling, disk read/write MB/s, read/write IOPS and network rx/tx MB/s for every test point. CPU throttling is the share of CFS periods in which the service's pods were held back by their CPU limits, weighted by each pod's periods; pods without a CPU limit have no periods, so it shows as `–` for a service without limits. It also shows CPU cost as core-seconds per GB produced and per GB consumed. Throughput comes from the result's client byte rates. A **Totals** table follows, with each service's CPU core-seconds, disk GB read and written, disk read and write operations, and network GB received and transmitted, over each test point's measured span. Totals show how much work a test point did when test points run for different lengths of time, as drains do.
 - **Page cache vs disk:** totals over each test point's window. It compares the brokers' logical reads (Kafka bytes out plus replication bytes out, from the brokers' JMX metrics) with their disk reads. It also shows the bytes the Kafka consumers received (the result's `bytesReceived`), disk reads per byte consumed and, for drains, per byte of backlog.
 - **Bottlenecks:** saturated resources for each test point:
     - a pod at 90% or more of its CPU limit, or throttled in more than 10% of CFS periods;
@@ -151,8 +151,8 @@ The report page contains:
     - a node whose network reaches 80% of its link speed, where the link speed is known.
 
     Each flag names the services on that node. A node hosting more than one service is marked as shared.
-- **Whole run, a section per service:** bar charts across test points for each metric, including CPU throttling, then each metric over the whole run per pod, with each test point's window shaded.
-- **Whole run, Nodes:** whole-node usage from node-exporter, across test points and over the whole run.
+- **Whole run, a section per service:** bar charts across test points of the averages, including CPU throttling, and of the totals. Then each metric over the whole run per pod, with each test point's window shaded.
+- **Whole run, Nodes:** whole-node usage from node-exporter: averages and disk and network totals across test points, then usage over the whole run.
 - **A section per test point:** the same per-pod and per-node charts over just that test point, from its own series: its window (shaded) and 30 s either side, sampled every 10 s, with time in seconds since the test point started. The whole-run series is sampled every 15 s or more, which would leave a short test point such as a quick drain with only a couple of points. Prometheus scrapes every 10 s, so even a test point's own series has only a few samples when it lasts under a minute.
 
 Each sample in the over-time charts is a rate over the preceding interval (a minute for the whole run, 30 s for a test point). It is plotted at the middle of that interval, so the lines line up with the shaded windows rather than trailing them.
@@ -188,4 +188,4 @@ Without `cgroupMetrics`, the report shows only the node-level figures, and the p
 
 `dimster csv <result-file.json>` converts the JSON result file into a CSV file, which can be used with other charting options / placing in a spreadsheet.
 
-`dimster pivot <result-file.json>` creates charts which create a plot per dimension index and each scenario is a series (rather than a plot per scenario with test points as series).
+`dimster pivot <result-file.json>` creates charts which create a plot per dimension index and each scenario is a series (rather than a plot per scenario with test points as series). It takes run and drain-backlog results. `dimster compare --pivot` does the same over several results, with a series per scenario per result.

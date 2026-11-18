@@ -1,11 +1,12 @@
-// `dimster pivot` — generate a pivot HTML view from a single run result file.
+// `dimster pivot` — generate a pivot HTML view from a single run or
+// drain-backlog result file.
 //
-// Where the existing `compare` command overlays two or more separate result files,
 // `pivot` slices a single file along the *scenario* axis: each array index
 // (test label) becomes its own HTML section, and scenarios within that index
 // are the comparison series. This is useful when one workload sweeps a
 // dimension (e.g. fetch.max.wait.ms) across many scenarios that differ on
-// scalar fields like consumer count or key distribution.
+// scalar fields like consumer count or key distribution. `compare --pivot`
+// draws the same layout over several result files.
 //
 // This Rust handler is a thin shim that locates the input file, resolves the
 // output directory, and shells out to charts/generate_pivot_charts.py — the
