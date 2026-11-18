@@ -698,8 +698,9 @@ public class DrainBacklogEngine extends BaseEngine {
 
     /**
      * The backlog on the cluster if this point can drain it again: built for
-     * the same identity and still intact. Otherwise null, logging why, and
-     * the point builds its own.
+     * the same identity and still intact (see {@link BacklogReuse#checkIntact}).
+     * Records appended within the allowed margin become part of the backlog.
+     * Otherwise null, logging why.
      */
     private ReusableBacklog reusableBacklogFor(String identity) {
         if (backlog == null) return null;
@@ -708,16 +709,30 @@ public class DrainBacklogEngine extends BaseEngine {
             return null;
         }
         Set<String> existingTopics = cluster.listTopicNames();
-        Optional<String> problem = existingTopics.containsAll(backlog.topics)
-                ? BacklogReuse.whyNotIntact(backlog, existingTopics,
+        BacklogReuse.Integrity integrity = existingTopics.containsAll(backlog.topics)
+                ? BacklogReuse.checkIntact(backlog, existingTopics,
                         cluster.startOffsets(backlog.topics), cluster.endOffsets(backlog.topics))
-                : BacklogReuse.whyNotIntact(backlog, existingTopics, Map.of(), Map.of());
-        if (problem.isPresent()) {
-            log.warn("Cannot reuse the backlog {} ({}): building a new backlog",
-                    describe(backlog), problem.get());
-            return null;
+                : BacklogReuse.checkIntact(backlog, existingTopics, Map.of(), Map.of());
+        switch (integrity) {
+            case BacklogReuse.NotIntact notIntact -> {
+                // Callers say what follows: a build, or a failed test point.
+                log.warn("Cannot reuse the backlog {} ({})", describe(backlog), notIntact.reason());
+                return null;
+            }
+            case BacklogReuse.Intact intact -> {
+                if (intact.appended() > 0) {
+                    // Likely sends still in flight when the build's producers
+                    // paused. Drain what is there, so the counts stay exact.
+                    log.warn("    {} records were appended to the backlog {} since it was recorded"
+                                    + " (within the allowed margin): draining {} records",
+                            intact.appended(), describe(backlog), backlog.records + intact.appended());
+                    backlog.records += intact.appended();
+                    backlog.endOffsets.clear();
+                    intact.endOffsets().forEach((tp, offset) -> backlog.endOffsets.put(tp.toString(), offset));
+                }
+                return backlog;
+            }
         }
-        return backlog;
     }
 
     /** Captures a just-built backlog so following test points can drain it again. */

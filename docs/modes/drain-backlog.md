@@ -182,7 +182,7 @@ Each build is reported once, on the backlog's first recorded drain:
 
 Topics of a reusable backlog are created with unlimited retention (`retention.ms` and `retention.bytes` of -1), so a broker's retention cannot shrink them between drains.
 
-Before reusing, the coordinator checks that the backlog is intact: its topics exist, nothing was deleted from the start of a partition, and nothing was appended. Otherwise it rebuilds, again outside the test point. The same check lets `dimster resume` carry on with a backlog from before the interruption.
+Before reusing, the coordinator checks that the backlog is intact: its topics exist, nothing was deleted from the start of a partition, no partition ends before its recorded end, and at most 0.05% more records were appended. Sends still in flight when the build's producers pause can land after the backlog is recorded, so a few appended records are expected; the drain then counts them as part of the backlog. Otherwise it rebuilds, again outside the test point. If the check fails right before a test point drains, after its `beforeTestPoint` hooks, the workload fails. The same check lets `dimster resume` carry on with a backlog from before the interruption.
 
 ### Requirements
 

@@ -248,37 +248,71 @@ public class BacklogReuseTest {
 
     // ─── Intactness ────────────────────────────────────────────────────
 
+    /** 1,000,000 records over two partitions: up to 500 may be appended (0.05%). */
     private static ReusableBacklog backlog() {
         var b = new ReusableBacklog();
         b.topics = List.of("dimster-x-0000");
-        b.endOffsets = Map.of("dimster-x-0000-0", 100L, "dimster-x-0000-1", 50L);
+        b.endOffsets = Map.of("dimster-x-0000-0", 600_000L, "dimster-x-0000-1", 400_000L);
+        b.records = 1_000_000;
         return b;
     }
 
     private static final TopicPartition P0 = new TopicPartition("dimster-x-0000", 0);
     private static final TopicPartition P1 = new TopicPartition("dimster-x-0000", 1);
+    private static final Map<TopicPartition, Long> AT_START = Map.of(P0, 0L, P1, 0L);
+
+    private static BacklogReuse.Integrity check(Map<TopicPartition, Long> startOffsets,
+                                                Map<TopicPartition, Long> endOffsets) {
+        return BacklogReuse.checkIntact(backlog(), Set.of("dimster-x-0000"), startOffsets, endOffsets);
+    }
+
+    private static <T> T assertInstanceOf(Class<T> type, Object actual) {
+        assertTrue("expected " + type.getSimpleName() + ", got " + actual, type.isInstance(actual));
+        return type.cast(actual);
+    }
+
+    private static String reason(BacklogReuse.Integrity integrity) {
+        return assertInstanceOf(BacklogReuse.NotIntact.class, integrity).reason();
+    }
 
     @Test
-    public void intact_backlog_has_no_problem() {
-        assertTrue(BacklogReuse.whyNotIntact(backlog(), Set.of("dimster-x-0000"),
-                Map.of(P0, 0L, P1, 0L), Map.of(P0, 100L, P1, 50L)).isEmpty());
+    public void unchanged_backlog_is_intact() {
+        var intact = assertInstanceOf(BacklogReuse.Intact.class,
+                check(AT_START, Map.of(P0, 600_000L, P1, 400_000L)));
+        assertEquals(0, intact.appended());
     }
 
     @Test
     public void missing_topic_is_not_intact() {
-        assertTrue(BacklogReuse.whyNotIntact(backlog(), Set.of(), Map.of(), Map.of()).isPresent());
+        var integrity = BacklogReuse.checkIntact(backlog(), Set.of(), Map.of(), Map.of());
+        assertTrue(reason(integrity).contains("no longer exists"));
     }
 
     @Test
     public void retention_deleting_the_head_is_not_intact() {
-        var why = BacklogReuse.whyNotIntact(backlog(), Set.of("dimster-x-0000"),
-                Map.of(P0, 10L, P1, 0L), Map.of(P0, 100L, P1, 50L));
-        assertTrue(why.orElseThrow().contains("retention"));
+        var integrity = check(Map.of(P0, 10L, P1, 0L), Map.of(P0, 600_000L, P1, 400_000L));
+        assertTrue(reason(integrity).contains("retention"));
     }
 
     @Test
-    public void appended_records_are_not_intact() {
-        assertTrue(BacklogReuse.whyNotIntact(backlog(), Set.of("dimster-x-0000"),
-                Map.of(P0, 0L, P1, 0L), Map.of(P0, 100L, P1, 51L)).isPresent());
+    public void records_appended_within_the_margin_are_intact() {
+        // e.g. sends still in flight when the build's producers paused
+        var intact = assertInstanceOf(BacklogReuse.Intact.class,
+                check(AT_START, Map.of(P0, 600_200L, P1, 400_300L)));
+        assertEquals(500, intact.appended());
+        assertEquals(Map.of(P0, 600_200L, P1, 400_300L), intact.endOffsets());
+    }
+
+    @Test
+    public void records_appended_beyond_the_margin_are_not_intact() {
+        var integrity = check(AT_START, Map.of(P0, 600_200L, P1, 400_301L));
+        assertTrue(reason(integrity).contains("501 records were appended"));
+    }
+
+    @Test
+    public void partition_ending_before_its_recorded_end_is_not_intact() {
+        // Fewer records than recorded, even if another partition grew to make up for it.
+        var integrity = check(AT_START, Map.of(P0, 600_010L, P1, 399_990L));
+        assertTrue(reason(integrity).contains("before the recorded"));
     }
 }

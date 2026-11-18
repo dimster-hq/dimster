@@ -17,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -158,33 +159,68 @@ public final class BacklogReuse {
     }
 
     /**
-     * Why a recorded backlog can no longer be drained as-is, or empty when it
-     * is intact: its topics exist, nothing was deleted from their heads
-     * (start offsets 0) and nothing was appended (end offsets unchanged).
+     * Records appended to a backlog after it was recorded that still leave it
+     * fit to drain, as a fraction of its recorded records. Covers sends that
+     * were still in flight when the build's producers were paused, which land
+     * after the backlog is recorded. Anything more means something else wrote
+     * to the backlog's topics.
      */
-    public static Optional<String> whyNotIntact(ReusableBacklog backlog, Set<String> existingTopics,
-                                                Map<TopicPartition, Long> startOffsets,
-                                                Map<TopicPartition, Long> endOffsets) {
+    static final double MAX_APPENDED_FRACTION = 0.0005;
+
+    /** Whether a recorded backlog can still be drained: see {@link #checkIntact}. */
+    public sealed interface Integrity {}
+
+    /**
+     * Fit to drain. {@code appended} records were added since it was
+     * recorded (within {@link #MAX_APPENDED_FRACTION}), and its partitions
+     * now end at {@code endOffsets}.
+     */
+    public record Intact(long appended, Map<TopicPartition, Long> endOffsets) implements Integrity {}
+
+    /** Can no longer be drained as-is, for {@code reason}. */
+    public record NotIntact(String reason) implements Integrity {}
+
+    /**
+     * Whether a recorded backlog can still be drained: its topics exist,
+     * nothing was deleted from their heads (start offsets 0), no partition
+     * ends before its recorded end, and at most {@link #MAX_APPENDED_FRACTION}
+     * of its records were appended since. Appended offsets are counted as
+     * records, which they are without transactions.
+     */
+    public static Integrity checkIntact(ReusableBacklog backlog, Set<String> existingTopics,
+                                        Map<TopicPartition, Long> startOffsets,
+                                        Map<TopicPartition, Long> endOffsets) {
         for (String topic : backlog.topics) {
             if (!existingTopics.contains(topic)) {
-                return Optional.of("topic " + topic + " no longer exists");
+                return new NotIntact("topic " + topic + " no longer exists");
             }
         }
         Optional<String> head = whyHeadDeleted(startOffsets);
         if (head.isPresent()) {
-            return head;
+            return new NotIntact(head.get());
         }
         if (endOffsets.size() != backlog.endOffsets.size()) {
-            return Optional.of("partition count changed");
+            return new NotIntact("partition count changed");
         }
+        long appended = 0;
         for (var e : endOffsets.entrySet()) {
             Long recorded = backlog.endOffsets.get(e.getKey().toString());
-            if (recorded == null || !recorded.equals(e.getValue())) {
-                return Optional.of("partition " + e.getKey() + " ends at offset " + e.getValue()
-                        + ", recorded " + recorded);
+            if (recorded == null) {
+                return new NotIntact("partition " + e.getKey() + " was not part of it when it was recorded");
             }
+            if (e.getValue() < recorded) {
+                return new NotIntact("partition " + e.getKey() + " ends at offset " + e.getValue()
+                        + ", before the recorded " + recorded);
+            }
+            appended += e.getValue() - recorded;
         }
-        return Optional.empty();
+        long allowed = (long) (backlog.records * MAX_APPENDED_FRACTION);
+        if (appended > allowed) {
+            return new NotIntact(appended + " records were appended since it was recorded, more than the "
+                    + allowed + " allowed (" + String.format(Locale.ROOT, "%.2f", MAX_APPENDED_FRACTION * 100)
+                    + "% of its " + backlog.records + " records)");
+        }
+        return new Intact(appended, endOffsets);
     }
 
     /** Why records are missing from the start of a backlog's partitions, or empty when none are. */
