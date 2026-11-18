@@ -219,6 +219,31 @@ class DerivedFiguresTest(unittest.TestCase):
         # 10 MB/s over 300s is 3 GB of the 6 GB backlog.
         self.assertAlmostEqual(cache["diskReadPerBacklogByte"], 0.5)
 
+    def test_pod_disk_io_above_their_nodes_is_flagged_as_overcounted(self):
+        # A dm volume counted three times: the pods read 3 GB, the disk 1 GB.
+        w = window(pods={"kafka-0": {"diskReadBytes": 3e9}, "benchmark-worker-a": {}},
+                   pod_nodes={"kafka-0": "n1", "benchmark-worker-a": "n2"},
+                   nodes={"n1": {"diskReadBytesPerSec": 1e9 / SECONDS},
+                          "n2": {"diskReadBytesPerSec": 5e9 / SECONDS}})
+        point = charts.analyze(run_result("p0"), resources(w))[0]
+        self.assertAlmostEqual(point["diskOvercount"], 3.0)
+        page = charts.build_html(run_result("p0"), [point], resources(w))
+        self.assertIn('class="note warning"', page)
+        self.assertIn("p0 (3.0x)", page)
+
+    def test_pod_disk_io_within_their_nodes_or_too_small_is_not_flagged(self):
+        # Each node is compared with its own pods; one machine-wide node
+        # (k3d) holding every pod's I/O is not an overcount.
+        within = window(pods={"kafka-0": {"diskReadBytes": 9e8}, "kafka-1": {"diskReadBytes": 9e8}},
+                        pod_nodes={"kafka-0": "n1", "kafka-1": "n1"},
+                        nodes={"n1": {"diskReadBytesPerSec": 2e9 / SECONDS}})
+        tiny = window(pods={"kafka-0": {"diskReadBytes": 5e7}}, pod_nodes={"kafka-0": "n1"},
+                      nodes={"n1": {"diskReadBytesPerSec": 1e6 / SECONDS}})
+        for w in (within, tiny):
+            point = charts.analyze(run_result("p0"), resources(w))[0]
+            self.assertIsNone(point["diskOvercount"])
+        self.assertEqual(charts.disk_overcount_note([point]), "")
+
     def test_only_measured_test_points_are_reported(self):
         data = run_result("p0", "p1")
         points = charts.analyze(data, resources(window(index=1, pods={"kafka-0": pod(1.0)})))

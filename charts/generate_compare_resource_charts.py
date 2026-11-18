@@ -38,6 +38,7 @@ from generate_resource_charts import (  # noqa: E402
     analyze,
     bottleneck_table,
     cache_table,
+    disk_overcount_note,
     find_run_artifact,
     load_resource_metrics,
     measured_span_note,
@@ -115,6 +116,7 @@ def build_html(measured, missing):
         f"""<section id="summary"><h2>Summary</h2>{notes_html}
 <p class="note">Averages over each test point's measured window, summed over each service's pods,
 with each entry's row side by side. See each run's resources report for its charts.</p>
+{disk_overcount_note(labelled_points)}
 {measured_span_note(labelled_points)}
 {summary_table(groups)}</section>""",
         f"""<section id="totals"><h2>Totals</h2>
