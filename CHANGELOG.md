@@ -143,5 +143,6 @@ Initial public release.
 
 ### Fixed
 
+- Drain-backlog `reuseBacklog` and `reuseTopic` no longer fail a workload when a few records land in a backlog after it is recorded, such as sends still in flight when the build's producers paused. Up to 0.05% of the backlog's records may be appended; the drain counts them as part of the backlog. A backlog that fails the check right before a test point drains no longer logs that it is building a new backlog, since the workload fails there.
 - The drain-backlog docs and chart table treated `backlogProducerRate: -1` as "paused"; the default is 0, and any value of 0 or less pauses producers.
 - With `monitoring.cgroupMetrics`, per-pod disk I/O (the resources report's disk MB/s, IOPS and page cache estimates, and the Containers dashboard) counted each operation once per block device layer. On a dm volume, such as an emulated network volume, that tripled it: cAdvisor reports the dm device, the disk under it and a series with no device. Per-pod disk I/O now counts whole disks only, as the node disk metrics do.
