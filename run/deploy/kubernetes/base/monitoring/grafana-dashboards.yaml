@@ -1267,6 +1267,7 @@ data:
         },
         {
           "title": "Request Rate by Type",
+          "description": "Requests per second by type. FetchConsumer is Fetch minus FetchFollower. With broker and controller in one process, FetchFollower also counts the KRaft voters' fetches to the quorum leader (long polls).",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
@@ -1302,10 +1303,9 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_mean{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "mean"},
+            {"expr": "avg((kafka_network_requestmetrics_totaltimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "mean"},
             {"expr": "avg(kafka_network_requestmetrics_totaltimems_99thpercentile{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "p99"},
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "p99.9"},
-            {"expr": "max(kafka_network_requestmetrics_totaltimems_max{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "max"}
+            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "p99.9"}
           ]
         },
         {
@@ -1322,11 +1322,11 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_requestqueuetimems_mean{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "Request Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_localtimems_mean{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "Local"},
-            {"expr": "avg(kafka_network_requestmetrics_remotetimems_mean{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "Remote (replica wait)"},
-            {"expr": "avg(kafka_network_requestmetrics_responsequeuetimems_mean{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "Response Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_responsesendtimems_mean{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "Response Send"}
+            {"expr": "avg((kafka_network_requestmetrics_requestqueuetimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestqueuetimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestqueuetimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestqueuetimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Request Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_localtimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_localtimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_localtimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_localtimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Local"},
+            {"expr": "avg((kafka_network_requestmetrics_remotetimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_remotetimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_remotetimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_remotetimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Remote (replica wait)"},
+            {"expr": "avg((kafka_network_requestmetrics_responsequeuetimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsequeuetimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsequeuetimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsequeuetimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_responsesendtimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsesendtimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsesendtimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsesendtimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Send"}
           ]
         },
         {
@@ -1363,10 +1363,9 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "mean"},
+            {"expr": "avg((kafka_network_requestmetrics_totaltimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_totaltimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_totaltimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_totaltimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "mean"},
             {"expr": "avg(kafka_network_requestmetrics_totaltimems_99thpercentile{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "p99"},
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "p99.9"},
-            {"expr": "max(kafka_network_requestmetrics_totaltimems_max{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "max"}
+            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "p99.9"}
           ]
         },
         {
@@ -1382,16 +1381,16 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_requestqueuetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "Request Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_localtimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "Local"},
-            {"expr": "avg(kafka_network_requestmetrics_remotetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "Remote (fetch wait)"},
-            {"expr": "avg(kafka_network_requestmetrics_responsequeuetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "Response Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_responsesendtimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"})", "legendFormat": "Response Send"}
+            {"expr": "avg((kafka_network_requestmetrics_requestqueuetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestqueuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestqueuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestqueuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Request Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_localtimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_localtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_localtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_localtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Local"},
+            {"expr": "avg((kafka_network_requestmetrics_remotetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_remotetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_remotetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_remotetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Remote (fetch wait)"},
+            {"expr": "avg((kafka_network_requestmetrics_responsequeuetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsequeuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsequeuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsequeuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_responsesendtimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsesendtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsesendtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsesendtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Send"}
           ]
         },
         {
           "title": "FetchFollower - Total Time (ms)",
-          "description": "Replication fetch performance \u2014 high values indicate slow followers",
+          "description": "Replication fetch performance \u2014 high values indicate slow followers. Mean per 1-minute window. With broker and controller in one process, FetchFollower also counts the KRaft voters' fetches to the quorum leader (long polls), which hold the mean up when replication is light.",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 8, "x": 16, "y": 32},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
@@ -1403,10 +1402,9 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_mean{request=\"FetchFollower\", instance=~\"$instance\"})", "legendFormat": "mean"},
+            {"expr": "avg((kafka_network_requestmetrics_totaltimems_mean{request=\"FetchFollower\", instance=~\"$instance\"} * kafka_network_requestmetrics_totaltimems_count{request=\"FetchFollower\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_mean{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_totaltimems_count{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_totaltimems_count{request=\"FetchFollower\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_count{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "mean"},
             {"expr": "avg(kafka_network_requestmetrics_totaltimems_99thpercentile{request=\"FetchFollower\", instance=~\"$instance\"})", "legendFormat": "p99"},
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"FetchFollower\", instance=~\"$instance\"})", "legendFormat": "p99.9"},
-            {"expr": "max(kafka_network_requestmetrics_totaltimems_max{request=\"FetchFollower\", instance=~\"$instance\"})", "legendFormat": "max"}
+            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"FetchFollower\", instance=~\"$instance\"})", "legendFormat": "p99.9"}
           ]
         },
         {"title": "Replication", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 40}, "collapsed": false},
@@ -1728,10 +1726,9 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_mean{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "mean"},
+            {"expr": "avg((kafka_network_requestmetrics_totaltimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} * kafka_network_requestmetrics_totaltimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_totaltimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_totaltimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "mean"},
             {"expr": "avg(kafka_network_requestmetrics_totaltimems_99thpercentile{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "p99"},
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "p99.9"},
-            {"expr": "max(kafka_network_requestmetrics_totaltimems_max{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "max"}
+            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "p99.9"}
           ]
         },
         {
@@ -1748,11 +1745,11 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_requestqueuetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "Request Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_localtimems_mean{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "Local"},
-            {"expr": "avg(kafka_network_requestmetrics_remotetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "Remote"},
-            {"expr": "avg(kafka_network_requestmetrics_responsequeuetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "Response Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_responsesendtimems_mean{request=\"ShareFetch\", instance=~\"$instance\"})", "legendFormat": "Response Send"}
+            {"expr": "avg((kafka_network_requestmetrics_requestqueuetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Request Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_localtimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} * kafka_network_requestmetrics_localtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_localtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_localtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Local"},
+            {"expr": "avg((kafka_network_requestmetrics_remotetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} * kafka_network_requestmetrics_remotetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_remotetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_remotetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Remote"},
+            {"expr": "avg((kafka_network_requestmetrics_responsequeuetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_responsesendtimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_mean{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareFetch\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Send"}
           ]
         },
         {
@@ -1846,10 +1843,9 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "mean"},
+            {"expr": "avg((kafka_network_requestmetrics_totaltimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} * kafka_network_requestmetrics_totaltimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_totaltimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_totaltimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "mean"},
             {"expr": "avg(kafka_network_requestmetrics_totaltimems_99thpercentile{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "p99"},
-            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "p99.9"},
-            {"expr": "max(kafka_network_requestmetrics_totaltimems_max{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "max"}
+            {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "p99.9"}
           ]
         },
         {
@@ -1865,11 +1861,11 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg(kafka_network_requestmetrics_requestqueuetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "Request Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_localtimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "Local"},
-            {"expr": "avg(kafka_network_requestmetrics_remotetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "Remote"},
-            {"expr": "avg(kafka_network_requestmetrics_responsequeuetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "Response Queue"},
-            {"expr": "avg(kafka_network_requestmetrics_responsesendtimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"})", "legendFormat": "Response Send"}
+            {"expr": "avg((kafka_network_requestmetrics_requestqueuetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Request Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_localtimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} * kafka_network_requestmetrics_localtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_localtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_localtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_localtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Local"},
+            {"expr": "avg((kafka_network_requestmetrics_remotetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} * kafka_network_requestmetrics_remotetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_remotetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_remotetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_remotetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Remote"},
+            {"expr": "avg((kafka_network_requestmetrics_responsequeuetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Queue"},
+            {"expr": "avg((kafka_network_requestmetrics_responsesendtimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_mean{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_count{request=\"ShareAcknowledge\", instance=~\"$instance\"} offset 1m) > 0))", "legendFormat": "Response Send"}
           ]
         },
         {
@@ -1944,9 +1940,8 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_mean{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "mean {{group}}"},
-            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_99thpercentile{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "p99 {{group}}"},
-            {"expr": "max by (group) (kafka_server_sharepartitionmetrics_max{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "max {{group}}"}
+            {"expr": "avg by (group) ((kafka_server_sharepartitionmetrics_mean{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"} * kafka_server_sharepartitionmetrics_count{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"} - kafka_server_sharepartitionmetrics_mean{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m * kafka_server_sharepartitionmetrics_count{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m) / ((kafka_server_sharepartitionmetrics_count{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"} - kafka_server_sharepartitionmetrics_count{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m) > 0))", "legendFormat": "mean {{group}}"},
+            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_99thpercentile{name=\"FetchLockTimeMs\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "p99 {{group}}"}
           ]
         },
         {
@@ -1963,9 +1958,8 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_mean{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "mean {{group}}"},
-            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_99thpercentile{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "p99 {{group}}"},
-            {"expr": "max by (group) (kafka_server_sharepartitionmetrics_max{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "max {{group}}"}
+            {"expr": "avg by (group) ((kafka_server_sharepartitionmetrics_mean{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"} * kafka_server_sharepartitionmetrics_count{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"} - kafka_server_sharepartitionmetrics_mean{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m * kafka_server_sharepartitionmetrics_count{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m) / ((kafka_server_sharepartitionmetrics_count{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"} - kafka_server_sharepartitionmetrics_count{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m) > 0))", "legendFormat": "mean {{group}}"},
+            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_99thpercentile{name=\"FetchLockRatio\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "p99 {{group}}"}
           ]
         },
         {
@@ -1982,7 +1976,7 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_mean{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "mean {{group}}"},
+            {"expr": "avg by (group) ((kafka_server_sharepartitionmetrics_mean{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"} * kafka_server_sharepartitionmetrics_count{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"} - kafka_server_sharepartitionmetrics_mean{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m * kafka_server_sharepartitionmetrics_count{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m) / ((kafka_server_sharepartitionmetrics_count{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"} - kafka_server_sharepartitionmetrics_count{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"} offset 1m) > 0))", "legendFormat": "mean {{group}}"},
             {"expr": "avg by (group) (kafka_server_sharepartitionmetrics_99thpercentile{name=\"InFlightBatchMessageCount\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "p99 {{group}}"}
           ]
         },
@@ -2059,7 +2053,7 @@ data:
         },
         {
           "title": "Request Bytes (mean)",
-          "description": "Mean request payload size by request type",
+          "description": "Mean request payload size by request type, per 1-minute window. With broker and controller in one process, FetchFollower also counts the KRaft voters' fetches to the quorum leader (long polls).",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 8, "x": 16, "y": 143},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
@@ -2071,9 +2065,9 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "kafka_network_requestmetrics_requestbytes_mean{request=\"Produce\", instance=~\"$instance\"}", "legendFormat": "Produce {{instance}}"},
-            {"expr": "kafka_network_requestmetrics_requestbytes_mean{request=\"FetchConsumer\", instance=~\"$instance\"}", "legendFormat": "FetchConsumer {{instance}}"},
-            {"expr": "kafka_network_requestmetrics_requestbytes_mean{request=\"FetchFollower\", instance=~\"$instance\"}", "legendFormat": "FetchFollower {{instance}}"}
+            {"expr": "(kafka_network_requestmetrics_requestbytes_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestbytes_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestbytes_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestbytes_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "Produce {{instance}}"},
+            {"expr": "(kafka_network_requestmetrics_requestbytes_mean{request=\"FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestbytes_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_mean{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestbytes_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestbytes_count{request=\"FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_count{request=\"FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "FetchConsumer {{instance}}"},
+            {"expr": "(kafka_network_requestmetrics_requestbytes_mean{request=\"FetchFollower\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_mean{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "FetchFollower {{instance}}"}
           ]
         },
         {"title": "Log & Disk", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 151}, "collapsed": false},
@@ -2108,8 +2102,7 @@ data:
           "targets": [
             {"expr": "kafka_log_logflushstats_logflushrateandtimems_50thpercentile{instance=~\"$instance\"}", "legendFormat": "p50 {{instance}}"},
             {"expr": "kafka_log_logflushstats_logflushrateandtimems_99thpercentile{instance=~\"$instance\"}", "legendFormat": "p99 {{instance}}"},
-            {"expr": "kafka_log_logflushstats_logflushrateandtimems_999thpercentile{instance=~\"$instance\"}", "legendFormat": "p99.9 {{instance}}"},
-            {"expr": "kafka_log_logflushstats_logflushrateandtimems_max{instance=~\"$instance\"}", "legendFormat": "max {{instance}}"}
+            {"expr": "kafka_log_logflushstats_logflushrateandtimems_999thpercentile{instance=~\"$instance\"}", "legendFormat": "p99.9 {{instance}}"}
           ]
         },
         {"title": "JVM Memory", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 160}, "collapsed": false},
@@ -2274,7 +2267,7 @@ data:
         {"title": "Network & Handler Saturation", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 187}, "collapsed": false},
         {
           "title": "Network Processor Avg Idle %",
-          "description": "Fraction of time network threads are idle \u2014 values approaching 0 indicate network thread saturation",
+          "description": "Fraction of time the client listeners' network threads wait for I/O (the selector's io-wait time, every listener but CONTROLLER) \u2014 values approaching 0 indicate network thread saturation. Not Kafka's NetworkProcessorAvgIdlePercent: with broker and controller in one process, both register it and the controller's, nearly always idle, is the one exported. Wall-clock based: when the broker is short of CPU, threads waiting to run count as idle.",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 8, "x": 0, "y": 188},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
@@ -2290,12 +2283,12 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "kafka_network_socketserver_networkprocessoravgidlepercent_value{instance=~\"$instance\"}", "legendFormat": "{{instance}}"}
+            {"expr": "clamp_max(avg by (instance) (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m])) / 1e9 or avg by (instance) (kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 1)", "legendFormat": "{{instance}}"}
           ]
         },
         {
           "title": "Request Handler Avg Idle %",
-          "description": "Fraction of time request handler threads are idle \u2014 values approaching 0 indicate broker CPU saturation",
+          "description": "Fraction of time the broker's request handler threads are idle \u2014 values approaching 0 indicate request handler saturation. BrokerRequestHandlerAvgIdlePercent where Kafka exports it, else the aggregate RequestHandlerAvgIdlePercent, which with broker and controller in one process also averages in the controller's handlers, nearly always idle. Wall-clock based: when the broker is short of CPU, threads waiting to run count as idle.",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 8, "x": 8, "y": 188},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
@@ -2311,14 +2304,13 @@ data:
             "overrides": []
           },
           "targets": [
-            {"expr": "kafka_server_requesthandlerpool_requesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}", "legendFormat": "request handler {{instance}}"},
-            {"expr": "kafka_server_requesthandlerpool_brokerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}", "legendFormat": "broker handler {{instance}}"},
-            {"expr": "kafka_server_requesthandlerpool_controllerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}", "legendFormat": "controller handler {{instance}}"}
+            {"expr": "clamp_max(kafka_server_requesthandlerpool_brokerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"} or kafka_server_requesthandlerpool_requesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}, 1)", "legendFormat": "broker handlers {{instance}}"},
+            {"expr": "clamp_max(kafka_server_requesthandlerpool_controllerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}, 1)", "legendFormat": "controller handlers {{instance}}"}
           ]
         },
         {
           "title": "Memory Pool (Network Buffers)",
-          "description": "Network buffer pool usage \u2014 high used values indicate network memory pressure",
+          "description": "Network buffer pool usage \u2014 high used values indicate network memory pressure. The pool is bounded only with queued.max.request.bytes set. Caveat: with broker and controller in one process, both register it and the controller's, nearly always idle, is the one exported.",
           "type": "timeseries",
           "gridPos": {"h": 8, "w": 8, "x": 16, "y": 188},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
