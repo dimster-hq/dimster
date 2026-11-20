@@ -46,7 +46,7 @@ dimster dashboard [env]
 This port-forwards Grafana (localhost:3000) and Prometheus (localhost:9090). These dashboards are pre-provisioned:
 
 - **Client Metrics** -- publish latency, schedule latency, end-to-end latency percentiles, message rates, byte rates
-- **Kafka Broker** -- cluster health, throughput, request latency, replication lag, JVM stats
+- **Kafka Broker** -- cluster health, throughput, saturation (network processors, request handlers, CPU throttling), request latency, replication lag, JVM stats
 - **System (Linux)** -- CPU, memory, disk I/O, network (via node-exporter)
 - **Containers** -- CPU, CPU throttling, disk I/O, page cache and network per pod (via the kubelets' cAdvisor; empty unless the environment sets [`monitoring.cgroupMetrics`](#per-pod-metrics))
 
