@@ -135,11 +135,14 @@ Initial public release.
 
 - Client dashboard: a Bytes Received panel beside Bytes Sent, and the panels above Consumer Details are grouped into a Throughput row (message and byte rates, totals, errors, client counts) and a Latencies row (every latency panel). Saved dashboard HTML now shows each row's title as a heading over its panels.
 
+- Broker dashboard: a Broker Saturation section, right after Throughput, for saturation of every kind with the network processors first. Network processor idle time for the average and for the hottest processor (connections are pinned to one processor, so one can saturate alone). Processor loop busy time, a proxy for how long requests sit unread before a processor reads them, which no Kafka request timing covers. Where the processors' busy time goes (socket I/O, or the rest, which includes blocking on a full request queue). Response queue and send time, request queue time, acceptor blocked time and CPU throttling (with `monitoring.cgroupMetrics`). And Produce Latency Outside the Broker: the producers' request latency to each broker minus the broker's own Produce time, which rises when requests back up before the broker reads them. Request queue time stands in for Kafka's `RequestQueueSize`, which with broker and controller in one process reports the controller's queue.
+
 ### Changed
 
 - The drain-backlog build identity (which decides whether `reuseBacklog` can drain the previous backlog again) ignores the connection settings in `commonConfig`: `bootstrap.servers`, `security.*`, `ssl.*` and `sasl.*`.
 - Over a reused backlog, Flink output topics are named `dimster-<suffix>-NNNN-out` rather than `<input>-out-<suffix>`.
 - `dimster deploy` keeps Kafka's data PVCs when only settings that need a restart change: broker config, heap, `kafka.env`, CPU and memory, `nodeLabel`, log config or TLS. It restarts every broker on its existing data, so topics, including drain-backlog kept topics, survive a redeploy with a new broker config. Changes that shape storage (`kafka.replicas`, `kafka.version`, `kafka.pvcSize`, `kafka.pvcStorageClass`, or broker config keys such as `log.dirs` and `node.id`) still delete the PVCs. The StatefulSet records the new `dimster.dev/kafka-storage-hash` annotation; Kafka deployed without it is deleted and deployed fresh the first time its spec changes.
+- The broker dashboard's Network & Handler Saturation row is folded into the new Broker Saturation section: its network idle, request handler idle and memory pool panels moved there.
 
 ### Fixed
 

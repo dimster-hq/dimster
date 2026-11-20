@@ -1289,11 +1289,223 @@ data:
             {"expr": "sum(rate(kafka_network_requestmetrics_requestspersec_count{request=~\"OffsetFetch.*\", instance=~\"$instance\"}[1m]))", "legendFormat": "OffsetFetch"}
           ]
         },
-        {"title": "Produce Request Performance", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 22}, "collapsed": false},
+        {"title": "Broker Saturation", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 22}, "collapsed": false},
+        {
+          "title": "Network Processor Avg Idle %",
+          "description": "Fraction of time the client listeners' network threads wait for I/O (the selector's io-wait time, every listener but CONTROLLER) \u2014 values approaching 0 indicate network thread saturation. hottest is the least idle processor: each connection is pinned to one processor, so one can saturate while the average looks fine. Not Kafka's NetworkProcessorAvgIdlePercent: with broker and controller in one process, both register it and the controller's, nearly always idle, is the one exported. Wall-clock based: when the broker is short of CPU, threads waiting to run count as idle (see CPU Throttled).",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 23},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.3}, {"color": "green", "value": 0.5}]},
+              "color": {"mode": "thresholds"},
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "clamp_max(avg by (instance) (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 1)", "legendFormat": "avg {{instance}}"},
+            {"expr": "clamp_max(min by (instance) (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 1)", "legendFormat": "hottest {{instance}}"}
+          ]
+        },
+        {
+          "title": "Processor Loop Busy Time (ms)",
+          "description": "Time each pass of a network processor's loop spends outside select(): reading, writing, parsing and queueing requests. Bytes that arrive while a processor is busy wait up to one pass before it reads them, and Kafka's request timings start only once a request has been read, so this is a proxy for the unread time no broker metric covers. Rises with processor load; hottest is the busiest processor. Wall-clock based: CPU starvation shows as select() wait, not busy time (see CPU Throttled).",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 23},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "min": 0,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "max by (instance) (clamp_min(1 - (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 0) * 1e9 / rate(kafka_server_socketservermetrics_select_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m])) / 1e6", "legendFormat": "hottest {{instance}}"},
+            {"expr": "avg by (instance) (clamp_min(1 - (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 0) * 1e9 / rate(kafka_server_socketservermetrics_select_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m])) / 1e6", "legendFormat": "avg {{instance}}"}
+          ]
+        },
+        {
+          "title": "Network Processor Busy Breakdown",
+          "description": "Where the client listeners' network threads spend their non-idle time, averaged over processors. socket I/O: reading and writing sockets, including TLS. other: everything outside the selector \u2014 parsing requests, handing them to the request queue (blocking when it is full, at queued.max.requests), registering responses and new connections. A rising other with idle request handlers points at the processors themselves; with saturated handlers, at the full request queue.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 23},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "avg by (instance) (rate(kafka_server_socketservermetrics_io_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"})", "legendFormat": "socket I/O {{instance}}"},
+            {"expr": "avg by (instance) (clamp_min(1 - (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}) - (rate(kafka_server_socketservermetrics_io_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m]) / 1e9 or kafka_server_socketservermetrics_io_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 0))", "legendFormat": "other {{instance}}"}
+          ]
+        },
+        {
+          "title": "Response Queue Time Mean (ms)",
+          "description": "Mean time a response waits for its connection's network processor to pick it up, over the last minute \u2014 the clearest broker-measured sign of network thread saturation. Produce and FetchConsumer only: both are served by the broker alone, whereas Fetch also counts the KRaft voters' fetches.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 31},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "min": 0,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "sum by (instance, request) (kafka_network_requestmetrics_responsequeuetimems_mean{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsequeuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_mean{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsequeuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m) / (sum by (instance, request) (kafka_network_requestmetrics_responsequeuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsequeuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "{{request}} {{instance}}"}
+          ]
+        },
+        {
+          "title": "Response Send Time Mean (ms)",
+          "description": "Mean time to write a response to the socket, over the last minute. Spans several processor loop passes when the response is large, so it rises with busy processors but also with slow clients or a saturated network link. Produce and FetchConsumer only (Fetch also counts the KRaft voters' fetches).",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 31},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "min": 0,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "sum by (instance, request) (kafka_network_requestmetrics_responsesendtimems_mean{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_responsesendtimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_mean{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_responsesendtimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m) / (sum by (instance, request) (kafka_network_requestmetrics_responsesendtimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_responsesendtimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "{{request}} {{instance}}"}
+          ]
+        },
+        {
+          "title": "Produce Latency Outside the Broker (ms)",
+          "description": "The Dimster producers' request latency to each broker minus the broker's own Produce total time, both averaged over about a minute. What remains is time the broker doesn't measure: network round trip, time unread on a busy network processor, waiting behind the connection's previous in-flight request (a connection has one request in the broker at a time), and client-side send and read delay. A rise while the network round trip stays flat means requests are backing up before the broker reads them. Shows data only while Dimster producers run.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 31},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "min": 0,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "avg by (instance) (label_replace(avg by (node_id) (kafka_producer_node_metrics_request_latency_avg), \"id\", \"$1\", \"node_id\", \"node-([0-9]+)\") * on (id) group_left (instance) group by (id, instance) (kafka_server_app_info_starttimems{id=~\"[0-9]+\", instance=~\"$instance\"})) - on (instance) sum by (instance) (kafka_network_requestmetrics_totaltimems_mean{request=\"Produce\", instance=~\"$instance\"} * kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_mean{request=\"Produce\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) / (sum by (instance) (kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} - kafka_network_requestmetrics_totaltimems_count{request=\"Produce\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "{{instance}}"}
+          ]
+        },
+        {
+          "title": "Request Handler Avg Idle %",
+          "description": "Fraction of time the broker's request handler threads are idle \u2014 values approaching 0 indicate request handler saturation. BrokerRequestHandlerAvgIdlePercent where Kafka exports it, else the aggregate RequestHandlerAvgIdlePercent, which with broker and controller in one process also averages in the controller's handlers, nearly always idle. Wall-clock based: when the broker is short of CPU, threads waiting to run count as idle.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 39},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.3}, {"color": "green", "value": 0.5}]},
+              "color": {"mode": "thresholds"},
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "clamp_max(kafka_server_requesthandlerpool_brokerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"} or kafka_server_requesthandlerpool_requesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}, 1)", "legendFormat": "broker handlers {{instance}}"},
+            {"expr": "clamp_max(kafka_server_requesthandlerpool_controllerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}, 1)", "legendFormat": "controller handlers {{instance}}"}
+          ]
+        },
+        {
+          "title": "Request Queue Time Mean (ms)",
+          "description": "Mean time a request waits in the request queue for a handler thread, over the last minute \u2014 request handler saturation in time. Charted in place of Kafka's RequestQueueSize, which with broker and controller in one process reports the controller's queue, and which can't exceed the number of connections anyway: the broker holds one request per connection at a time. Produce and FetchConsumer only (Fetch also counts the KRaft voters' fetches).",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 39},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "min": 0,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "sum by (instance, request) (kafka_network_requestmetrics_requestqueuetimems_mean{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestqueuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_mean{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestqueuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m) / (sum by (instance, request) (kafka_network_requestmetrics_requestqueuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestqueuetimems_count{request=~\"Produce|FetchConsumer\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "{{request}} {{instance}}"}
+          ]
+        },
+        {
+          "title": "Acceptor Blocked %",
+          "description": "Fraction of time each client listener's acceptor is blocked handing new connections to a network processor whose new-connection queue (20 deep) is full, or waiting on a connection quota. Non-zero only with connection churn, so mostly 0 for long-lived clients.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 39},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "clamp_max(kafka_network_acceptor_oneminuterate{name=\"AcceptorBlockedPercent\", listener!=\"CONTROLLER\", instance=~\"$instance\"} / 1e9, 1)", "legendFormat": "{{listener}} {{instance}}"}
+          ]
+        },
+        {
+          "title": "CPU Throttled % (cgroup)",
+          "description": "Share of CFS periods in which each broker pod was throttled by its CPU limit. Throttled time counts as idle in the idle and busy panels above, so check here when they look healthy but latency rises. Empty unless monitoring.cgroupMetrics is on and the pod has a CPU limit. Keyed by pod, so the Broker filter doesn't apply.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 47},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{pod=~\"kafka-[0-9]+\", container!=\"\", container!=\"POD\"}[1m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{pod=~\"kafka-[0-9]+\", container!=\"\", container!=\"POD\"}[1m]))", "legendFormat": "{{pod}}"}
+          ]
+        },
+        {
+          "title": "Memory Pool (Network Buffers)",
+          "description": "Network buffer pool usage \u2014 high used values indicate network memory pressure. The pool is bounded only with queued.max.request.bytes set. Caveat: with broker and controller in one process, both register it and the controller's, nearly always idle, is the one exported.",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 47},
+          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
+            },
+            "overrides": []
+          },
+          "targets": [
+            {"expr": "kafka_network_socketserver_memorypoolused_value{instance=~\"$instance\"}", "legendFormat": "used {{instance}}"},
+            {"expr": "kafka_network_socketserver_memorypoolavailable_value{instance=~\"$instance\"}", "legendFormat": "available {{instance}}"}
+          ]
+        },
+        {"title": "Produce Request Performance", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 55}, "collapsed": false},
         {
           "title": "Produce - Total Time (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 23},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 56},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1312,7 +1524,7 @@ data:
           "title": "Produce - Time Breakdown Mean (ms)",
           "description": "Average time spent in each phase of a Produce request",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 23},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 56},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1333,7 +1545,7 @@ data:
           "title": "Produce - Queue & Remote Time p99 (ms)",
           "description": "p99 queue wait and remote (replica ack) time \u2014 the two biggest contributors to tail latency",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 23},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 56},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1349,11 +1561,11 @@ data:
             {"expr": "avg(kafka_network_requestmetrics_responsesendtimems_99thpercentile{request=\"Produce\", instance=~\"$instance\"})", "legendFormat": "Response Send p99"}
           ]
         },
-        {"title": "Fetch Request Performance", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 31}, "collapsed": false},
+        {"title": "Fetch Request Performance", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 64}, "collapsed": false},
         {
           "title": "FetchConsumer - Total Time (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 32},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 65},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1371,7 +1583,7 @@ data:
         {
           "title": "FetchConsumer - Time Breakdown Mean (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 32},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 65},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1392,7 +1604,7 @@ data:
           "title": "FetchFollower - Total Time (ms)",
           "description": "Replication fetch performance \u2014 high values indicate slow followers. Mean per 1-minute window. With broker and controller in one process, FetchFollower also counts the KRaft voters' fetches to the quorum leader (long polls), which hold the mean up when replication is light.",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 32},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 65},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1407,11 +1619,11 @@ data:
             {"expr": "avg(kafka_network_requestmetrics_totaltimems_999thpercentile{request=\"FetchFollower\", instance=~\"$instance\"})", "legendFormat": "p99.9"}
           ]
         },
-        {"title": "Replication", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 40}, "collapsed": false},
+        {"title": "Replication", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 73}, "collapsed": false},
         {
           "title": "Under-Replicated Partitions",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 41},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 74},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1430,7 +1642,7 @@ data:
         {
           "title": "ISR Shrinks & Expands (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 41},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 74},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1448,7 +1660,7 @@ data:
         {
           "title": "Leader Count per Broker",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 41},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 74},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1464,7 +1676,7 @@ data:
         {
           "title": "Replication Bytes In (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 49},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 82},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1481,7 +1693,7 @@ data:
         {
           "title": "Replication Bytes Out (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 49},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 82},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1498,7 +1710,7 @@ data:
         {
           "title": "Reassignment Bytes In (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 49},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 82},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1516,7 +1728,7 @@ data:
           "title": "Replica Fetcher Lag (by topic)",
           "description": "Sum of replica fetcher lag per user topic across all partitions. Measures how far behind follower replicas are from the leader.",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 57},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 90},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1534,7 +1746,7 @@ data:
           "title": "Replica Fetcher Max Lag",
           "description": "Maximum single-partition replica fetcher lag per broker",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 57},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 90},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1548,11 +1760,11 @@ data:
             {"expr": "max by (instance) (kafka_server_replicafetchermanager_maxlag_value{instance=~\"$instance\"})", "legendFormat": "{{instance}}"}
           ]
         },
-        {"title": "Leader Elections", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 65}, "collapsed": false},
+        {"title": "Leader Elections", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 98}, "collapsed": false},
         {
           "title": "Leader Election Rate",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 66},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 99},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1570,7 +1782,7 @@ data:
           "title": "Unclean Leader Elections (rate/s)",
           "description": "Non-zero values indicate data loss risk \u2014 an unclean leader was elected",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 66},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 99},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1590,7 +1802,7 @@ data:
           "title": "Preferred Replica Imbalance",
           "description": "Number of partitions where the leader is not the preferred replica",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 66},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 99},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1604,11 +1816,11 @@ data:
             {"expr": "kafka_controller_kafkacontroller_preferredreplicaimbalancecount_value{instance=~\"$instance\"}", "legendFormat": "{{instance}}"}
           ]
         },
-        {"title": "Topic-Level Throughput", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 74}, "collapsed": false},
+        {"title": "Topic-Level Throughput", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 107}, "collapsed": false},
         {
           "title": "Bytes In by Topic (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 75},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 108},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1624,7 +1836,7 @@ data:
         {
           "title": "Bytes Out by Topic (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 75},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 108},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1640,7 +1852,7 @@ data:
         {
           "title": "Messages In by Topic (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 75},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 108},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1653,12 +1865,12 @@ data:
             {"expr": "sum by (topic) (rate(kafka_server_brokertopicmetrics_messagesinpersec_count{topic!=\"\", instance=~\"$instance\"}[1m]))", "legendFormat": "{{topic}}"}
           ]
         },
-        {"title": "Consumer Groups & Lag", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 83}, "collapsed": false},
+        {"title": "Consumer Groups & Lag", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 116}, "collapsed": false},
         {
           "title": "Group Rebalance Rate",
           "description": "Rate of consumer and share group rebalances",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 84},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 117},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1677,7 +1889,7 @@ data:
           "title": "Partition Log End Offset (by topic)",
           "description": "Highest offset per partition \u2014 useful to observe partition growth rate",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 84},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 117},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1694,7 +1906,7 @@ data:
           "title": "Consumer Group States",
           "description": "Number of consumer groups in each state over time",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 84},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 117},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1712,11 +1924,11 @@ data:
             {"expr": "sum(kafka_server_group_coordinator_metrics_consumer_group_count{state=\"Dead\", instance=~\"$instance\"})", "legendFormat": "dead"}
           ]
         },
-        {"title": "Share Groups", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 92}, "collapsed": false},
+        {"title": "Share Groups", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 125}, "collapsed": false},
         {
           "title": "Share Fetch - Total Time (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 93},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 126},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1735,7 +1947,7 @@ data:
           "title": "Share Fetch - Time Breakdown Mean (ms)",
           "description": "Average time spent in each phase of a ShareFetch request",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 93},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 126},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1756,7 +1968,7 @@ data:
           "title": "Share Fetch - Queue & Remote p99 (ms)",
           "description": "p99 queue wait and remote time for ShareFetch requests",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 93},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 126},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1776,7 +1988,7 @@ data:
           "title": "Share Request Rates",
           "description": "Request rate for ShareFetch and ShareAcknowledge operations",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 101},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 134},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1795,7 +2007,7 @@ data:
           "title": "Share Fetch/Ack Throughput",
           "description": "Broker-level share fetch and acknowledge request rates",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 101},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 134},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1813,7 +2025,7 @@ data:
           "title": "Failed Share Requests",
           "description": "Rate of failed share fetch and acknowledge requests",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 101},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 134},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1833,7 +2045,7 @@ data:
         {
           "title": "Share Acknowledge - Total Time (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 109},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 142},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1851,7 +2063,7 @@ data:
         {
           "title": "Share Acknowledge - Time Breakdown Mean (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 109},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 142},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1872,7 +2084,7 @@ data:
           "title": "Share Purgatory Size",
           "description": "Requests waiting in the ShareFetch delayed operation purgatory",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 109},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 142},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1891,7 +2103,7 @@ data:
           "title": "Share Group States",
           "description": "Number of share groups in each state over time",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 117},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 150},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1911,7 +2123,7 @@ data:
           "title": "Share Group Rebalance Rate",
           "description": "Rate of share group rebalances",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 117},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 150},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1925,12 +2137,12 @@ data:
             {"expr": "sum(kafka_server_group_coordinator_metrics_share_group_rebalance_rate{instance=~\"$instance\"})", "legendFormat": "rebalance/s"}
           ]
         },
-        {"title": "Share Partition Metrics", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 125}, "collapsed": false},
+        {"title": "Share Partition Metrics", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 158}, "collapsed": false},
         {
           "title": "Share Fetch Lock Time (ms)",
           "description": "Time spent acquiring locks during share fetch, per partition",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 126},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 159},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1948,7 +2160,7 @@ data:
           "title": "Share Fetch Lock Ratio (%)",
           "description": "Percentage of fetch time spent on lock acquisition, per partition",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 126},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 159},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1966,7 +2178,7 @@ data:
           "title": "In-Flight Batch Message Count",
           "description": "Messages currently in-flight per share partition",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 126},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 159},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -1984,7 +2196,7 @@ data:
           "title": "In-Flight Messages",
           "description": "Total messages currently in-flight per share partition",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 134},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 167},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2001,7 +2213,7 @@ data:
           "title": "In-Flight Batches",
           "description": "Total batches currently in-flight per share partition",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 134},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 167},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2014,11 +2226,11 @@ data:
             {"expr": "sum by (group) (kafka_server_sharepartitionmetrics_value{name=\"InFlightBatchCount\", instance=~\"$instance\", group=~\"$share_group\"})", "legendFormat": "{{group}}"}
           ]
         },
-        {"title": "Request Errors", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 142}, "collapsed": false},
+        {"title": "Request Errors", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 175}, "collapsed": false},
         {
           "title": "Failed Requests (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 143},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 176},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2037,7 +2249,7 @@ data:
         {
           "title": "Request Errors by Type (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 143},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 176},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2055,7 +2267,7 @@ data:
           "title": "Request Bytes (mean)",
           "description": "Mean request payload size by request type, per 1-minute window. With broker and controller in one process, FetchFollower also counts the KRaft voters' fetches to the quorum leader (long polls).",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 143},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 176},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2070,11 +2282,11 @@ data:
             {"expr": "(kafka_network_requestmetrics_requestbytes_mean{request=\"FetchFollower\", instance=~\"$instance\"} * kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_mean{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m * kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m) / ((kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} - kafka_network_requestmetrics_requestbytes_count{request=\"FetchFollower\", instance=~\"$instance\"} offset 1m) > 0)", "legendFormat": "FetchFollower {{instance}}"}
           ]
         },
-        {"title": "Log & Disk", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 151}, "collapsed": false},
+        {"title": "Log & Disk", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 184}, "collapsed": false},
         {
           "title": "Log Flush Rate (flushes/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 152},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 185},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2090,7 +2302,7 @@ data:
         {
           "title": "Log Flush Time (ms)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 152},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 185},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2105,11 +2317,11 @@ data:
             {"expr": "kafka_log_logflushstats_logflushrateandtimems_999thpercentile{instance=~\"$instance\"}", "legendFormat": "p99.9 {{instance}}"}
           ]
         },
-        {"title": "JVM Memory", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 160}, "collapsed": false},
+        {"title": "JVM Memory", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 193}, "collapsed": false},
         {
           "title": "Heap Memory",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 161},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 194},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2127,7 +2339,7 @@ data:
         {
           "title": "Heap Memory Pools",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 161},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 194},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2143,7 +2355,7 @@ data:
         {
           "title": "Non-Heap & Buffer Pools",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 161},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 194},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2158,12 +2370,12 @@ data:
             {"expr": "jvm_buffer_pool_used_bytes{pool=\"mapped\", instance=~\"$instance\"}", "legendFormat": "mapped buffers {{instance}}"}
           ]
         },
-        {"title": "JVM GC & Threads", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 169}, "collapsed": false},
+        {"title": "JVM GC & Threads", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 202}, "collapsed": false},
         {
           "title": "GC Pause Time (rate s/s)",
           "description": "Fraction of time spent in GC \u2014 values approaching 1.0 indicate GC pressure",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 170},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 203},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2181,7 +2393,7 @@ data:
         {
           "title": "GC Pause Count (rate/s)",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 170},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 203},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2199,7 +2411,7 @@ data:
         {
           "title": "Threads by State",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 170},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 203},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2212,12 +2424,12 @@ data:
             {"expr": "sum by (state) (jvm_threads_state{state=~\"RUNNABLE|BLOCKED|WAITING|TIMED_WAITING\", instance=~\"$instance\"})", "legendFormat": "{{state}}"}
           ]
         },
-        {"title": "Process", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 178}, "collapsed": false},
+        {"title": "Process", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 211}, "collapsed": false},
         {
           "title": "Process CPU (rate s/s)",
           "description": "CPU seconds consumed per second \u2014 1.0 = one full core",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 179},
+          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 212},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2233,7 +2445,7 @@ data:
         {
           "title": "Process Resident Memory",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 179},
+          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 212},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2250,7 +2462,7 @@ data:
         {
           "title": "Open File Descriptors",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 179},
+          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 212},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2264,74 +2476,12 @@ data:
             {"expr": "process_max_fds{instance=~\"$instance\"}", "legendFormat": "max {{instance}}"}
           ]
         },
-        {"title": "Network & Handler Saturation", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 187}, "collapsed": false},
-        {
-          "title": "Network Processor Avg Idle %",
-          "description": "Fraction of time the client listeners' network threads wait for I/O (the selector's io-wait time, every listener but CONTROLLER) \u2014 values approaching 0 indicate network thread saturation. Not Kafka's NetworkProcessorAvgIdlePercent: with broker and controller in one process, both register it and the controller's, nearly always idle, is the one exported. Wall-clock based: when the broker is short of CPU, threads waiting to run count as idle.",
-          "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 0, "y": 188},
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "fieldConfig": {
-            "defaults": {
-              "unit": "percentunit",
-              "min": 0,
-              "max": 1,
-              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true},
-              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.3}, {"color": "green", "value": 0.5}]},
-              "color": {"mode": "thresholds"}
-            },
-            "overrides": []
-          },
-          "targets": [
-            {"expr": "clamp_max(avg by (instance) (rate(kafka_server_socketservermetrics_io_wait_time_ns_total{listener!=\"CONTROLLER\", instance=~\"$instance\"}[1m])) / 1e9 or avg by (instance) (kafka_server_socketservermetrics_io_wait_ratio{listener!=\"CONTROLLER\", instance=~\"$instance\"}), 1)", "legendFormat": "{{instance}}"}
-          ]
-        },
-        {
-          "title": "Request Handler Avg Idle %",
-          "description": "Fraction of time the broker's request handler threads are idle \u2014 values approaching 0 indicate request handler saturation. BrokerRequestHandlerAvgIdlePercent where Kafka exports it, else the aggregate RequestHandlerAvgIdlePercent, which with broker and controller in one process also averages in the controller's handlers, nearly always idle. Wall-clock based: when the broker is short of CPU, threads waiting to run count as idle.",
-          "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 8, "y": 188},
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "fieldConfig": {
-            "defaults": {
-              "unit": "percentunit",
-              "min": 0,
-              "max": 1,
-              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true},
-              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.3}, {"color": "green", "value": 0.5}]},
-              "color": {"mode": "thresholds"}
-            },
-            "overrides": []
-          },
-          "targets": [
-            {"expr": "clamp_max(kafka_server_requesthandlerpool_brokerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"} or kafka_server_requesthandlerpool_requesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}, 1)", "legendFormat": "broker handlers {{instance}}"},
-            {"expr": "clamp_max(kafka_server_requesthandlerpool_controllerrequesthandleravgidlepercent_oneminuterate{instance=~\"$instance\"}, 1)", "legendFormat": "controller handlers {{instance}}"}
-          ]
-        },
-        {
-          "title": "Memory Pool (Network Buffers)",
-          "description": "Network buffer pool usage \u2014 high used values indicate network memory pressure. The pool is bounded only with queued.max.request.bytes set. Caveat: with broker and controller in one process, both register it and the controller's, nearly always idle, is the one exported.",
-          "type": "timeseries",
-          "gridPos": {"h": 8, "w": 8, "x": 16, "y": 188},
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
-          "fieldConfig": {
-            "defaults": {
-              "unit": "bytes",
-              "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "spanNulls": true}
-            },
-            "overrides": []
-          },
-          "targets": [
-            {"expr": "kafka_network_socketserver_memorypoolused_value{instance=~\"$instance\"}", "legendFormat": "used {{instance}}"},
-            {"expr": "kafka_network_socketserver_memorypoolavailable_value{instance=~\"$instance\"}", "legendFormat": "available {{instance}}"}
-          ]
-        },
-        {"title": "Purgatory", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 196}, "collapsed": false},
+        {"title": "Purgatory", "type": "row", "gridPos": {"h": 1,"w": 24,"x": 0,"y": 220}, "collapsed": false},
         {
           "title": "Purgatory Size",
           "description": "Number of requests waiting in delayed operation purgatory",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 197},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 221},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
@@ -2349,7 +2499,7 @@ data:
           "title": "Delayed Operations",
           "description": "Number of delayed operations currently pending",
           "type": "timeseries",
-          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 197},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 221},
           "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
           "fieldConfig": {
             "defaults": {
