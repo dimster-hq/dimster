@@ -43,10 +43,22 @@ data:
         name: kafka_network_socketserver_$1_$2
         type: GAUGE
 
-      # Network processor
+      # Network processor. Keyed by processor id only, so with broker and
+      # controller in one process these are the controller's processors
+      # (registered first); socket-server-metrics below has the listener.
       - pattern: kafka.network<type=Processor, name=(.+), networkProcessor=(.+)><>(\w+)
         name: kafka_network_processor_$1_$3
         labels:
+          processor: $2
+        type: GAUGE
+
+      # Selector metrics per network processor (connection-count,
+      # outgoing-byte-rate, request-rate, ...). Explicit so the names are
+      # stable: kafka_server_socketservermetrics_<attr>{listener, processor}.
+      - pattern: kafka.server<type=socket-server-metrics, listener=(.+), networkProcessor=(\d+)><>([\w-]+)
+        name: kafka_server_socketservermetrics_$3
+        labels:
+          listener: $1
           processor: $2
         type: GAUGE
 
