@@ -11,7 +11,6 @@ import dev.dimster.TestResult;
 import dev.dimster.coordinator.ModifyRequest;
 import dev.dimster.coordinator.ModifyResult;
 import dev.dimster.coordinator.ModificationTarget;
-import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.kafka.KafkaConsumerWrapper;
 import java.io.IOException;
@@ -256,9 +255,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         worker.setKafkaConfig(pointConfig);
         log.info("Workers configured with Kafka config");
 
-        cluster = new KafkaCluster(
-                dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
-                pointConfig);
+        openCluster(pointConfig);
 
         cluster.deleteTestTopics();
         cluster.deleteTestGroups();
@@ -278,7 +275,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
         topics = createPlannedTopics();
 
         if (workload.availabilityConfig != null) {
-            cluster.createTopic(KafkaCluster.AVAIL_PROBE_TOPIC, workload.availabilityConfig.probePartitions);
+            cluster.createTopic(cluster.availProbeTopic(), workload.availabilityConfig.probePartitions);
             log.info("Created availability probe topic ({} partitions)", workload.availabilityConfig.probePartitions);
             worker.enableAvailability(workload.availabilityConfig);
             log.info("Availability probes enabled (threshold={}ms, timeout={}s)",
@@ -441,7 +438,7 @@ public class WorkloadEngine extends BaseEngine implements ModificationTarget {
             if (workload.availabilityConfig != null) {
                 List<ProbeAssignment> assignments = new ArrayList<>();
                 for (int p = 0; p < workload.availabilityConfig.probePartitions; p++) {
-                    assignments.add(new ProbeAssignment(KafkaCluster.AVAIL_PROBE_TOPIC, p));
+                    assignments.add(new ProbeAssignment(cluster.availProbeTopic(), p));
                 }
                 worker.startAvailabilityProbes(assignments);
                 log.info("Availability probes started ({} partitions, 1 probe/partition/sec)",

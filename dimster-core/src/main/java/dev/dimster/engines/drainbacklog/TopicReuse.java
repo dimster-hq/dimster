@@ -37,9 +37,13 @@ public final class TopicReuse {
 
     private TopicReuse() {}
 
-    /** The topics of the point's persistent backlog, numbered like any test topic. */
-    public static List<String> topicNames(TestPoint point, String identity) {
-        String prefix = BacklogReuse.persistentTopicPrefix(identity);
+    /**
+     * The topics of the point's persistent backlog, numbered like any test topic.
+     *
+     * @param keptPrefix the env's {@link dev.dimster.kafka.KafkaCluster#persistentTopicPrefix()}
+     */
+    public static List<String> topicNames(TestPoint point, String keptPrefix, String identity) {
+        String prefix = BacklogReuse.persistentTopicPrefix(keptPrefix, identity);
         List<String> names = new ArrayList<>(point.topics());
         for (int i = 0; i < point.topics(); i++) {
             names.add(String.format("%s-%04d", prefix, i));

@@ -175,7 +175,7 @@ public class FlinkPipelineTest {
 
     @Test
     public void startUploadsOnceSubmitsAndWaitsForRunning() throws Exception {
-        String jobId = pipeline.start(spec(2), clicks(), topology(), kafka());
+        String jobId = pipeline.start(spec(2), clicks(), topology(), kafka(), "dimster-grp-");
         assertEquals("job0", jobId);
         assertEquals(1, flink.uploads.size());
         assertTrue(flink.runBodies.getFirst().contains("dev.dimster.flink.runner.DimsterSqlJob"));
@@ -188,16 +188,16 @@ public class FlinkPipelineTest {
         assertEquals(1, flink.cancelled.size());
 
         // The next test point reuses the uploaded jar.
-        pipeline.start(spec(1), clicks(), topology(), kafka());
+        pipeline.start(spec(1), clicks(), topology(), kafka(), "dimster-grp-");
         assertEquals(1, flink.uploads.size());
     }
 
     @Test
     public void lostJarIsUploadedAgain() throws Exception {
-        pipeline.start(spec(1), clicks(), topology(), kafka());
+        pipeline.start(spec(1), clicks(), topology(), kafka(), "dimster-grp-");
         pipeline.stop();
         flink.loseJar = true;
-        pipeline.start(spec(1), clicks(), topology(), kafka());
+        pipeline.start(spec(1), clicks(), topology(), kafka(), "dimster-grp-");
         assertEquals(2, flink.uploads.size());
     }
 
@@ -205,7 +205,7 @@ public class FlinkPipelineTest {
     public void tooFewSlotsFailsBeforeSubmitting() {
         flink.slotsAvailable = 1;
         var e = assertThrows(IllegalStateException.class,
-                () -> pipeline.start(spec(2), clicks(), topology(), kafka()));
+                () -> pipeline.start(spec(2), clicks(), topology(), kafka(), "dimster-grp-"));
         assertTrue(e.getMessage(), e.getMessage().contains("needs 2 free task slots"));
         assertTrue(flink.runBodies.isEmpty());
     }
@@ -216,7 +216,7 @@ public class FlinkPipelineTest {
         FlinkSpec fanOut = spec(1);
         fanOut.sinkParallelism = 4;
         var e = assertThrows(IllegalStateException.class,
-                () -> pipeline.start(fanOut, clicks(), topology(), kafka()));
+                () -> pipeline.start(fanOut, clicks(), topology(), kafka(), "dimster-grp-"));
         assertTrue(e.getMessage(), e.getMessage().contains("needs 4 free task slots"));
     }
 
@@ -224,7 +224,7 @@ public class FlinkPipelineTest {
     public void jobThatFailsOnStartupReportsTheRootException() {
         flink.initialState = "FAILED";
         var e = assertThrows(IllegalStateException.class,
-                () -> pipeline.start(spec(1), clicks(), topology(), kafka()));
+                () -> pipeline.start(spec(1), clicks(), topology(), kafka(), "dimster-grp-"));
         assertTrue(e.getMessage(), e.getMessage().contains("boom"));
         assertNull(pipeline.jobId());
     }

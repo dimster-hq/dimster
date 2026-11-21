@@ -18,7 +18,7 @@ The idea is to have full traceability and the ability to easily reproduce a benc
 
 ## Result Storage
 
-After a benchmark run completes, the CLI downloads results (stored as JSON files on the coordinator's PVC), logs, dashboards and generate charts. The following assets are created in your local result dir (within a timestamped subdirectory (e.g., `results/2026-03-21-17-25-49/`):
+After a benchmark run completes, the CLI downloads results (stored as JSON files on the coordinator's PVC), logs, dashboards and generate charts. The following assets are created in your local result dir (within a subdirectory named by the run's start time plus a random suffix, e.g., `results/2026-03-21-17-25-49-k3x9/`, so runs started in the same second don't collide):
 - **JSON result file**: a single json result file with all throughput, latencies and all configuration data.
 - **`configs/` sub-directory**: the inputs that produced the run, captured at run start so each result is self-describing:
     - `workload-<name>.yaml` — one file per workload submitted to the run (the original file, byte-for-byte).
@@ -102,13 +102,13 @@ Only metrics the dashboards use are kept, and only for the run window, so snapsh
 To view a snapshot:
 
 ```
-dimster dashboard --snapshot results/2026-03-21-17-25-49
+dimster dashboard --snapshot results/2026-03-21-17-25-49-k3x9
 ```
 
 This needs Docker but no Kubernetes cluster. The CLI loads the snapshot into a temporary Prometheus container, starts Grafana with the snapshot's dashboards, and prints a link to each dashboard set to the run's time range:
 
 ```
-==> Snapshot of results/2026-03-21-17-25-49
+==> Snapshot of results/2026-03-21-17-25-49-k3x9
     clients    http://localhost:3000/d/dimster-clients?from=...&to=...
     kafka      http://localhost:3000/d/dimster-kafka?from=...&to=...
     system     http://localhost:3000/d/dimster-system?from=...&to=...

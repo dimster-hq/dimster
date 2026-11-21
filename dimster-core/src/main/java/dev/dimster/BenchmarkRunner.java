@@ -85,6 +85,7 @@ public class BenchmarkRunner {
     // with no scripts, so a workload that configures hooks without the run
     // request shipping them fails validation up front.
     private HookExecutor hookExecutor = new ScriptHookExecutor(Map.of());
+    private String topicTag;
 
     /**
      * A callback that engines call after each test point to persist progress.
@@ -141,6 +142,15 @@ public class BenchmarkRunner {
     /** Set the executor for workload hooks; see {@link ScriptHookExecutor#install}. */
     public void setHookExecutor(HookExecutor hookExecutor) {
         this.hookExecutor = hookExecutor;
+    }
+
+    /**
+     * Set the env's topic tag, handed to every engine so its topics and groups
+     * are named and cleaned up under it (see {@code KafkaCluster}). Null keeps
+     * the untagged names.
+     */
+    public void setTopicTag(String topicTag) {
+        this.topicTag = topicTag;
     }
 
     /**
@@ -303,6 +313,7 @@ public class BenchmarkRunner {
             engine = new WorkloadEngine(workload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
             engine.setHooks(hooks);
+            engine.setTopicTag(topicTag);
             // Publish the engine for the coordinator's /modify endpoint.
             // Cleared in the outer finally so an exception during run() can't
             // leave a stale engine reference visible.
@@ -376,6 +387,7 @@ public class BenchmarkRunner {
             engine = new ExploreEngine(exploreWorkload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
             engine.setHooks(hooks);
+            engine.setTopicTag(topicTag);
             log.info("=============== EXPLORE LIMITS : {} ===============", exploreWorkload.name);
 
             hooks.run(HookPoint.BEFORE_WORKLOAD, HookContext.workload());
@@ -440,6 +452,7 @@ public class BenchmarkRunner {
             engine = new CorrectnessEngine(correctnessWorkload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
             engine.setHooks(hooks);
+            engine.setTopicTag(topicTag);
             // Correctness publishes for the whole engine run. Its internal
             // controller accepts requests only during the measured CONCURRENT
             // phase and supplies precise rejection reasons at other times.
@@ -513,6 +526,7 @@ public class BenchmarkRunner {
             engine = new DrainBacklogEngine(drainWorkload, worker, topologyPlanner, fileKafkaConfig, stopRequested);
             engine.setTopologyRecorder(makeTopologyRecorder(workloadName));
             engine.setHooks(hooks);
+            engine.setTopicTag(topicTag);
             log.info("=============== DRAIN-BACKLOG : {} ===============", drainWorkload.name);
 
             hooks.run(HookPoint.BEFORE_WORKLOAD, HookContext.workload());

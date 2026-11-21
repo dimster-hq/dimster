@@ -91,16 +91,16 @@ Everything else — replicas, heap, CPU/memory requests, broker config file, wor
 Each run produces its own timestamped folder under `results/`, e.g.:
 
 ```
-results/2026-04-22-14-12-03/run-classic-scaling-10-120MBs-2026-04-22-14-12-03.json
-results/2026-04-23-09-47-15/run-classic-scaling-10-120MBs-2026-04-23-09-47-15.json
+results/2026-04-22-14-12-03-a7k2/run-classic-scaling-10-120MBs-2026-04-22-14-12-03.json
+results/2026-04-23-09-47-15-m0q5/run-classic-scaling-10-120MBs-2026-04-23-09-47-15.json
 ```
 
 ### 3. Compare them
 
 ```bash
 ./dimster compare \
-  3.7.2=results/2026-04-22-14-12-03/run-classic-scaling-10-120MBs-2026-04-22-14-12-03.json \
-  4.2.0=results/2026-04-23-09-47-15/run-classic-scaling-10-120MBs-2026-04-23-09-47-15.json
+  3.7.2=results/2026-04-22-14-12-03-a7k2/run-classic-scaling-10-120MBs-2026-04-22-14-12-03.json \
+  4.2.0=results/2026-04-23-09-47-15-m0q5/run-classic-scaling-10-120MBs-2026-04-23-09-47-15.json
 ```
 
 The labels (`3.7.2`, `4.2.0`) become the series names on the comparison charts. Output charts default to the directory of the first file; pass `--output <dir>` to write them somewhere else.

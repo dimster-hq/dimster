@@ -97,7 +97,7 @@ public class FlinkPipeline {
      * @return the job id
      */
     public String start(FlinkSpec flink, ResolvedDataset dataset, VirtualTopology topology,
-                        KafkaConfig kafkaConfig) throws IOException {
+                        KafkaConfig kafkaConfig, String groupPrefix) throws IOException {
         if (jobId != null) {
             throw new IllegalStateException("A Flink job is already running: " + jobId);
         }
@@ -110,7 +110,9 @@ public class FlinkPipeline {
         String firstTopic = topology.producerTopics().getFirst();
         String base = firstTopic.replaceFirst("-\\d{4}$", "");
         String jobName = base.startsWith(JOB_PREFIX) ? base : JOB_PREFIX + base;
-        String groupId = "dimster-grp-flink-" + base.substring(base.lastIndexOf('-') + 1);
+        // The job's source group lives under the env's group prefix, so the
+        // env's group cleanup (and no other env's) removes it.
+        String groupId = groupPrefix + "flink-" + base.substring(base.lastIndexOf('-') + 1);
 
         FlinkJobSpec spec = FlinkJobSpec.build(jobName, flink, dataset, topology.pipelineTopics(), groupId,
                 kafkaConfig.commonProperties());

@@ -3,7 +3,7 @@
 A workload can put an Apache Flink SQL job between its producers and consumers:
 
 ```
-producers ──► dimster-<s>-0000 ──► Flink SQL job ──► dimster-<s>-0000-out ──► consumers
+producers ──► dimster-<tag>-<s>-0000 ──► Flink SQL job ──► dimster-<tag>-<s>-0000-out ──► consumers
 ```
 
 Producers send [dataset](data-generation.md) records to the test topics as usual. A Flink job reads each topic, runs the workload's SQL over it, and writes the result to a matching `-out` topic. The consumers read the `-out` topics and measure end-to-end latency from the producer's send to their receipt, so the latency includes the time spent in Flink. Flink also stamps each output record with the time it emitted it, so the latency is also reported in two parts: [producer to Flink and Flink to consumer](#latency-through-flink).
@@ -236,7 +236,7 @@ The fields appear only for test points with a Flink stage. The run charts show b
 For each test point, Dimster:
 
 1. creates the test topics and a `<topic>-out` topic for each, with `flink.outputPartitionsPerTopic` partitions (default: the input's partition count);
-2. submits one Flink job, named `dimster-<suffix>`, with one pipeline per topic, and waits until it is running;
+2. submits one Flink job, named `dimster-<tag>-<suffix>` after the env's [topic tag](../deployment/10-shared-kafka.md#topic-tags-each-env-owns-its-topics), with one pipeline per topic, and waits until it is running;
 3. creates the consumers, on the `-out` topics, then the producers;
 4. at the end of the test point, cancels the job before deleting the topics.
 

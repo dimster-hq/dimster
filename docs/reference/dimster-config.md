@@ -28,7 +28,8 @@ environments:
     system: <string>          # System-under-test label (optional)
     hardware: <string>        # Hardware description for metadata (optional)
     kafka_client_version: <string>  # Concrete kafka-clients version, e.g. "3.7.2", "4.1.0", "4.2.0" (default: "4.2.0")
-    deploy: <string>          # "full" or "external" (default: "full")
+    deploy: <string>          # "full", "external" or "external-env" (default: "full")
+    topicTag: <string>        # Tag scoping this env's Kafka topics and groups (default: the env name)
     cpuManager:               # Experimental kubelet CPU Manager validation
       policy: <string>        # none|static (default: none)
       fullPcpusOnly: <bool>   # Require full physical cores when policy is static
@@ -37,6 +38,9 @@ environments:
     connection:               # Required when deploy is "external"
       bootstrap.servers: <string>
       <key>: <value>          # Additional Kafka client properties
+
+    externalEnv:              # Required when deploy is "external-env"
+      environment: <string>   # The env hosting the Kafka cluster (full or external)
 
     kafka:                    # Kafka broker config (full mode only)
       replicas: <int>
@@ -146,7 +150,8 @@ Each entry under `environments` defines a named deployment target.
 | `system` | string | -- | System-under-test label recorded in result metadata (e.g. `"Kafka 4.2"`, `"Redpanda 24.3"`). |
 | `hardware` | string | -- | Hardware description recorded in result metadata (e.g. `"3x m7i.2xlarge"`). |
 | `kafka_client_version` | string | `4.2.0` | Concrete `kafka-clients` version the worker and coordinator pods are built against (e.g. `"3.7.2"`, `"3.9.0"`, `"4.1.0"`, `"4.2.0"`). The CLI maps the version to the matching impl module and passes it through to Maven as `-Dkafka.version=<version>`, so the bundled jar is exactly what you ask for. Independent of `kafka.version` (the broker image tag). See [Kafka Versioning](../concepts/kafka-versioning.md) for the supported versions and the cross-version compatibility matrix. |
-| `deploy` | string | `full` | Deploy mode. `full` deploys Kafka brokers alongside workers. `external` connects to an existing Kafka cluster via the `connection` section. |
+| `deploy` | string | `full` | Deploy mode. `full` deploys Kafka brokers alongside workers. `external` connects to an existing Kafka cluster via the `connection` section. `external-env` uses the Kafka cluster of the env named in the [`externalEnv`](#externalenv) section. |
+| `topicTag` | string | env name | Tag that scopes the Kafka topics and consumer groups this env's coordinator creates and deletes: `dimster-<tag>-…`. Envs sharing a Kafka cluster each clean up only their own. Letters, digits, `.` and `_` only (no `-`); an env whose name has other characters must set it. See [Sharing a Kafka cluster](../deployment/10-shared-kafka.md#topic-tags-each-env-owns-its-topics). |
 | `metricsOutput` | list of strings | `[html]` | Prometheus metrics saved into the result directory after each run. `html` renders the Grafana dashboards as static HTML; `snapshot` saves the raw Prometheus data for the run, viewable later with `dimster dashboard --snapshot`. `[]` saves no metrics. Overridden per command by `--metrics-output`. See [Results and Charts](../concepts/results-and-charts.md#saving-metrics-after-a-run). |
 | `cpuManager.policy` | string | `none` | Experimental, validation-only kubelet CPU Manager requirement. `none` disables the check. `static` makes `dimster deploy` verify benchmark nodes are running kubelet `cpuManagerPolicy: static` before applying manifests. |
 | `cpuManager.fullPcpusOnly` | boolean | `false` | Experimental. When `policy: static`, require kubelet `cpuManagerPolicyOptions.full-pcpus-only: true` so whole physical cores are allocated on SMT systems. |
@@ -208,6 +213,25 @@ Common connection properties:
 | `sasl.mechanism` | `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512`, `OAUTHBEARER` |
 | `sasl.jaas.config` | JAAS login module configuration string |
 | `ssl.truststore.location` | Path to truststore file |
+
+### externalEnv
+
+Required when `deploy` is `external-env`. Names the env whose Kafka cluster this env runs its workloads against, so several envs can run workloads against one cluster at the same time. The env deploys like an `external` one (workers, coordinator and monitoring, no Kafka) and resolves its connection from the named env at run time. See [Sharing a Kafka cluster](../deployment/10-shared-kafka.md).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `environment` | string | Yes | The env hosting the Kafka cluster. A `full` env: its in-cluster brokers, over their PLAINTEXT listener; it must be on the same kubectl context. An `external` env: its `connection` section. |
+
+The env must not have `connection` or `kafka` sections, and on the same Kubernetes cluster it needs its own `namespace`, since every Dimster resource has a fixed name.
+
+```yaml
+environments:
+  localB:
+    namespace: dimster-b
+    deploy: external-env
+    externalEnv:
+      environment: local
+```
 
 ### kafka
 

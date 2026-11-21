@@ -1,6 +1,7 @@
 package dev.dimster.kafka;
 
 import java.util.*;
+import java.util.regex.Pattern;
 
 import dev.dimster.spi.kafka.GroupKind;
 import dev.dimster.spi.kafka.RawAdmin;
@@ -19,16 +20,27 @@ import org.slf4j.LoggerFactory;
  * {@code KafkaClientFactory.newAdmin}; KafkaCluster just calls it.
  *
  * <p>Why a wrapper at all (rather than letting callers use RawAdmin directly):
- * KafkaCluster owns the dimster-side conventions - test-topic prefix filtering,
- * the "dimster-grp-" naming pattern for transient test groups, replication
- * factor coming from KafkaConfig, fail-soft logging when group cleanup fails.
- * Those policies don't belong in the SPI.
+ * KafkaCluster owns the dimster-side conventions - the names of test topics and
+ * groups and which of them cleanup may delete, replication factor coming from
+ * KafkaConfig, fail-soft logging when group cleanup fails. Those policies don't
+ * belong in the SPI.
+ *
+ * <p>Ownership: several coordinators (one per Dimster env) may share one Kafka
+ * cluster, so each names everything it creates under its env's topic tag and
+ * cleans up only those names. With tag {@code T} the prefix is
+ * {@code dimster-T}: topics {@code dimster-T-...}, groups {@code dimster-T-grp-...},
+ * the availability probe {@code dimster-T-avail-probe} and kept backlogs
+ * {@code dimst-no-delete-T-...}. A tag has no {@code -}, so one tag's prefix
+ * never matches another's names. Without a tag (embedded mode) the names are
+ * the untagged {@code dimster-...} ones and cleanup takes every {@code dimster*}
+ * topic, so an untagged coordinator must not share its cluster.
  */
 public class KafkaCluster implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaCluster.class);
     // Public so other tools (e.g. InspectMain) can apply the same dimster-resource
-    // detection rules without duplicating the prefix strings. Single source of truth.
+    // detection rules without duplicating the prefix strings. Every tagged and
+    // untagged name starts with these, so they detect any env's resources.
     public static final String TOPIC_PREFIX = "dimster";
     public static final String TEST_GROUP_PREFIX = "dimster-grp-";
     public static final String AVAIL_PROBE_TOPIC = "dimster-avail-probe";
@@ -39,22 +51,81 @@ public class KafkaCluster implements AutoCloseable {
      */
     public static final String PERSISTENT_TOPIC_PREFIX = "dimst-no-delete";
 
+    /** A topic tag: what Kafka allows in a topic name, minus the {@code -} that ends the tag. */
+    private static final Pattern TAG = Pattern.compile("[A-Za-z0-9._]+");
+
     private final RawAdmin admin;
     private final KafkaConfig config;
+    private final String tag;
 
     /**
      * @param admin  SPI admin handle - typically built by the caller via
      *               {@code factory.newAdmin(config.commonProperties())} so the
      *               KafkaConfig and the admin's bootstrap properties stay in sync.
      * @param config dimster's Kafka config (replication factor, topic properties, ...).
+     * @param tag    the topic tag owning this cluster's test topics and groups, or
+     *               null for the untagged names (see the class comment).
      */
-    public KafkaCluster(RawAdmin admin, KafkaConfig config) {
+    public KafkaCluster(RawAdmin admin, KafkaConfig config, String tag) {
+        validateTag(tag);
         this.admin = admin;
         this.config = config;
+        this.tag = tag;
+    }
+
+    /** Rejects a tag that could not keep its names apart from other tags'. Null is valid. */
+    public static void validateTag(String tag) {
+        if (tag != null && !TAG.matcher(tag).matches()) {
+            throw new IllegalArgumentException("Invalid topic tag '" + tag
+                    + "': use only letters, digits, '.' and '_' (no '-', which ends the tag in topic names)");
+        }
+    }
+
+    /** {@code dimster-<tag>}, or {@code dimster} untagged: test topics are {@code <prefix>-...}. */
+    public static String topicPrefix(String tag) {
+        return tag == null ? TOPIC_PREFIX : TOPIC_PREFIX + "-" + tag;
+    }
+
+    /** Prefix of the tag's consumer and share groups. */
+    public static String groupPrefix(String tag) {
+        return groupPrefixOf(topicPrefix(tag));
+    }
+
+    /** Groups live under their topic prefix, so a topic prefix alone names them. */
+    public static String groupPrefixOf(String topicPrefix) {
+        return topicPrefix + "-grp-";
+    }
+
+    /** Whether test-topic cleanup under {@code tag} may delete {@code topic}. */
+    public static boolean ownsTopic(String tag, String topic) {
+        return tag == null ? topic.startsWith(TOPIC_PREFIX) : topic.startsWith(topicPrefix(tag) + "-");
+    }
+
+    /** Whether test-group cleanup under {@code tag} may delete {@code groupId}. */
+    public static boolean ownsGroup(String tag, String groupId) {
+        return groupId.startsWith(groupPrefix(tag));
     }
 
     public String topicPrefix() {
-        return TOPIC_PREFIX;
+        return topicPrefix(tag);
+    }
+
+    public String groupPrefix() {
+        return groupPrefix(tag);
+    }
+
+    /** The availability probe topic, under the topic prefix so cleanup removes it. */
+    public String availProbeTopic() {
+        return topicPrefix() + "-avail-probe";
+    }
+
+    /**
+     * Prefix of this tag's kept backlogs. Outside the topic prefix, so test-topic
+     * cleanup never deletes them, and tagged so envs sharing the cluster never
+     * adopt (or delete) each other's.
+     */
+    public String persistentTopicPrefix() {
+        return tag == null ? PERSISTENT_TOPIC_PREFIX : PERSISTENT_TOPIC_PREFIX + "-" + tag;
     }
 
     public void deleteTestTopics() {
@@ -62,15 +133,16 @@ public class KafkaCluster implements AutoCloseable {
     }
 
     /**
-     * Deletes every test topic except those in {@code keep}, e.g. a
-     * drain-backlog backlog that the next test point reuses.
+     * Deletes every test topic this cluster's tag owns ({@link #ownsTopic})
+     * except those in {@code keep}, e.g. a drain-backlog backlog that the next
+     * test point reuses. Other tags' topics on a shared cluster are untouched.
      */
     public void deleteTestTopics(Set<String> keep) {
         try {
             Set<String> topics = new HashSet<>();
             for (String name : admin.listTopicNames()) {
                 if (keep.contains(name)) continue;
-                if (name.startsWith(topicPrefix()) || name.equals(AVAIL_PROBE_TOPIC)) {
+                if (ownsTopic(tag, name)) {
                     topics.add(name);
                 }
             }
@@ -133,6 +205,7 @@ public class KafkaCluster implements AutoCloseable {
         }
     }
 
+    /** Deletes the consumer and share groups this cluster's tag owns ({@link #ownsGroup}). */
     public void deleteTestGroups() {
         deleteTestConsumerGroups();
         deleteTestShareGroups();
@@ -142,7 +215,7 @@ public class KafkaCluster implements AutoCloseable {
         try {
             List<String> groupIds = new ArrayList<>();
             for (var groupId : admin.listGroupIds(GroupKind.CLASSIC_OR_CONSUMER)) {
-                if (groupId.startsWith(TEST_GROUP_PREFIX)) {
+                if (ownsGroup(tag, groupId)) {
                     groupIds.add(groupId);
                 }
             }
@@ -161,7 +234,7 @@ public class KafkaCluster implements AutoCloseable {
             // an empty set, so this whole method is a no-op without throwing.
             List<String> groupIds = new ArrayList<>();
             for (var groupId : admin.listGroupIds(GroupKind.SHARE)) {
-                if (groupId.startsWith(TEST_GROUP_PREFIX)) {
+                if (ownsGroup(tag, groupId)) {
                     groupIds.add(groupId);
                 }
             }

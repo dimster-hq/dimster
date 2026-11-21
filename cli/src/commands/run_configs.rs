@@ -8,11 +8,12 @@
 // (the workload file, the optional kafka config, the broker config that was
 // last deployed) lived only on the user's filesystem and could be edited or
 // lost. This module makes each run self-describing: at run start, the CLI
-// chooses the results subdirectory name (a yyyy-MM-dd-HH-mm-ss timestamp),
-// creates `{output_dir}/{timestamp}/configs/`, and copies the inputs in. The
-// timestamp is then passed to the coordinator via `RunRequest.resultsSubdir`
-// so the Java side writes its own artifacts (run-request.json, result JSONs)
-// into the same directory.
+// chooses the results subdirectory name (a yyyy-MM-dd-HH-mm-ss timestamp plus
+// a short random suffix, see `new_run_dir_name`), creates
+// `{output_dir}/{name}/configs/`, and copies the inputs in. The name is then
+// passed to the coordinator via `RunRequest.resultsSubdir` so the Java side
+// writes its own artifacts (run-request.json, result JSONs) into the same
+// directory.
 //
 // Failure semantics: the configs are written *before* anything is sent to the
 // cluster. If the run fails before the coordinator is reached, the user still
@@ -174,6 +175,38 @@ fn validate_path_segment(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Name of a run's results directory: its local start time plus a random
+/// suffix, e.g. `2026-11-21-17-15-06-k3x9`. The timestamp alone has seconds
+/// resolution, so two runs started in the same second (e.g. envs sharing a
+/// Kafka cluster) would collide on it. Sorts by start time like the bare
+/// timestamp. The coordinator accepts only this shape (`SAFE_SUBDIR` in
+/// CoordinatorServer), so keep the two in step.
+pub fn new_run_dir_name() -> String {
+    format!("{}-{}", now_timestamp(), random_suffix())
+}
+
+/// Four random characters from `[0-9a-z]`. Std-only: `RandomState` hashes
+/// with keys seeded from the OS's randomness, mixed here with the time and
+/// process id.
+fn random_suffix() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    hasher.write_u128(nanos);
+    hasher.write_u32(std::process::id());
+    let mut n = hasher.finish();
+    (0..4)
+        .map(|_| {
+            let c = ALPHABET[(n % 36) as usize] as char;
+            n /= 36;
+            c
+        })
+        .collect()
+}
+
 /// Returns a local-time timestamp formatted as `yyyy-MM-dd-HH-mm-ss`.
 ///
 /// Local time (not UTC) is used to match the Java coordinator's existing
@@ -206,8 +239,9 @@ pub fn now_timestamp() -> String {
 ///   - two workloads sharing the same file stem (the Java side keys workloads
 ///     by stem in a HashMap, so a collision would silently lose one workload —
 ///     better to refuse than to capture the wrong file)
-///   - the configs directory already existing (vanishingly rare two-runs-in-
-///     the-same-second collision; merging would corrupt the captured inputs)
+///   - the configs directory already existing (two runs drawing the same
+///     random suffix in the same second; merging would corrupt the captured
+///     inputs)
 ///   - any source file being unreadable
 pub fn prepare_run_dir<P: AsRef<Path>>(
     output_dir: &str,
@@ -224,8 +258,7 @@ pub fn prepare_run_dir<P: AsRef<Path>>(
 
     if configs_dir.exists() {
         bail!(
-            "Run configs directory already exists: {}. \
-             Wait one second and retry, or delete the directory.",
+            "Run configs directory already exists: {}. Retry, or delete the directory.",
             configs_dir.display()
         );
     }
@@ -479,6 +512,39 @@ fn write_env_capture_from_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_dir_name_is_the_start_time_plus_a_random_suffix() {
+        // yyyy-MM-dd-HH-mm-ss-xxxx: the shape the coordinator's SAFE_SUBDIR
+        // accepts, so this must change in step with it.
+        let name = new_run_dir_name();
+        let parts: Vec<&str> = name.split('-').collect();
+        assert_eq!(parts.len(), 7, "{}", name);
+        for (part, len) in parts[..6].iter().zip([4, 2, 2, 2, 2, 2]) {
+            assert!(
+                part.len() == len && part.bytes().all(|b| b.is_ascii_digit()),
+                "{}",
+                name
+            );
+        }
+        let suffix = parts[6];
+        assert_eq!(suffix.len(), 4, "{}", name);
+        assert!(
+            suffix
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase()),
+            "{}",
+            name
+        );
+    }
+
+    #[test]
+    fn run_dir_names_started_together_differ() {
+        // Two runs in the same second must not share a directory. Each name
+        // has 36^4 suffixes, so 20 identical ones would mean no randomness.
+        let names: std::collections::HashSet<String> = (0..20).map(|_| random_suffix()).collect();
+        assert!(names.len() > 1, "{:?}", names);
+    }
     use std::fs;
 
     fn write_file(dir: &Path, name: &str, contents: &str) -> String {

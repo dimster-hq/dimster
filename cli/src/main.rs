@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
-use config::{DimsterConfig, Distro, MetricsOutput};
+use config::{DimsterConfig, Distro, KafkaSource, MetricsOutput};
 use kubectl::Kubectl;
 
 #[derive(Parser)]
@@ -574,38 +574,25 @@ fn run_command(cli: Cli) -> Result<()> {
                      (only --modify can omit it)"
                 );
             }
-            let env_config = config.get_env(&env)?;
             // Worker assignment lives under workers.assignment in the env
             // config — pull each field out so the run request can carry
             // them through to the coordinator.
-            let assignment = env_config
+            let assignment = config
+                .get_env(&env)?
                 .workers
                 .as_ref()
-                .and_then(|w| w.assignment.as_ref());
+                .and_then(|w| w.assignment.clone())
+                .unwrap_or_default();
             let run_args = commands::run::RunArgs {
-                mode: "run".to_string(),
                 kafka_config,
                 workloads,
-                worker_assignment: assignment.and_then(|a| a.mode.clone()),
-                worker_ratio: assignment.and_then(|a| a.ratio.clone()),
-                producer_workers: assignment.and_then(|a| a.producers),
-                consumer_workers: assignment.and_then(|a| a.consumers),
-                system: env_config.system.clone(),
-                environment: env.clone(),
-                hardware: env_config.hardware.clone(),
-                connection: env_config.connection.clone(),
-                broker_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.broker_config.clone()),
-                extra_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.extra_config.clone()),
-                tls_config: env_config.tls_config().cloned(),
+                worker_assignment: assignment.mode,
+                worker_ratio: assignment.ratio,
+                producer_workers: assignment.producers,
+                consumer_workers: assignment.consumers,
                 metadata,
                 extra_dimensions,
-                metrics_output: metrics.resolve(&config, &env),
+                ..env_run_args(&config, &env, "run", metrics.resolve(&config, &env))?
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -631,31 +618,12 @@ fn run_command(cli: Cli) -> Result<()> {
                 anyhow::bail!("Explore workload not found: {}", workload);
             }
             let workload_path = workload;
-            let env_config = config.get_env(&env)?;
             let run_args = commands::run::RunArgs {
-                mode: "explore".to_string(),
                 kafka_config,
                 workloads: vec![workload_path],
-                worker_assignment: None,
-                worker_ratio: None,
-                producer_workers: None,
-                consumer_workers: None,
-                system: env_config.system.clone(),
-                environment: env.clone(),
-                hardware: env_config.hardware.clone(),
-                connection: env_config.connection.clone(),
-                broker_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.broker_config.clone()),
-                extra_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.extra_config.clone()),
-                tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
-                metrics_output: metrics.resolve(&config, &env),
+                ..env_run_args(&config, &env, "explore", metrics.resolve(&config, &env))?
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -681,31 +649,12 @@ fn run_command(cli: Cli) -> Result<()> {
                 anyhow::bail!("Correctness workload not found: {}", workload);
             }
             let workload_path = workload;
-            let env_config = config.get_env(&env)?;
             let run_args = commands::run::RunArgs {
-                mode: "correctness".to_string(),
                 kafka_config,
                 workloads: vec![workload_path],
-                worker_assignment: None,
-                worker_ratio: None,
-                producer_workers: None,
-                consumer_workers: None,
-                system: env_config.system.clone(),
-                environment: env.clone(),
-                hardware: env_config.hardware.clone(),
-                connection: env_config.connection.clone(),
-                broker_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.broker_config.clone()),
-                extra_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.extra_config.clone()),
-                tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
-                metrics_output: metrics.resolve(&config, &env),
+                ..env_run_args(&config, &env, "correctness", metrics.resolve(&config, &env))?
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -731,31 +680,17 @@ fn run_command(cli: Cli) -> Result<()> {
                 anyhow::bail!("Drain-backlog workload not found: {}", workload);
             }
             let workload_path = workload;
-            let env_config = config.get_env(&env)?;
             let run_args = commands::run::RunArgs {
-                mode: "drain-backlog".to_string(),
                 kafka_config,
                 workloads: vec![workload_path],
-                worker_assignment: None,
-                worker_ratio: None,
-                producer_workers: None,
-                consumer_workers: None,
-                system: env_config.system.clone(),
-                environment: env.clone(),
-                hardware: env_config.hardware.clone(),
-                connection: env_config.connection.clone(),
-                broker_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.broker_config.clone()),
-                extra_config: env_config
-                    .kafka
-                    .as_ref()
-                    .and_then(|k| k.extra_config.clone()),
-                tls_config: env_config.tls_config().cloned(),
                 metadata,
                 extra_dimensions,
-                metrics_output: metrics.resolve(&config, &env),
+                ..env_run_args(
+                    &config,
+                    &env,
+                    "drain-backlog",
+                    metrics.resolve(&config, &env),
+                )?
             };
             let output_dir = config.results.dir.clone();
             commands::run::run(
@@ -838,6 +773,20 @@ fn run_command(cli: Cli) -> Result<()> {
                 .as_ref()
                 .and_then(|k| k.pvc_storage_class.as_deref())
                 == Some("local-storage");
+            // Tearing down Kafka strands any env that shares it; say so.
+            let users = config.kafka_users(&env);
+            if !env_config.is_external()
+                && !users.is_empty()
+                && commands::deploy::parse_components(&only)?
+                    .contains(&commands::deploy::Component::Kafka)
+            {
+                println!(
+                    "    Note: {} use(s) this env's Kafka (deploy: external-env) and can't run \
+                     against it until '{}' is deployed again.",
+                    users.join(", "),
+                    env
+                );
+            }
             commands::teardown::run(
                 &kubectl,
                 &env,
@@ -907,12 +856,23 @@ fn run_command(cli: Cli) -> Result<()> {
             tail,
         } => {
             let kubectl = require_kubectl(&config, &env)?;
-            commands::logs::run(&kubectl, &component, follow, previous, tail)?;
+            // Broker logs come from wherever the env's brokers run, which is
+            // another env's namespace for `deploy: external-env`.
+            let kafka_kubectl = match component.as_str() {
+                "kafka" => kafka_kubectl(&config, &env, &kubectl)?,
+                _ => None,
+            };
+            let kubectl = kafka_kubectl.as_ref().unwrap_or(&kubectl);
+            commands::logs::run(kubectl, &component, follow, previous, tail)?;
         }
 
         Commands::DownloadKafkaLogs { env, output } => {
             let kubectl = require_kubectl(&config, &env)?;
-            commands::download_kafka_logs::run(&kubectl, &output)?;
+            let kafka_kubectl = kafka_kubectl(&config, &env, &kubectl)?;
+            commands::download_kafka_logs::run(
+                kafka_kubectl.as_ref().unwrap_or(&kubectl),
+                &output,
+            )?;
         }
 
         Commands::Health { env } => {
@@ -928,7 +888,6 @@ fn run_command(cli: Cli) -> Result<()> {
             group_members,
             metadata_quorum,
         } => {
-            let env_config = config.get_env(&env)?;
             let kubectl = require_kubectl(&config, &env)?;
             let filters = commands::inspect::InspectFilters {
                 dimster_only,
@@ -937,18 +896,18 @@ fn run_command(cli: Cli) -> Result<()> {
                 group_members,
                 metadata_quorum,
             };
-            if env_config.is_external() {
-                // External mode: no kafka-0 pod exists, so we route through a
-                // dedicated long-lived dimster-inspect pod that talks to the
-                // remote cluster via AdminClient. See inspect::run_external.
-                let conn = env_config.connection.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "external mode requires a 'connection:' section in the env config"
-                    )
-                })?;
-                commands::inspect::run_external(&kubectl, conn, &filters)?;
-            } else {
-                commands::inspect::run(&kubectl, &filters)?;
+            match config.kafka_source(&env)? {
+                // Dimster's brokers (this env's, or the host's for
+                // external-env): exec into kafka-0 in their namespace.
+                KafkaSource::InCluster { namespace, .. } => {
+                    commands::inspect::run(&kubectl.for_namespace(&namespace), &filters)?;
+                }
+                // No kafka-0 pod to exec into, so route through a dedicated
+                // long-lived dimster-inspect pod that talks to the remote
+                // cluster via AdminClient. See inspect::run_external.
+                KafkaSource::Connection(conn) => {
+                    commands::inspect::run_external(&kubectl, &conn, &filters)?;
+                }
             }
         }
 
@@ -957,19 +916,18 @@ fn run_command(cli: Cli) -> Result<()> {
             broker_id,
             command,
         } => {
-            let env_config = config.get_env(&env)?;
-            if env_config.is_external() {
-                anyhow::bail!(
-                    "The 'kafka' command is not available in external deploy mode (no Kafka pods deployed)."
-                );
-            }
             let kubectl = require_kubectl(&config, &env)?;
+            let Some(kafka_kubectl) = kafka_kubectl(&config, &env, &kubectl)? else {
+                anyhow::bail!(
+                    "The 'kafka' command is not available for external Kafka (no Kafka pods deployed)."
+                );
+            };
             let cmd = if command.is_empty() {
                 None
             } else {
                 Some(command)
             };
-            commands::kafka::run(&kubectl, broker_id, cmd)?;
+            commands::kafka::run(&kafka_kubectl, broker_id, cmd)?;
         }
 
         Commands::Init { local_k8s_distro } => {
@@ -978,6 +936,51 @@ fn run_command(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The run settings every run mode takes from the env: its labels, its Kafka
+/// (following a `deploy: external-env` reference to the env hosting it), its
+/// topic tag and the broker config captured into the results. Callers fill in
+/// the run's own inputs (workloads, kafka config, annotations) with struct
+/// update syntax; worker assignment is left for `dimster run` to set.
+fn env_run_args(
+    config: &DimsterConfig,
+    env: &str,
+    mode: &str,
+    metrics_output: Vec<MetricsOutput>,
+) -> Result<commands::run::RunArgs> {
+    let env_config = config.get_env(env)?;
+    let kafka = env_config.kafka.as_ref();
+    Ok(commands::run::RunArgs {
+        mode: mode.to_string(),
+        kafka_config: None,
+        workloads: Vec::new(),
+        worker_assignment: None,
+        worker_ratio: None,
+        producer_workers: None,
+        consumer_workers: None,
+        system: env_config.system.clone(),
+        environment: env.to_string(),
+        hardware: env_config.hardware.clone(),
+        kafka: config.kafka_source(env)?,
+        topic_tag: config.topic_tag(env),
+        broker_config: kafka.and_then(|k| k.broker_config.clone()),
+        extra_config: kafka.and_then(|k| k.extra_config.clone()),
+        tls_config: env_config.tls_config().cloned(),
+        metadata: Vec::new(),
+        extra_dimensions: Vec::new(),
+        metrics_output,
+    })
+}
+
+/// A Kubectl for the namespace of the Dimster-deployed brokers `env` uses
+/// (its own, or its host's for `deploy: external-env`); None when its Kafka
+/// is reached through a connection block, so there are no broker pods.
+fn kafka_kubectl(config: &DimsterConfig, env: &str, kubectl: &Kubectl) -> Result<Option<Kubectl>> {
+    Ok(match config.kafka_source(env)? {
+        KafkaSource::InCluster { namespace, .. } => Some(kubectl.for_namespace(&namespace)),
+        KafkaSource::Connection(_) => None,
+    })
 }
 
 /// Create Kubectl after validating the environment exists in config.

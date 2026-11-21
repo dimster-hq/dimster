@@ -35,6 +35,11 @@ kubernetes:
 #   kafka.*     - Kafka cluster settings
 #   workers.*   - Benchmark worker settings
 #   coordinator.* - Coordinator settings
+#   deploy      - full (default: Dimster deploys Kafka) | external (Kafka from
+#                 `connection:`) | external-env (the Kafka of the env named in
+#                 `externalEnv.environment`; see docs/deployment/10-shared-kafka.md)
+#   topicTag    - tag scoping this env's Kafka topics and groups, which are named
+#                 dimster-<tag>-... (default: the env name)
 #
 # 'local' is reserved with tiny defaults (1 replica, 250m CPU, 512Mi memory).
 # Images with plain names (no dots) are loaded into the local cluster via the
@@ -159,6 +164,28 @@ environments:
   #     requests:
   #       cpu: "250m"
   #       memory: "768Mi"
+
+  # Example: a second env running its own workloads against localBeefy's Kafka
+  # at the same time (see docs/deployment/10-shared-kafka.md). It deploys its
+  # own workers, coordinator and monitoring, no Kafka, into its own namespace;
+  # `dimster run localBeefyB ...` resolves localBeefy's brokers at run time.
+  # Its topics and groups are named dimster-<topicTag>-..., so neither env's
+  # coordinator deletes the other's.
+  # localBeefyB:
+  #   image: dimster
+  #   context: minikube              # same k8s cluster as localBeefy
+  #   distro: minikube
+  #   namespace: dimster-b           # must differ from localBeefy's namespace
+  #   deploy: external-env
+  #   externalEnv:
+  #     environment: localBeefy      # the env hosting the Kafka cluster (full or external)
+  #   # topicTag: beefyB             # defaults to the env name; letters, digits, '.', '_'
+  #   workers:
+  #     replicas: 1
+  #     heap: "-Xms1G -Xmx2G"
+  #     requests:
+  #       cpu: "1"
+  #       memory: "2Gi"
 
   # Example: AWS EKS deployment (see docs/eks-setup.md for full guide)
   # aws:

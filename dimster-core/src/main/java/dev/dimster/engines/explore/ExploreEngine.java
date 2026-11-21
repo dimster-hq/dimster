@@ -9,7 +9,6 @@ import dev.dimster.ScenarioExpander;
 import dev.dimster.ScenarioExpander.TestPoint;
 import dev.dimster.ConsumerType;
 import dev.dimster.engines.explore.ExploreWorkload.ExploreConfig;
-import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.kafka.KafkaConsumerWrapper;
 import dev.dimster.utils.StopRequestedException;
@@ -209,9 +208,7 @@ public class ExploreEngine extends BaseEngine {
         // Set kafka config for this test point
         KafkaConfig pointConfig = point.kafkaConfig();
         worker.setKafkaConfig(pointConfig);
-        cluster = new KafkaCluster(
-                dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
-                pointConfig);
+        openCluster(pointConfig);
 
         cluster.deleteTestTopics();
         cluster.deleteTestGroups();

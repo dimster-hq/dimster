@@ -6,6 +6,8 @@ Dimster can use an external Kafka cluster/service instead of deploying Kafka in 
 
 For the conceptual difference between `full` and `external` mode, see [page 02](02-deploy-modes.md). This page is the per-target recipe book.
 
+To use the Kafka cluster of another Dimster env, for example to run a second workload against it at the same time, use `deploy: external-env` instead of copying its bootstrap servers into a `connection` block. See [10 — Sharing a Kafka cluster](10-shared-kafka.md).
+
 ## How `connection:` works
 
 When `deploy: external` is used, the `connection` section tells Dimster how to connect to the Kafka external cluster. Every key under `connection:` is passed straight through to the Kafka client `commonConfig`. So whatever your Kafka client supports — SASL, mTLS, OAuth, ACLs, custom serializers — you put it under `connection:`.

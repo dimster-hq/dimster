@@ -155,9 +155,40 @@ fn default_results_dir() -> String {
 #[derive(Debug, Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeployMode {
+    /// Dimster deploys and owns the Kafka cluster.
     #[default]
     Full,
+    /// Kafka is reached through the env's own `connection` block.
     External,
+    /// Kafka is the cluster of another env, named in the `externalEnv` block,
+    /// so several envs can run workloads against one cluster at once. Deploys
+    /// like `external`; the connection is resolved from that env at run time
+    /// (see `DimsterConfig::kafka_source`).
+    #[serde(rename = "external-env")]
+    ExternalEnv,
+}
+
+/// The `externalEnv` block of a `deploy: external-env` env: which env hosts
+/// the Kafka cluster it shares. Strict, so a misplaced field (e.g. this env's
+/// own `namespace`, which stays top-level) fails loudly rather than vanishing.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalEnvConfig {
+    /// Name of the env whose Kafka cluster this env uses: a `full` env (its
+    /// in-cluster brokers) or an `external` env (its `connection` block).
+    pub environment: String,
+}
+
+/// Where an env's Kafka cluster is and how to reach it, after following a
+/// `deploy: external-env` reference to the env that hosts it. Commands that
+/// talk to Kafka (run, inspect, kafka, logs) branch on this instead of on the
+/// deploy mode, so `full`, `external` and `external-env` share one code path.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KafkaSource {
+    /// Brokers Dimster deployed for the `full` env `env`, in `namespace`.
+    InCluster { env: String, namespace: String },
+    /// A cluster reached with these client connection properties.
+    Connection(ConnectionConfig),
 }
 
 /// One way of saving a run's Prometheus metrics into its result directory.
@@ -327,6 +358,15 @@ pub struct Environment {
     pub kafka_client_version: Option<String>,
     #[serde(default)]
     pub deploy: DeployMode,
+    /// For `deploy: external-env`: the env hosting the Kafka cluster.
+    #[serde(default, rename = "externalEnv")]
+    pub external_env: Option<ExternalEnvConfig>,
+    /// Tag that scopes the Kafka topics and groups this env's coordinator
+    /// creates and deletes (`dimster-<tag>-...`), so envs sharing a cluster
+    /// leave each other's alone. Defaults to the env name (see
+    /// `DimsterConfig::topic_tag`).
+    #[serde(default, rename = "topicTag")]
+    pub topic_tag: Option<String>,
     /// Optional validation-only kubelet CPU Manager expectation. Omitted or
     /// `policy: none` keeps current behaviour. `policy: static` asks deploy to
     /// verify that benchmark pods can receive exclusive CPUs on their selected
@@ -561,7 +601,7 @@ impl FlinkEnvConfig {
 /// Connection details for an external Kafka-compatible cluster.
 /// All keys use standard Kafka dot-syntax (e.g. `bootstrap.servers`,
 /// `security.protocol`) and are injected as-is into client configs.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct ConnectionConfig {
     #[serde(flatten)]
     pub properties: BTreeMap<String, String>,
@@ -597,9 +637,10 @@ impl Environment {
             .unwrap_or(false)
     }
 
-    /// Returns true when the environment connects to an external Kafka cluster.
+    /// Returns true when the environment does not deploy Kafka: it uses an
+    /// external cluster, either its own `connection` or another env's Kafka.
     pub fn is_external(&self) -> bool {
-        self.deploy == DeployMode::External
+        matches!(self.deploy, DeployMode::External | DeployMode::ExternalEnv)
     }
 
     /// Returns the resolved TLS config when the env has it enabled. None
@@ -647,7 +688,9 @@ impl Environment {
         self.kafka.is_none() && self.workers.is_none() && self.coordinator.is_none()
     }
 
-    /// Validate the environment configuration.
+    /// Validate the environment configuration on its own. Checks that need
+    /// the rest of the config (the env an `external-env` env points at) live
+    /// in `DimsterConfig::validate_external_env`.
     pub fn validate(&self, name: &str) -> Result<()> {
         if self.deploy == DeployMode::External {
             match &self.connection {
@@ -661,6 +704,29 @@ impl Environment {
                 }
             }
         }
+        if self.deploy == DeployMode::ExternalEnv {
+            if self.external_env.is_none() {
+                bail!(
+                    "Environment '{}' has deploy: external-env but no externalEnv section. \
+                     Name the env hosting the Kafka cluster with externalEnv.environment.",
+                    name
+                );
+            }
+            if self.connection.is_some() || self.kafka.is_some() {
+                bail!(
+                    "Environment '{}' has deploy: external-env, so its Kafka comes from the env \
+                     named in externalEnv. Remove its connection and kafka sections.",
+                    name
+                );
+            }
+        } else if self.external_env.is_some() {
+            bail!(
+                "Environment '{}' has an externalEnv section but deploy is not external-env. \
+                 Set deploy: external-env or remove the section.",
+                name
+            );
+        }
+        validate_topic_tag(name, self.topic_tag.as_deref().unwrap_or(name))?;
         if let Some(flink) = &self.flink {
             let tm = flink.taskmanagers.as_ref();
             if tm.and_then(|t| t.replicas) == Some(0) || tm.and_then(|t| t.slots) == Some(0) {
@@ -683,6 +749,28 @@ impl Environment {
         }
         Ok(())
     }
+}
+
+/// A topic tag becomes part of Kafka topic and group names
+/// (`dimster-<tag>-...`). It may use what Kafka allows in a topic name except
+/// `-`: the `-` after the tag ends it, so no tag's names can start with
+/// another tag's prefix (`dimster-a-` never matches `dimster-ab-...`). Must
+/// match the coordinator's check in `KafkaCluster.validateTag`.
+fn validate_topic_tag(env_name: &str, tag: &str) -> Result<()> {
+    let valid = !tag.is_empty()
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
+    if !valid {
+        bail!(
+            "Environment '{}' has topic tag '{}', which can only use letters, digits, '.' and '_' \
+             (it prefixes Kafka topic names). The tag defaults to the env name; set topicTag to \
+             override it.",
+            env_name,
+            tag
+        );
+    }
+    Ok(())
 }
 
 impl DimsterConfig {
@@ -746,7 +834,122 @@ impl DimsterConfig {
             format!("Unknown environment '{}'. Available: {:?}", name, available)
         })?;
         env.validate(name)?;
+        if env.deploy == DeployMode::ExternalEnv {
+            self.validate_external_env(name, env)?;
+        }
         Ok(env)
+    }
+
+    /// Checks an `external-env` env against the env hosting its Kafka: the
+    /// host must exist and own a cluster (`full` or `external`, not another
+    /// reference), an in-cluster host must be reachable by DNS (same k8s
+    /// context) and the two envs must not share a namespace, because every
+    /// Dimster resource has a fixed name and they would overwrite each other.
+    fn validate_external_env(&self, name: &str, env: &Environment) -> Result<()> {
+        let host_name = &env
+            .external_env
+            .as_ref()
+            .expect("validate requires externalEnv for external-env")
+            .environment;
+        if host_name == name {
+            bail!(
+                "Environment '{}' names itself in externalEnv.environment.",
+                name
+            );
+        }
+        let host = self.environments.get(host_name).with_context(|| {
+            format!(
+                "Environment '{}' uses the Kafka of environment '{}' (externalEnv.environment), \
+                 which is not defined",
+                name, host_name
+            )
+        })?;
+        host.validate(host_name)?;
+        if host.deploy == DeployMode::ExternalEnv {
+            bail!(
+                "Environment '{}' uses the Kafka of '{}', which itself has deploy: external-env. \
+                 Point externalEnv.environment at the env that hosts the cluster.",
+                name,
+                host_name
+            );
+        }
+        let (context, host_context) = (self.kubectl_context(name), self.kubectl_context(host_name));
+        let same_context = context == host_context;
+        if host.deploy == DeployMode::Full && !same_context {
+            let show = |c: &Option<String>| {
+                c.as_deref()
+                    .map_or("the current context".to_string(), |c| format!("'{}'", c))
+            };
+            bail!(
+                "Environment '{}' uses the in-cluster Kafka of '{}', so both must run on the same \
+                 Kubernetes cluster, but their kubectl contexts differ ({} vs {}). Set the same \
+                 `context:` on both.",
+                name,
+                host_name,
+                show(&context),
+                show(&host_context)
+            );
+        }
+        let ns = self.kubectl_namespace(name);
+        if same_context && ns == self.kubectl_namespace(host_name) {
+            bail!(
+                "Environment '{}' would deploy into namespace '{}', the namespace of '{}' whose Kafka \
+                 it uses. Dimster resources have fixed names, so each env needs its own namespace: \
+                 set e.g. `namespace: dimster-{}` on '{}'.",
+                name,
+                ns,
+                host_name,
+                name.to_lowercase(),
+                name
+            );
+        }
+        Ok(())
+    }
+
+    /// Where `env_name`'s Kafka is, following an `external-env` reference to
+    /// the env that hosts it. Validates the env (and its host) first.
+    pub fn kafka_source(&self, env_name: &str) -> Result<KafkaSource> {
+        let env = self.get_env(env_name)?;
+        let (host_name, host) = match &env.external_env {
+            Some(ext) if env.deploy == DeployMode::ExternalEnv => (
+                ext.environment.as_str(),
+                &self.environments[&ext.environment],
+            ),
+            _ => (env_name, env),
+        };
+        // A connection block wins, as it always has for `dimster run`;
+        // without one the host's brokers are Dimster's own, in its namespace.
+        Ok(match &host.connection {
+            Some(conn) => KafkaSource::Connection(conn.clone()),
+            None => KafkaSource::InCluster {
+                env: host_name.to_string(),
+                namespace: self.kubectl_namespace(host_name),
+            },
+        })
+    }
+
+    /// The `external-env` envs whose Kafka is `env_name`'s, sorted.
+    pub fn kafka_users(&self, env_name: &str) -> Vec<String> {
+        let mut users: Vec<String> = self
+            .environments
+            .iter()
+            .filter(|(_, e)| {
+                e.deploy == DeployMode::ExternalEnv
+                    && e.external_env.as_ref().map(|x| x.environment.as_str()) == Some(env_name)
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        users.sort();
+        users
+    }
+
+    /// The tag scoping `env_name`'s Kafka topics and groups: its `topicTag`,
+    /// or the env name itself.
+    pub fn topic_tag(&self, env_name: &str) -> String {
+        self.environments
+            .get(env_name)
+            .and_then(|e| e.topic_tag.clone())
+            .unwrap_or_else(|| env_name.to_string())
     }
 
     /// Get the kubectl context for an environment, falling back to global config.
@@ -1365,5 +1568,250 @@ environments:
     fn env_override_errors_on_missing_assignment_separator() {
         let err = parse_override_assignment("kafka.replicas").unwrap_err();
         assert!(err.to_string().contains("expected key=value"));
+    }
+
+    // ─── Envs sharing a Kafka cluster (deploy: external-env, topicTag) ───
+
+    /// `local` deploys Kafka, `cc` is an external cluster, and `localB` / `ccB`
+    /// share them; every env is on the same cluster unless a test says not.
+    fn shared_kafka_config(extra: &str) -> DimsterConfig {
+        serde_yaml::from_str(&format!(
+            r#"
+kubernetes:
+  namespace: dimster
+  context: minikube
+environments:
+  local:
+    kafka:
+      replicas: 3
+  cc:
+    deploy: external
+    namespace: dimster-cc
+    connection:
+      bootstrap.servers: "pkc-1:9092"
+      security.protocol: SASL_SSL
+  localB:
+    deploy: external-env
+    namespace: dimster-b
+    externalEnv:
+      environment: local
+  ccB:
+    deploy: external-env
+    namespace: dimster-ccb
+    externalEnv:
+      environment: cc
+{extra}"#
+        ))
+        .unwrap()
+    }
+
+    fn env_error(cfg: &DimsterConfig, env: &str) -> String {
+        format!("{:#}", cfg.get_env(env).unwrap_err())
+    }
+
+    #[test]
+    fn external_env_deploys_like_external() {
+        let cfg = shared_kafka_config("");
+        let env = cfg.get_env("localB").unwrap();
+        assert_eq!(env.deploy, DeployMode::ExternalEnv);
+        assert!(env.is_external());
+        assert!(cfg.get_env("cc").unwrap().is_external());
+        assert!(!cfg.get_env("local").unwrap().is_external());
+    }
+
+    #[test]
+    fn kafka_source_follows_external_env_to_the_host() {
+        let cfg = shared_kafka_config("");
+        let in_cluster = KafkaSource::InCluster {
+            env: "local".into(),
+            namespace: "dimster".into(),
+        };
+        // A full env's own brokers, and the same brokers for an env using them.
+        assert_eq!(cfg.kafka_source("local").unwrap(), in_cluster);
+        assert_eq!(cfg.kafka_source("localB").unwrap(), in_cluster);
+        // An external env's connection, reused by an env using that cluster.
+        let cc = cfg.environments["cc"].connection.clone().unwrap();
+        assert_eq!(
+            cfg.kafka_source("cc").unwrap(),
+            KafkaSource::Connection(cc.clone())
+        );
+        assert_eq!(
+            cfg.kafka_source("ccB").unwrap(),
+            KafkaSource::Connection(cc)
+        );
+    }
+
+    #[test]
+    fn kafka_users_lists_the_envs_sharing_a_cluster() {
+        let cfg = shared_kafka_config(
+            r#"
+  localC:
+    deploy: external-env
+    namespace: dimster-c
+    externalEnv:
+      environment: local
+"#,
+        );
+        assert_eq!(cfg.kafka_users("local"), vec!["localB", "localC"]);
+        assert_eq!(cfg.kafka_users("cc"), vec!["ccB"]);
+        assert!(cfg.kafka_users("localB").is_empty());
+    }
+
+    #[test]
+    fn external_env_needs_a_host_that_owns_a_cluster() {
+        let cfg = shared_kafka_config(
+            r#"
+  noBlock:
+    deploy: external-env
+    namespace: dimster-x
+  unknownHost:
+    deploy: external-env
+    namespace: dimster-x
+    externalEnv:
+      environment: nope
+  chained:
+    deploy: external-env
+    namespace: dimster-x
+    externalEnv:
+      environment: localB
+  itself:
+    deploy: external-env
+    namespace: dimster-x
+    externalEnv:
+      environment: itself
+"#,
+        );
+        assert!(env_error(&cfg, "noBlock").contains("no externalEnv section"));
+        let err = env_error(&cfg, "unknownHost");
+        assert!(
+            err.contains("environment 'nope'") && err.contains("not defined"),
+            "{}",
+            err
+        );
+        assert!(env_error(&cfg, "chained").contains("itself has deploy: external-env"));
+        assert!(env_error(&cfg, "itself").contains("names itself"));
+    }
+
+    #[test]
+    fn external_env_takes_its_kafka_only_from_the_host() {
+        let cfg = shared_kafka_config(
+            r#"
+  withConnection:
+    deploy: external-env
+    namespace: dimster-x
+    externalEnv:
+      environment: local
+    connection:
+      bootstrap.servers: "x:9092"
+  withKafka:
+    deploy: external-env
+    namespace: dimster-x
+    externalEnv:
+      environment: local
+    kafka:
+      replicas: 1
+  strayBlock:
+    deploy: external
+    connection:
+      bootstrap.servers: "x:9092"
+    externalEnv:
+      environment: local
+"#,
+        );
+        assert!(env_error(&cfg, "withConnection").contains("Remove its connection and kafka"));
+        assert!(env_error(&cfg, "withKafka").contains("Remove its connection and kafka"));
+        assert!(env_error(&cfg, "strayBlock").contains("deploy is not external-env"));
+    }
+
+    #[test]
+    fn external_env_block_rejects_unknown_fields() {
+        // The env's own namespace is top-level; inside the block it's a mistake.
+        let parsed: std::result::Result<DimsterConfig, _> = serde_yaml::from_str(
+            r#"
+environments:
+  b:
+    deploy: external-env
+    externalEnv:
+      environment: local
+      namespace: dimster-b
+"#,
+        );
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn external_env_needs_its_own_namespace_beside_the_host() {
+        // No namespace: falls back to the global one, which local also uses.
+        let cfg = shared_kafka_config(
+            r#"
+  sameNs:
+    deploy: external-env
+    externalEnv:
+      environment: local
+"#,
+        );
+        let err = env_error(&cfg, "sameNs");
+        assert!(err.contains("namespace 'dimster'"), "{}", err);
+        assert!(err.contains("namespace: dimster-samens"), "{}", err);
+    }
+
+    #[test]
+    fn in_cluster_host_must_be_on_the_same_kubernetes_cluster() {
+        let cfg = shared_kafka_config(
+            r#"
+  elsewhere:
+    deploy: external-env
+    context: other-cluster
+    externalEnv:
+      environment: local
+  elsewhereCc:
+    deploy: external-env
+    context: other-cluster
+    externalEnv:
+      environment: cc
+"#,
+        );
+        let err = env_error(&cfg, "elsewhere");
+        assert!(err.contains("'other-cluster' vs 'minikube'"), "{}", err);
+        // An external host is reachable from anywhere, and a different
+        // cluster can't clash on namespaces.
+        assert!(cfg.get_env("elsewhereCc").is_ok());
+    }
+
+    #[test]
+    fn topic_tag_defaults_to_the_env_name_and_can_be_set() {
+        let cfg = shared_kafka_config(
+            r#"
+  tagged:
+    namespace: dimster-t
+    topicTag: wl1
+"#,
+        );
+        assert_eq!(cfg.topic_tag("localB"), "localB");
+        assert_eq!(cfg.topic_tag("tagged"), "wl1");
+        assert!(cfg.get_env("tagged").is_ok());
+    }
+
+    #[test]
+    fn topic_tag_must_not_contain_a_dash() {
+        // A '-' would let tag "a" own tag "a-b"'s topics (dimster-a-...).
+        let cfg = shared_kafka_config(
+            r#"
+  local-two:
+    namespace: dimster-two
+  badTag:
+    namespace: dimster-bad
+    topicTag: "a-b"
+  renamed-env:
+    namespace: dimster-r
+    topicTag: renamed
+"#,
+        );
+        let err = env_error(&cfg, "local-two");
+        assert!(err.contains("topic tag 'local-two'"), "{}", err);
+        assert!(err.contains("set topicTag"), "{}", err);
+        assert!(env_error(&cfg, "badTag").contains("topic tag 'a-b'"));
+        // An explicit tag rescues an env name that can't be one.
+        assert!(cfg.get_env("renamed-env").is_ok());
     }
 }
