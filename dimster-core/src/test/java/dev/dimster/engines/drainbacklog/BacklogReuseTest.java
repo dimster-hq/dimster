@@ -6,6 +6,7 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import dev.dimster.ScenarioExpander;
 import dev.dimster.ScenarioExpander.TestPoint;
 import dev.dimster.kafka.KafkaCluster;
+import dev.dimster.kafka.KafkaConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.Test;
 
@@ -164,7 +165,7 @@ public class BacklogReuseTest {
     // ─── Persistent backlog names (reuseTopic) ─────────────────────────
 
     private static String persistentPrefix(TestPoint p) {
-        return BacklogReuse.persistentTopicPrefix(BacklogReuse.identity(p));
+        return BacklogReuse.persistentTopicPrefix(KafkaCluster.PERSISTENT_TOPIC_PREFIX, BacklogReuse.identity(p));
     }
 
     @Test
@@ -172,6 +173,19 @@ public class BacklogReuseTest {
         String prefix = persistentPrefix(points("scenarios:\n  - name: s\n").get(0));
         assertTrue(prefix, prefix.startsWith(KafkaCluster.PERSISTENT_TOPIC_PREFIX + "-"));
         assertFalse(prefix, prefix.startsWith(KafkaCluster.TOPIC_PREFIX));
+    }
+
+    @Test
+    public void envs_sharing_a_cluster_never_share_a_persistent_backlog() throws Exception {
+        // Equal build settings in two envs: each keeps (and may delete) only its own.
+        String identity = BacklogReuse.identity(points("scenarios:\n  - name: s\n").get(0));
+        String a = BacklogReuse.persistentTopicPrefix(
+                new KafkaCluster(null, new KafkaConfig(), "a").persistentTopicPrefix(), identity);
+        String b = BacklogReuse.persistentTopicPrefix(
+                new KafkaCluster(null, new KafkaConfig(), "b").persistentTopicPrefix(), identity);
+        assertNotEquals(a, b);
+        assertFalse(a, KafkaCluster.ownsTopic("a", a + "-0000"));
+        assertFalse(a, KafkaCluster.ownsTopic("b", a + "-0000"));
     }
 
     @Test

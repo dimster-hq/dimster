@@ -43,8 +43,10 @@ public class TopicReuseTest {
     @Test
     public void topics_are_numbered_under_the_identity_prefix() throws Exception {
         TestPoint p = point(3, 0.1, 1000, 1);
-        String prefix = BacklogReuse.persistentTopicPrefix("id");
-        assertEquals(List.of(prefix + "-0000", prefix + "-0001", prefix + "-0002"), TopicReuse.topicNames(p, "id"));
+        String prefix = BacklogReuse.persistentTopicPrefix("dimst-no-delete-b", "id");
+        assertTrue(prefix, prefix.startsWith("dimst-no-delete-b-"));
+        assertEquals(List.of(prefix + "-0000", prefix + "-0001", prefix + "-0002"),
+                TopicReuse.topicNames(p, "dimst-no-delete-b", "id"));
     }
 
     @Test

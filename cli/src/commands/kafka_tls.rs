@@ -353,15 +353,15 @@ pub fn client_tls_pairs() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Convenience for callers in deploy.rs / run.rs that need to know the
-/// SSL bootstrap server list (built the same way as the PLAINTEXT one,
-/// just on a different port).
-pub fn ssl_bootstrap_servers(replicas: u32, namespace: &str, ssl_port: u16) -> String {
+/// The bootstrap list of Dimster's in-cluster brokers in `namespace` on
+/// `port` (9092 PLAINTEXT, or the SSL port). Per-broker FQDNs, so it resolves
+/// from any namespace, including an `external-env` env's.
+pub fn bootstrap_servers(replicas: u32, namespace: &str, port: u16) -> String {
     (0..replicas)
         .map(|i| {
             format!(
                 "kafka-{}.kafka-headless.{}.svc.cluster.local:{}",
-                i, namespace, ssl_port
+                i, namespace, port
             )
         })
         .collect::<Vec<_>>()
@@ -442,8 +442,8 @@ mod tests {
     }
 
     #[test]
-    fn ssl_bootstrap_servers_uses_ssl_port() {
-        let bs = ssl_bootstrap_servers(2, "dimster", 9094);
+    fn bootstrap_servers_lists_each_broker_on_the_port() {
+        let bs = bootstrap_servers(2, "dimster", 9094);
         assert_eq!(
             bs,
             "kafka-0.kafka-headless.dimster.svc.cluster.local:9094,\

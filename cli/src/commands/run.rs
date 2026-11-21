@@ -15,7 +15,7 @@ use crate::commands::hooks;
 use crate::commands::kafka_tls;
 use crate::commands::results;
 use crate::commands::run_configs;
-use crate::config::{ConnectionConfig, KafkaTlsConfig, MetricsOutput};
+use crate::config::{KafkaSource, KafkaTlsConfig, MetricsOutput};
 use crate::kubectl::Kubectl;
 
 const COORDINATOR_LOG_FILE: &str = "/benchmark/results/.dimster-logs/coordinator.log";
@@ -27,7 +27,7 @@ const STREAM_TERMINAL_FLUSH: Duration = Duration::from_secs(3);
 const STREAM_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 const STREAM_EVENT_WAIT: Duration = Duration::from_millis(250);
 
-#[derive(Serialize)]
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct RunRequest {
     file_type: &'static str,
@@ -59,13 +59,18 @@ struct RunRequest {
     // keyed by the reference as written. See commands::hooks.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     hook_scripts: BTreeMap<String, String>,
-    // CLI-chosen results subdirectory name (yyyy-MM-dd-HH-mm-ss). When set,
+    // CLI-chosen results subdirectory name (yyyy-MM-dd-HH-mm-ss-xxxx, see
+    // run_configs::new_run_dir_name). When set,
     // the coordinator writes results into {outputDir}/{resultsSubdir} instead
     // of generating its own timestamp. This lets the CLI create the local
     // results directory up front and stage workload/kafka/broker config
     // captures into it before the run starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     results_subdir: Option<String>,
+    // The env's topic tag: the coordinator names and cleans up only
+    // dimster-<tag>-* topics and groups, so envs can share a Kafka cluster.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic_tag: Option<String>,
 }
 
 /// Wire payload posted to the coordinator's `/modify` endpoint.
@@ -120,7 +125,12 @@ pub struct RunArgs {
     pub system: Option<String>,
     pub environment: String,
     pub hardware: Option<String>,
-    pub connection: Option<ConnectionConfig>,
+    // Where the env's Kafka is: Dimster's brokers in some env's namespace
+    // (this env's, or the host's for `deploy: external-env`), or a cluster
+    // reached through a connection block.
+    pub kafka: KafkaSource,
+    // Scopes the coordinator's Kafka topics and groups (see RunRequest).
+    pub topic_tag: String,
     // Path to the broker config that was last deployed for this environment
     // (sourced from env config's `kafka.brokerConfig`). Captured into the
     // results directory so each run is self-describing. None when the env
@@ -154,12 +164,30 @@ pub fn run(
     config_path: &Path,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
+    // Dimster-deployed brokers, with the env that deployed them, are reached
+    // through that env's namespace: another env's for `deploy: external-env`.
+    // None when Kafka is reached through a connection block.
+    let in_cluster = match &args.kafka {
+        KafkaSource::InCluster { env, namespace } => {
+            Some((kubectl.for_namespace(namespace), env.as_str()))
+        }
+        KafkaSource::Connection(_) => None,
+    };
+
     // Check Kafka readiness (skip for client-only / external Kafka)
-    if args.connection.is_none() {
-        println!("==> Checking Kafka readiness...");
+    if let Some((kafka_kubectl, kafka_env)) = &in_cluster {
+        if *kafka_env != args.environment {
+            println!(
+                "==> Checking readiness of the Kafka of environment '{}' (namespace {})...",
+                kafka_env,
+                kafka_kubectl.namespace()
+            );
+        } else {
+            println!("==> Checking Kafka readiness...");
+        }
         let mut kafka_ready = false;
         for attempt in 0..30 {
-            let total_str = kubectl
+            let total_str = kafka_kubectl
                 .run(&[
                     "get",
                     "statefulset",
@@ -172,13 +200,17 @@ pub fn run(
 
             if total == 0 {
                 if attempt == 0 {
-                    bail!("No Kafka StatefulSet found. Run 'dimster deploy' first.");
+                    bail!(
+                        "No Kafka StatefulSet found in namespace {}. Run 'dimster deploy {}' first.",
+                        kafka_kubectl.namespace(),
+                        kafka_env
+                    );
                 }
                 // StatefulSet disappeared mid-check
                 break;
             }
 
-            let ready_output = kubectl.run(&[
+            let ready_output = kafka_kubectl.run(&[
                 "get", "pods", "-l", "app=kafka",
                 "-o", "jsonpath={range .items[*]}{.status.conditions[?(@.type==\"Ready\")].status}{\"\\n\"}{end}",
             ]).unwrap_or_default();
@@ -200,7 +232,7 @@ pub fn run(
         }
 
         if !kafka_ready {
-            let _ = kubectl.run_inherit(&["get", "pods", "-l", "app=kafka"]);
+            let _ = kafka_kubectl.run_inherit(&["get", "pods", "-l", "app=kafka"]);
             bail!("Kafka pods did not become ready within 5 minutes");
         }
         println!("    Kafka is ready.");
@@ -249,10 +281,8 @@ pub fn run(
     // bootstrap list and (when TLS is on) the SSL bootstrap list, so we
     // don't pay for two `kubectl get statefulset` round-trips per run.
     // Returns 0 for external Kafka (we never call kubectl in that branch).
-    let kafka_replicas: u32 = if args.connection.is_some() {
-        0
-    } else {
-        let replicas_str = kubectl
+    let kafka_replicas: u32 = if let Some((kafka_kubectl, _)) = &in_cluster {
+        let replicas_str = kafka_kubectl
             .run(&[
                 "get",
                 "statefulset",
@@ -262,7 +292,13 @@ pub fn run(
             ])
             .unwrap_or_else(|_| "0".to_string());
         replicas_str.trim().parse().unwrap_or(0)
+    } else {
+        0
     };
+    let kafka_namespace = in_cluster
+        .as_ref()
+        .map(|(k, _)| k.namespace())
+        .unwrap_or_default();
 
     // Read all input files up-front so we can scan the -k file AND each
     // workload for TLS opt-in BEFORE we choose between PLAINTEXT and SSL
@@ -372,7 +408,7 @@ pub fn run(
     // substitute the SSL bootstrap list and add the ssl.* lines so
     // inject_connection lands them in commonConfig (where Kafka's AdminClient
     // and producer/consumer clients all read connection settings).
-    let (bootstrap, connection_lines) = if let Some(ref conn) = args.connection {
+    let (bootstrap, connection_lines) = if let KafkaSource::Connection(conn) = &args.kafka {
         let bs = conn.bootstrap_servers()?;
         println!("    Bootstrap: {} (from config)", bs);
         let lines = conn.to_common_config_lines();
@@ -381,22 +417,15 @@ pub fn run(
         }
         (Some(bs.to_string()), Some(lines))
     } else if kafka_replicas > 0 {
-        let ns = kubectl.namespace();
         let use_ssl_for_file = kafka_config_uses_tls && tls_active;
         let port = if use_ssl_for_file {
             args.tls_config.as_ref().unwrap().resolved_ssl_port()
         } else {
             9092
         };
-        let bs: String = (0..kafka_replicas)
-            .map(|i| {
-                format!(
-                    "kafka-{}.kafka-headless.{}.svc.cluster.local:{}",
-                    i, ns, port
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        // Per-broker FQDNs resolve from any namespace, so the same list works
+        // for an `external-env` env using another env's brokers.
+        let bs = kafka_tls::bootstrap_servers(kafka_replicas, kafka_namespace, port);
         println!("    Bootstrap: {}", bs);
         let mut lines = vec![format!("bootstrap.servers: \"{}\"", bs)];
         if use_ssl_for_file {
@@ -437,9 +466,9 @@ pub fn run(
     let mut workloads_map = HashMap::new();
     let workload_ssl_bootstrap = if tls_active {
         let tls = args.tls_config.as_ref().unwrap();
-        Some(kafka_tls::ssl_bootstrap_servers(
+        Some(kafka_tls::bootstrap_servers(
             kafka_replicas,
-            kubectl.namespace(),
+            kafka_namespace,
             tls.resolved_ssl_port(),
         ))
     } else {
@@ -471,14 +500,17 @@ pub fn run(
         );
     }
 
-    // Choose the remote timestamp now (before we send anything to the
-    // cluster). The coordinator still writes to /benchmark/results/<timestamp>;
+    // Choose the results directory name now (before we send anything to the
+    // cluster). The coordinator still writes to /benchmark/results/<name>;
     // metadata.series only changes where the CLI stages/copies the local
-    // archive, e.g. results/<series>/<instance>/<timestamp>.
-    let timestamp = run_configs::now_timestamp();
-    let annotations =
-        run_configs::parse_result_annotations(&args.metadata, &args.extra_dimensions, &timestamp)?;
-    let local_subdir = run_configs::local_result_subdir(&timestamp, &annotations.metadata)?;
+    // archive, e.g. results/<series>/<instance>/<name>.
+    let run_dir_name = run_configs::new_run_dir_name();
+    let annotations = run_configs::parse_result_annotations(
+        &args.metadata,
+        &args.extra_dimensions,
+        &run_dir_name,
+    )?;
+    let local_subdir = run_configs::local_result_subdir(&run_dir_name, &annotations.metadata)?;
     let local_run_dir = run_configs::prepare_run_dir(
         output_dir,
         &local_subdir,
@@ -510,8 +542,9 @@ pub fn run(
         hardware: args.hardware,
         metadata: annotations.metadata,
         extra_dimensions: annotations.extra_dimensions,
-        results_subdir: Some(timestamp),
+        results_subdir: Some(run_dir_name),
         hook_scripts,
+        topic_tag: Some(args.topic_tag),
     };
     hooks::stage(&local_run_dir, &request.hook_scripts)?;
 
@@ -1444,6 +1477,18 @@ fn coordinator_log_size_standalone(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_request_carries_the_topic_tag_the_coordinator_reads() {
+        // RunRequest.topicTag on the Java side: it scopes the coordinator's
+        // Kafka topics and groups so envs can share a cluster.
+        let request = RunRequest {
+            topic_tag: Some("localB".into()),
+            ..Default::default()
+        };
+        let json: serde_json::Value = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["topicTag"], "localB");
+    }
 
     #[test]
     fn detects_flink_in_base_or_scenarios() {

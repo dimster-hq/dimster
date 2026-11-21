@@ -8,7 +8,6 @@ import dev.dimster.RepeatMerger;
 import dev.dimster.ScenarioExpander;
 import dev.dimster.ScenarioExpander.TestPoint;
 import dev.dimster.TestResult;
-import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.kafka.KafkaConsumerWrapper;
 import dev.dimster.coordinator.ModificationTarget;
@@ -157,9 +156,7 @@ public class CorrectnessEngine extends BaseEngine implements ModificationTarget 
         worker.awaitStopComplete(java.time.Duration.ofMinutes(10));
         KafkaConfig pointConfig = point.kafkaConfig();
         worker.setKafkaConfig(pointConfig);
-        cluster = new KafkaCluster(
-                dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
-                pointConfig);
+        openCluster(pointConfig);
 
         cluster.deleteTestTopics();
         cluster.deleteTestGroups();

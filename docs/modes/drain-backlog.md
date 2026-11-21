@@ -237,7 +237,7 @@ scenarios:
         compression.type: zstd
 ```
 
-A kept backlog lives in topics named from a hash of its build settings: `dimst-no-delete-<hash>-0000`, `-0001` and so on. The build settings are the ones listed under [Reusing a backlog](#reusing-a-backlog) as forcing a rebuild. Equal settings always give the same name, and different settings (here, the two compression types) give different names, so a kept topic is never drained with the wrong data. Scenario names, labels and drain-side settings don't affect the name, and neither do the connection settings in `commonConfig` (`bootstrap.servers`, `security.*`, `ssl.*`, `sasl.*`).
+A kept backlog lives in topics named from the env's [topic tag](../deployment/10-shared-kafka.md#topic-tags-each-env-owns-its-topics) and a hash of its build settings: `dimst-no-delete-<tag>-<hash>-0000`, `-0001` and so on. Envs sharing a Kafka cluster keep separate backlogs. The build settings are the ones listed under [Reusing a backlog](#reusing-a-backlog) as forcing a rebuild. Equal settings always give the same name, and different settings (here, the two compression types) give different names, so a kept topic is never drained with the wrong data. Scenario names, labels and drain-side settings don't affect the name, and neither do the connection settings in `commonConfig` (`bootstrap.servers`, `security.*`, `ssl.*`, `sasl.*`).
 
 Everything described under [Reusing a backlog](#reusing-a-backlog) applies too:
 - builds happen outside the test points;
@@ -260,6 +260,8 @@ Before building a backlog, the coordinator looks for its kept topics:
 ```bash
 kafka-topics.sh --bootstrap-server <broker> --delete --topic 'dimst-no-delete-.*'
 ```
+
+To delete only one env's, match its tag: `--topic 'dimst-no-delete-<tag>-.*'`.
 
 A Dimster upgrade that adds a build-side workload setting changes the hash, so the new version builds its own backlogs rather than draining the old ones.
 

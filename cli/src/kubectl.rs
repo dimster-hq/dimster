@@ -203,6 +203,12 @@ impl Kubectl {
         &self.namespace
     }
 
+    /// The same cluster (kubectl context) in another namespace, e.g. the
+    /// namespace of the env whose Kafka an `external-env` env uses.
+    pub fn for_namespace(&self, namespace: &str) -> Kubectl {
+        Kubectl::new(self.context.clone(), namespace.to_string())
+    }
+
     /// Copy a file from a pod to a local path using a streaming tar pipe with
     /// gzip compression. This is more reliable than `kubectl cp` for large files
     /// because it avoids the intermediate temp-file dance and kubectl cp's own

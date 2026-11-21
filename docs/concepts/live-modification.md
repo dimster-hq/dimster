@@ -195,8 +195,8 @@ Every accepted modification is appended to a per-test-point list and written int
       "timestamp": "2026-05-14-10-00-00",
       "restartConsumersCount": 2,
       "restartedConsumerNames": [
-        "consumer-dimster-topic-abcd-0000-dimster-grp-000-efgh-i1",
-        "consumer-dimster-topic-abcd-0000-dimster-grp-000-efgh-i4"
+        "consumer-dimster-local-abcd-0000-dimster-local-grp-000-efgh-i1",
+        "consumer-dimster-local-abcd-0000-dimster-local-grp-000-efgh-i4"
       ],
       "actions": [
         "restart-consumers (2) — --restart-consumers 2 (restarting 2 of 8 consumers)"

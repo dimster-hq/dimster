@@ -1,27 +1,28 @@
 # 02 — Full vs External deploy modes
 
-Every Dimster env declares a `deploy:` field with one of two values. This is the single biggest decision you'll make about a deployment, so it gets its own page.
+Every Dimster env declares a `deploy:` field with one of three values. This is the single biggest decision you'll make about a deployment, so it gets its own page.
 
 ```yaml
 environments:
   myEnv:
-    deploy: full       # or: external
+    deploy: full       # or: external, external-env
 ```
 
 `full` is the default — omit the field and you get full mode.
 
 ## At a glance
 
-| | `deploy: full` | `deploy: external` |
-|---|---|---|
-| Kafka StatefulSet | Yes — Dimster manages it | No — you point at someone else's Kafka |
-| Workers + Coordinator | Yes | Yes |
-| Monitoring (Prometheus/Grafana) | Yes | Yes (Kafka Broker dashboard will be empty) |
-| `kafka:` env block | Required for sizing | Ignored — leave it out |
-| `connection:` env block | Ignored | **Required** — at least `bootstrap.servers` |
-| `dimster kafka` CLI command | Available | Not available |
-| Kafka readiness check on `dimster run` | Yes | Skipped |
-| Use case | Benchmarking your own Kafka cluster shape | Benchmarking a managed service or pre-existing cluster |
+| | `deploy: full` | `deploy: external` | `deploy: external-env` |
+|---|---|---|---|
+| Kafka StatefulSet | Yes — Dimster manages it | No — you point at someone else's Kafka | No — uses another env's Kafka |
+| Workers + Coordinator | Yes | Yes | Yes |
+| Monitoring (Prometheus/Grafana) | Yes | Yes (Kafka Broker dashboard will be empty) | Yes (Kafka Broker dashboard will be empty) |
+| `kafka:` env block | Required for sizing | Ignored — leave it out | Not allowed |
+| `connection:` env block | Ignored | **Required** — at least `bootstrap.servers` | Not allowed |
+| `externalEnv:` env block | Not allowed | Not allowed | **Required** — the env hosting the Kafka cluster |
+| `dimster kafka` CLI command | Available | Not available | Available when the hosting env is `full` |
+| Kafka readiness check on `dimster run` | Yes | Skipped | Yes when the hosting env is `full` |
+| Use case | Benchmarking your own Kafka cluster shape | Benchmarking a managed service or pre-existing cluster | Running workloads from several envs at once against one cluster |
 
 ## Full mode
 
@@ -142,6 +143,21 @@ External mode requires a connection with at least bootstrap.servers.
 
 That check lives in `cli/src/config.rs` (the `Environment::validate` function) and runs before any `kubectl` call, so you find out immediately rather than in a half-deployed state.
 
+## External-env mode
+
+An `external-env` env deploys like an `external` one, but instead of a `connection` block it names another env whose Kafka it uses:
+
+```yaml
+environments:
+  localB:
+    namespace: dimster-b       # its own namespace
+    deploy: external-env
+    externalEnv:
+      environment: local       # a full or external env
+```
+
+At run time Dimster resolves the connection from that env: the in-cluster brokers of a `full` env, or the `connection` block of an `external` env. Pick this to run workloads from several envs against one Kafka cluster at the same time and see how they interact. Each env's coordinator then only creates and deletes topics under its own topic tag. See [10 — Sharing a Kafka cluster](10-shared-kafka.md).
+
 ## Choosing between them
 
 Quick decision tree:
@@ -150,8 +166,10 @@ Quick decision tree:
 - *Am I benchmarking a managed service or an existing Kafka I don't control?* → **external**.
 - *Am I doing local smoke tests?* → **full** with a minimal env (e.g. `local`).
 - *Do I want client-side numbers (producer/consumer behaviour, latency under load) without standing up Kafka pods?* → **external** is fine even against a local Docker Compose Kafka — see page 06.
+- *Do I want a second workload running against the same cluster as another env's?* → **external-env** — see page 10.
 
 ## What's next
 
 - [03 — Scheduling and storage](03-scheduling-and-storage.md): the two fields (`nodeLabel`, `pvcStorageClass`) that decide whether a `full`-mode benchmark is a real benchmark or just a load test that happens to involve Kafka.
 - [06 — External Kafka](06-external-kafka.md): per-target recipes (Confluent Cloud, self-managed, Docker Compose) for `external` mode.
+- [10 — Sharing a Kafka cluster](10-shared-kafka.md): several envs running workloads against one cluster with `external-env`.

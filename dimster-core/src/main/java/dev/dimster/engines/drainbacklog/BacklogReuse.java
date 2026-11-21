@@ -113,13 +113,14 @@ public final class BacklogReuse {
 
     /**
      * Prefix of the topics a persistent backlog ({@code reuseTopic}) with this
-     * identity lives in: {@code dimst-no-delete-<hash>}, numbered like any
-     * test topic. Outside the test-topic prefix, so cleanup never deletes it.
+     * identity lives in: {@code <keptPrefix>-<hash>}, numbered like any test
+     * topic. {@code keptPrefix} is the env's {@link KafkaCluster#persistentTopicPrefix()},
+     * outside the test-topic prefix so cleanup never deletes it.
      */
-    public static String persistentTopicPrefix(String identity) {
+    public static String persistentTopicPrefix(String keptPrefix, String identity) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(identity.getBytes(StandardCharsets.UTF_8));
-            return KafkaCluster.PERSISTENT_TOPIC_PREFIX + "-"
+            return keptPrefix + "-"
                     + HexFormat.of().formatHex(digest).substring(0, NAME_HASH_LENGTH);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);

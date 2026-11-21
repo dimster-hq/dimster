@@ -7,6 +7,8 @@ import dev.dimster.hooks.HookContext;
 import dev.dimster.hooks.HookPoint;
 import dev.dimster.hooks.Hooks;
 import dev.dimster.kafka.KafkaCluster;
+import dev.dimster.kafka.KafkaConfig;
+import dev.dimster.kafka.KafkaSpi;
 import dev.dimster.utils.Sleeper;
 import dev.dimster.utils.StopRequestedException;
 import dev.dimster.utils.distributor.MessageDistributorType;
@@ -54,6 +56,16 @@ public abstract class BaseEngine implements AutoCloseable {
      * scripts. Defaults to {@link Hooks#NONE}.
      */
     private Hooks hooks = Hooks.NONE;
+
+    /**
+     * The env's topic tag, set by the harness via {@link #setTopicTag}. Every
+     * cluster the engine opens names and cleans up its topics and groups under
+     * it, so engines of different envs can share a Kafka cluster. Null (tests,
+     * embedded mode) keeps the untagged names.
+     */
+    private String topicTag;
+
+    /** The current test point's cluster; replaced via {@link #openCluster}. */
     protected KafkaCluster cluster;
 
     /**
@@ -113,6 +125,25 @@ public abstract class BaseEngine implements AutoCloseable {
     /** Inject the workload's {@link Hooks}. Tests can leave the default {@code NONE}. */
     public void setHooks(Hooks hooks) {
         this.hooks = hooks != null ? hooks : Hooks.NONE;
+    }
+
+    /** Inject the env's topic tag (see {@link KafkaCluster}). Tests can leave it null. */
+    public void setTopicTag(String topicTag) {
+        KafkaCluster.validateTag(topicTag);
+        this.topicTag = topicTag;
+    }
+
+    /**
+     * Connects {@link #cluster} to Kafka with a test point's config, closing the
+     * previous test point's connection first.
+     */
+    protected void openCluster(KafkaConfig config) {
+        if (cluster != null) {
+            cluster.close();
+        }
+        cluster = new KafkaCluster(
+                KafkaSpi.factory().newAdmin(config.commonProperties()),
+                config, topicTag);
     }
 
     /** Whether the workload configures any hook for the point. */
@@ -362,7 +393,8 @@ public abstract class BaseEngine implements AutoCloseable {
             log.warn("flink.sourceParallelism {} exceeds the {} input partitions per topic: the extra source"
                     + " subtasks will be idle", point.flink().sourceParallelism, point.partitionsPerTopic());
         }
-        flinkPipeline().start(point.flink(), point.dataset(), plannedTopology, point.kafkaConfig());
+        flinkPipeline().start(point.flink(), point.dataset(), plannedTopology, point.kafkaConfig(),
+                cluster.groupPrefix());
     }
 
     /** Cancels the running Flink job, if any. Safe to call at any time. */

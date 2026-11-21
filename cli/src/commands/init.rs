@@ -7,6 +7,8 @@
 ///   • `exampleLocalExt`    — commented: chosen distro + external Kafka.
 ///   • `exampleRemoteFull`  — commented: remote k8s + Kafka deployed in-cluster.
 ///   • `exampleRemoteExt`   — commented: remote k8s + external Kafka.
+///   • `exampleLocalShared` — commented: a second env sharing exampleLocalFull's
+///                             Kafka (deploy: external-env).
 ///
 /// Refuses to overwrite: if `dimster-config.yaml` already exists the command
 /// exits with an error telling the user to delete or rename the file first.
@@ -90,12 +92,13 @@ fn render(template: &str, distro: Distro) -> String {
 // Template-mode static blocks
 // ---------------------------------------------------------------------------
 //
-// These five constants are the entire content emitted by the command. Each
+// These six constants are the entire content emitted by the command. Each
 // block is hand-authored YAML text already indented by 2 spaces so it nests
 // directly under `environments:`. The first (`local`) is uncommented and
-// usable as-is; the four `example*` blocks are entirely commented so they
+// usable as-is; the five `example*` blocks are entirely commented so they
 // serve as copy-paste-and-edit starting points for the four common shapes
-// (local-distro/remote × full/external).
+// (local-distro/remote × full/external), plus a second env sharing a Kafka
+// cluster (external-env).
 //
 // Trade-off: when a field is added to KafkaEnvConfig (or any other env
 // section), these constants do NOT update automatically — the maintainer
@@ -302,10 +305,39 @@ const TEMPLATE_REMOTE_EXT: &str = "  # Example: remote k8s (EKS/GKE/etc.) + depl
   #        memory: \"2Gi\"
 ";
 
+/// Commented example: deploy: external-env. A second env, with its own
+/// coordinator, workers and monitoring in its own namespace, running workloads
+/// against exampleLocalFull's brokers at the same time as exampleLocalFull.
+const TEMPLATE_LOCAL_SHARED: &str = "  # Example: __DISTRO__ + deploy: external-env (a second env running its own workloads against
+  # exampleLocalFull's Kafka, at the same time — uncomment both). Its own pods need their own
+  # namespace; its topics are named dimster-<topicTag>-... so neither env deletes the other's.
+  #exampleLocalShared:
+  #  image: dimster
+  #  context: __CONTEXT__                            # same k8s cluster as the Kafka env
+  #  distro: __DISTRO__                              # Options: minikube | k3d | kind | docker-desktop
+  #  namespace: dimster-shared                       # must differ from exampleLocalFull's
+  #  deploy: external-env
+  #  externalEnv:
+  #    environment: exampleLocalFull                 # the env hosting the Kafka cluster
+  #  # topicTag: shared                              # defaults to the env name
+  #  workers:
+  #    replicas: 1
+  #    heap: \"-Xms256M -Xmx512M\"
+  #    requests:
+  #      cpu: \"250m\"
+  #      memory: \"768Mi\"
+  #  coordinator:
+  #    heap: \"-Xms256M -Xmx512M\"
+  #    requests:
+  #      cpu: \"250m\"
+  #      memory: \"768Mi\"
+";
+
 /// Build the ordered (name, body) list of env blocks to emit. Ordering:
 /// `local` first (active), then the four examples in increasing complexity
-/// (local-distro before remote, full before external). Each `local*` body
-/// gets distro-substituted; the two remote bodies are static.
+/// (local-distro before remote, full before external), then the env sharing
+/// exampleLocalFull's Kafka. Each `local*` body gets distro-substituted; the
+/// two remote bodies are static.
 fn template_envs(distro: Distro) -> Vec<(&'static str, String)> {
     vec![
         ("local", render(TEMPLATE_LOCAL, distro)),
@@ -313,6 +345,7 @@ fn template_envs(distro: Distro) -> Vec<(&'static str, String)> {
         ("exampleLocalExt", render(TEMPLATE_LOCAL_EXT, distro)),
         ("exampleRemoteFull", TEMPLATE_REMOTE_FULL.to_string()),
         ("exampleRemoteExt", TEMPLATE_REMOTE_EXT.to_string()),
+        ("exampleLocalShared", render(TEMPLATE_LOCAL_SHARED, distro)),
     ]
 }
 
@@ -388,7 +421,7 @@ pub fn run(config_path: &Path, distro: Distro) -> Result<()> {
 
     println!();
     println!(
-        "Template written to {} — added: local, exampleLocalFull, exampleLocalExt, exampleRemoteFull, exampleRemoteExt",
+        "Template written to {} — added: local, exampleLocalFull, exampleLocalExt, exampleRemoteFull, exampleRemoteExt, exampleLocalShared",
         config_path.display()
     );
     println!("Edit the file to set image registries, kubectl contexts, and resource sizes.");
@@ -455,6 +488,40 @@ fn write_new_template_file(config_path: &Path, distro: Distro) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uncomment a template's env block the way the header tells users to:
+    /// drop the first `#` of every line from `#<name>:` on.
+    fn uncomment(template: &str, name: &str) -> String {
+        let start = template.find(&format!("  #{}:", name)).unwrap();
+        template[start..]
+            .lines()
+            .map(|l| l.replacen('#', "", 1) + "\n")
+            .collect()
+    }
+
+    #[test]
+    fn shared_example_uncommented_uses_local_full_kafka() {
+        let yaml = format!(
+            "environments:\n{}{}",
+            uncomment(
+                &render(TEMPLATE_LOCAL_FULL, Distro::Minikube),
+                "exampleLocalFull"
+            ),
+            uncomment(
+                &render(TEMPLATE_LOCAL_SHARED, Distro::Minikube),
+                "exampleLocalShared"
+            ),
+        );
+        let cfg: DimsterConfig = serde_yaml::from_str(&yaml).unwrap();
+        cfg.get_env("exampleLocalShared").unwrap();
+        assert_eq!(
+            cfg.kafka_source("exampleLocalShared").unwrap(),
+            crate::config::KafkaSource::InCluster {
+                env: "exampleLocalFull".into(),
+                namespace: "dimster".into(),
+            }
+        );
+    }
     use crate::config::DimsterConfig;
 
     /// Each `local*` template must contain the placeholders that `render`
@@ -567,8 +634,9 @@ mod tests {
         assert_eq!(local.context.as_deref(), Some("k3d-dimster"));
         assert_eq!(local.distro(), Distro::K3d);
 
-        // The four examples are commented and therefore must NOT show up as
+        // The examples are commented and therefore must NOT show up as
         // parsed envs.
+        assert!(cfg.environments.get("exampleLocalShared").is_none());
         assert!(cfg.environments.get("exampleLocalFull").is_none());
         assert!(cfg.environments.get("exampleLocalExt").is_none());
         assert!(cfg.environments.get("exampleRemoteFull").is_none());
@@ -581,15 +649,16 @@ mod tests {
         assert!(content.contains("#exampleLocalExt:"));
         assert!(content.contains("#exampleRemoteFull:"));
         assert!(content.contains("#exampleRemoteExt:"));
+        assert!(content.contains("#exampleLocalShared:"));
 
-        // The chosen distro's context appears 3 times: once in the active
-        // `local`, once in commented exampleLocalFull, once in commented
-        // exampleLocalExt. The remote examples use a different (registry)
-        // context so they don't add to the count.
+        // The chosen distro's context appears 4 times: once in the active
+        // `local`, once each in commented exampleLocalFull, exampleLocalExt
+        // and exampleLocalShared. The remote examples use a different
+        // (registry) context so they don't add to the count.
         assert_eq!(
             content.matches("k3d-dimster").count(),
-            3,
-            "expected 'k3d-dimster' in active local + 2 commented locals\n{}",
+            4,
+            "expected 'k3d-dimster' in active local + 3 commented locals\n{}",
             content
         );
 

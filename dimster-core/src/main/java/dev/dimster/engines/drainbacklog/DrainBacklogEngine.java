@@ -8,7 +8,6 @@ import dev.dimster.RepeatMerger;
 import dev.dimster.ScenarioExpander;
 import dev.dimster.ScenarioExpander.TestPoint;
 import dev.dimster.TestResult;
-import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.kafka.KafkaConfig;
 import dev.dimster.kafka.KafkaConsumerWrapper;
 import dev.dimster.utils.StopRequestedException;
@@ -555,7 +554,7 @@ public class DrainBacklogEngine extends BaseEngine {
         if (reusableBacklogFor(identity) != null) return;
         backlog = null;
         List<String> keptTopics = workload.drainBacklogConfig.reuseTopic
-                ? TopicReuse.topicNames(point, identity) : null;
+                ? TopicReuse.topicNames(point, cluster.persistentTopicPrefix(), identity) : null;
         if (keptTopics != null && adoptKeptBacklog(point, index, identity, keptTopics, forWarmUp)) return;
         log.info("----- Building the backlog {} {} (not part of any test point) -----",
                 forWarmUp ? "for the warm-up of test point" : "before test point", index + 1);
@@ -646,9 +645,7 @@ public class DrainBacklogEngine extends BaseEngine {
         worker.awaitStopComplete(java.time.Duration.ofMinutes(10));
         KafkaConfig pointConfig = point.kafkaConfig();
         worker.setKafkaConfig(pointConfig);
-        cluster = new KafkaCluster(
-                dev.dimster.kafka.KafkaSpi.factory().newAdmin(pointConfig.commonProperties()),
-                pointConfig);
+        openCluster(pointConfig);
     }
 
     /** The topics a prepared test point uses, and those holding its backlog. */

@@ -28,7 +28,7 @@ dimster run aws \
 
 A test campaign consists of 1 or more test points (N scenarios with M test points each). Each test point goes through the following stages:
 
-1. **Topic creation** -- Existing topics matching the `dimster` suffix are deleted (if `reset: true` in the Kafka config), then the coordinator creates the topics according to the workload's `baseWorkload` settings.
+1. **Topic creation** -- Test topics and consumer groups left under the env's [topic tag](../deployment/10-shared-kafka.md#topic-tags-each-env-owns-its-topics) (`dimster-<tag>-…`) are deleted, then the coordinator creates the topics according to the workload's `baseWorkload` settings. Other envs' topics on a shared cluster are left alone.
 2. **Worker setup** -- Producer and consumer instances are created on the workers.
 3. **Ramp-up phase** (optional) -- When `rampIntervals` and `rampIntervalSeconds` are both `> 0`, the producer rate is stepped up in equal increments from `producerRate / rampIntervals` to the full `producerRate`. Each step is held for `rampIntervalSeconds` and stats collected during the ramp are discarded. Enabled by default with 3 intervals of 20 seconds. Useful for high-rate runs where slamming a cold cluster with full load produces a spurious latency spike that doesn't represent steady-state behaviour.
 4. **Warmup phase** -- Producers run at the configured `producerRate` but all stats collected during this phase are discarded.

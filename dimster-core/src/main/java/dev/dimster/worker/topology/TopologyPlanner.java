@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 
 import dev.dimster.ConsumerProcMode;
 import dev.dimster.ConsumerType;
+import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.utils.RandomGenerator;
 import dev.dimster.utils.distributor.MessageDistributorType;
 
@@ -319,14 +320,16 @@ public class TopologyPlanner {
         }
         List<String> consumerTopics = spec.pipelined() ? new ArrayList<>(pipelineTopics.values()) : topicNames;
 
-        // 2. Generate per-(topic, groupIdx) consumer group names. Same naming format
-        //    as the legacy code (random suffix per group to avoid reusing offsets
-        //    from a prior run on the same cluster).
+        // 2. Generate per-(topic, groupIdx) consumer group names, under the topic
+        //    prefix's group prefix so cleanup of the same tag removes them (random
+        //    suffix per group to avoid reusing offsets from a prior run on the
+        //    same cluster).
+        String groupPrefix = KafkaCluster.groupPrefixOf(spec.topicPrefix());
         Map<String, List<String>> groupsByTopic = new LinkedHashMap<>();
         for (String topic : consumerTopics) {
             List<String> groups = new ArrayList<>(spec.consumerGroupsPerTopic());
             for (int g = 0; g < spec.consumerGroupsPerTopic(); g++) {
-                groups.add(String.format("dimster-grp-%03d-%s", g, randomSuffix.get()));
+                groups.add(String.format("%s%03d-%s", groupPrefix, g, randomSuffix.get()));
             }
             groupsByTopic.put(topic, groups);
         }

@@ -49,13 +49,20 @@ public class CoordinatorServer {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     // Strict allow-list for client-provided results subdirectory names. The
-    // CLI generates a yyyy-MM-dd-HH-mm-ss timestamp (digits and hyphens only)
-    // and we use it directly as a path component under outputDir. Refusing
-    // anything that doesn't match this exact shape neutralises path traversal
-    // (../foo), absolute paths (/etc/...), Windows drive letters, NUL bytes,
-    // and any other escape from the intended results directory.
+    // CLI generates a yyyy-MM-dd-HH-mm-ss timestamp plus a 4-character random
+    // [0-9a-z] suffix (so runs started in the same second get different
+    // directories; see run_configs::new_run_dir_name) and we use it directly
+    // as a path component under outputDir. Refusing anything that doesn't
+    // match this exact shape neutralises path traversal (../foo), absolute
+    // paths (/etc/...), Windows drive letters, NUL bytes, and any other escape
+    // from the intended results directory.
     private static final Pattern SAFE_SUBDIR =
-            Pattern.compile("^\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}-\\d{2}$");
+            Pattern.compile("^\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}-\\d{2}-[0-9a-z]{4}$");
+
+    /** Whether a client-provided results subdirectory name is safe to use (see SAFE_SUBDIR). */
+    static boolean isSafeResultsSubdir(String name) {
+        return SAFE_SUBDIR.matcher(name).matches();
+    }
 
     static {
         yamlMapper.enable(DeserializationFeature.READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE);
@@ -243,7 +250,8 @@ public class CoordinatorServer {
                 savedRequest.metadata(),
                 savedRequest.extraDimensions(),
                 savedRequest.resultsSubdir(),
-                savedRequest.hookScripts()
+                savedRequest.hookScripts(),
+                savedRequest.topicTag()
         );
 
         lastError = null;
@@ -361,9 +369,9 @@ public class CoordinatorServer {
                 String outputBase = request.outputDir() != null ? request.outputDir() : ".";
                 String subdirName;
                 if (request.resultsSubdir() != null && !request.resultsSubdir().isEmpty()) {
-                    if (!SAFE_SUBDIR.matcher(request.resultsSubdir()).matches()) {
+                    if (!isSafeResultsSubdir(request.resultsSubdir())) {
                         throw new IllegalArgumentException(
-                                "Invalid resultsSubdir (must match yyyy-MM-dd-HH-mm-ss): "
+                                "Invalid resultsSubdir (must match yyyy-MM-dd-HH-mm-ss-xxxx): "
                                         + request.resultsSubdir());
                     }
                     subdirName = request.resultsSubdir();
@@ -400,6 +408,7 @@ public class CoordinatorServer {
                     checkpoint, this::setActiveEngine);
             runner.setHookExecutor(ScriptHookExecutor.install(
                     request.hookScripts(), new File(resultsSubDir, "hooks")));
+            runner.setTopicTag(request.topicTag());
             boolean success = runner.run();
 
             if (kafkaConfigFile != null) kafkaConfigFile.delete();

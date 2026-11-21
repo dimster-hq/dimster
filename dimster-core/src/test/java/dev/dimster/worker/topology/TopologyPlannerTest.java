@@ -14,6 +14,7 @@ import org.junit.Test;
 
 import dev.dimster.ConsumerProcMode;
 import dev.dimster.ConsumerType;
+import dev.dimster.kafka.KafkaCluster;
 import dev.dimster.utils.distributor.MessageDistributorType;
 import dev.dimster.worker.topology.TopologyPlanner.ExplicitSplit;
 import dev.dimster.worker.topology.TopologyPlanner.ProducerPinning;
@@ -123,12 +124,30 @@ public class TopologyPlannerTest {
         var planner = newPlanner(List.of("w1"), WorkerMode.MIXED, new RatioSplit(1, 1));
         VirtualTopology topology = planner.plan(spec("p", 1, 4, 0, 2, 1, false));
 
-        // 1 topic uses suffix s1; then 2 groups use suffix s2 and s3.
+        // 1 topic uses suffix s1; then 2 groups use suffix s2 and s3. Groups
+        // live under the topic prefix.
         var consumers = topology.consumers();
         assertEquals(2, consumers.size());
-        assertEquals("dimster-grp-000-s2", consumers.get(0).consumerGroup());
-        assertEquals("dimster-grp-001-s3", consumers.get(1).consumerGroup());
+        assertEquals("p-grp-000-s2", consumers.get(0).consumerGroup());
+        assertEquals("p-grp-001-s3", consumers.get(1).consumerGroup());
         assertEquals("p-s1-0000", consumers.get(0).topic());
+    }
+
+    @Test
+    public void plan_namesEverythingUnderTheTagSoOnlyThatTagsCleanupOwnsIt() {
+        var planner = newPlanner(List.of("w1"), WorkerMode.MIXED, new RatioSplit(1, 1));
+        VirtualTopology topology = planner.plan(spec(KafkaCluster.topicPrefix("b"), 2, 1, 1, 2, 1, false));
+
+        assertFalse(topology.consumers().isEmpty());
+        for (String topic : topology.topicPartitionCounts().keySet()) {
+            assertTrue(topic, KafkaCluster.ownsTopic("b", topic));
+            assertFalse(topic, KafkaCluster.ownsTopic("bb", topic));
+        }
+        for (var consumer : topology.consumers()) {
+            assertTrue(consumer.consumerGroup(), KafkaCluster.ownsGroup("b", consumer.consumerGroup()));
+            assertFalse(consumer.consumerGroup(), KafkaCluster.ownsGroup("bb", consumer.consumerGroup()));
+            assertFalse(consumer.consumerGroup(), KafkaCluster.ownsGroup(null, consumer.consumerGroup()));
+        }
     }
 
     // =========================================================================
