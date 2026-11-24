@@ -5,8 +5,10 @@
 #   * Root pom.xml                  (project <version>)
 #   * Every child module pom.xml    (<parent><version> block)
 #   * cli/Cargo.toml                (package version)
-#   * eks-setup-cli/Cargo.toml      (package version)
-#   * cli/Cargo.lock, eks-setup-cli/Cargo.lock (the package's own entry)
+#   * cloud/common/Cargo.toml       (package version)
+#   * cloud/eks-cli/Cargo.toml      (package version)
+#   * cloud/gke-cli/Cargo.toml      (package version)
+#   * cli/Cargo.lock, cloud/Cargo.lock (the packages' own entries)
 #
 # Why this script exists: the version lives in the root pom plus eight
 # child <parent> blocks plus two Cargo.toml [package] sections and their
@@ -165,9 +167,12 @@ for child_pom in "$REPO_ROOT"/*/pom.xml; do
     bump_child_pom "$child_pom"
 done
 
-for crate in cli eks-setup-cli; do
+bump_cargo "$REPO_ROOT/cli/Cargo.toml"
+bump_cargo_lock "$REPO_ROOT/cli/Cargo.toml" "$REPO_ROOT/cli/Cargo.lock"
+
+for crate in cloud/common cloud/eks-cli cloud/gke-cli; do
     bump_cargo "$REPO_ROOT/$crate/Cargo.toml"
-    bump_cargo_lock "$REPO_ROOT/$crate/Cargo.toml" "$REPO_ROOT/$crate/Cargo.lock"
+    bump_cargo_lock "$REPO_ROOT/$crate/Cargo.toml" "$REPO_ROOT/cloud/Cargo.lock"
 done
 
 echo

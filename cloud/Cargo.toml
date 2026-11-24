@@ -1,0 +1,4 @@
+# Workspace for Dimster cloud cluster provisioning CLIs (eks-setup and gke-setup).
+[workspace]
+resolver = "3"
+members = ["common", "eks-cli", "gke-cli"]

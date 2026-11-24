@@ -87,7 +87,7 @@ info() { printf '==> %s\n' "$*"; }
 
 # Prints "read_ms write_ms riops wiops rbps wbps" for a profile; caps are
 # "max" for none. gp3 numbers: AWS defaults and per-volume maximums
-# (docs/deployment/05-aws-eks.md); check current AWS limits before relying
+# (cloud/eks-cli/README.md); check current AWS limits before relying
 # on them.
 profile_values() {
   case "$1" in

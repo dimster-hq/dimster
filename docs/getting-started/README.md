@@ -49,7 +49,7 @@ For real benchmarks, you'll need to deploy to a real Kubernetes cluster. Read th
 - The mental model: what Dimster expects from any Kubernetes cluster, and how `dimster-config.yaml` maps to k8s resources.
 - The two deploy modes (`full` vs `external`) and when to use each.
 - Why `nodeLabel` and `pvcStorageClass` are required for any benchmark whose numbers you'd publish.
-- Per-target guides: AWS EKS (with the `eks-setup` wizard), GCP/Azure/on-prem, and external Kafka services like Confluent Cloud and MSK.
+- Per-target guides: AWS EKS (with `eks-setup`), GCP GKE (with `gke-setup`), Azure/on-prem, and external Kafka services like Confluent Cloud and MSK.
 
 Also:
 

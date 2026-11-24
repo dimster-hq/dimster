@@ -1,6 +1,6 @@
-# 05 — AWS EKS via the `eks-setup` wizard
+# AWS EKS Setup via `eks-setup`
 
-This is the deepest first-class deployment path. The `eks-setup` CLI is a wizard that creates an EKS cluster sized for Dimster, an ECR repository for the image, a tuned `gp3` StorageClass, and a populated env block in your `dimster-config.yaml`. After it finishes, three commands (`build`, `deploy`, `run`) get you to a benchmark.
+The `eks-setup` CLI is a wizard that creates an AWS EKS cluster sized for Dimster, an ECR repository for the image, a tuned `gp3` (or local NVMe) `StorageClass`, and a populated env block in your `dimster-config.yaml`. After it finishes, three commands (`build`, `deploy`, `run`) get you to a benchmark.
 
 If you'd rather drive `eksctl` and `aws` by hand — for IaC integration, restricted permissions, or just to know exactly what's happening — run `eks-setup` with `--generate-script` to emit a shell script you can read, edit, and run.
 
@@ -64,14 +64,16 @@ You'll need IAM permissions to create EKS clusters, EC2 instances, IAM roles (fo
 
 ## Build the `eks-setup` binary
 
+From the repository root:
+
 ```bash
-cd eks-setup-cli
-cargo build --release
-cp target/release/eks-setup ../
+cd cloud
+cargo build --release -p eks-setup
+cp target/release/eks-setup ..
 cd ..
 ```
 
-> Note, on MacOS, you may need to sign the binary `codesign --force --sign - ./eks-setup`
+> Note, on macOS, you may need to sign the binary: `codesign --force --sign - ./eks-setup`.
 
 You now have the `./eks-setup` binary next to `./dimster` at the project root.
 
@@ -85,13 +87,13 @@ This walks through a series of questions:
 
 1. **Environment name** — the key under `environments:` in `dimster-config.yaml`. Default `aws`.
 2. **AWS configuration** — Dimster name (used as a resource prefix; cluster ends up named `{dimsterName}-benchmark`), region, AZ, EKS version.
-3. **Deploy mode** — `full` (Dimster manages Kafka in the cluster) or `external` (workers only, points at an external Kafka). For external, see [page 06](06-external-kafka.md) for what to put in the `connection:` block afterwards.
-4. **Kafka sizing** (full mode) — Kafka version, instance type (with computed defaults from `eks-setup-cli/instance-types.yaml`), broker count, JVM heap, CPU and memory requests.
+3. **Deploy mode** — `full` (Dimster manages Kafka in the cluster) or `external` (workers only, points at an external Kafka). For external, see [06 — External Kafka](../../docs/deployment/06-external-kafka.md) for what to put in the `connection:` block afterwards.
+4. **Kafka sizing** (full mode) — Kafka version, instance type (with computed defaults from `cloud/eks-cli/instance-types.yaml`), broker count, JVM heap, CPU and memory requests.
 5. **Storage** (full mode) — EBS or instance-store. For EBS, choose `basic` (gp3 defaults: 125 MB/s, 3000 IOPS) or `provisioned` (you specify IOPS up to 16k and throughput up to 1000 MB/s).
 6. **Worker sizing** — instance type, count, autoscaling min/max, JVM heap, CPU/memory.
 7. **Coordinator/infra** — small instance type for the infra node (default `t3.medium`); coordinator JVM heap, CPU, memory.
 
-For each numeric field, the CLI suggests a sensible default based on the instance type you picked (heap = 25% of memory clamped to 1-8 GiB for Kafka, etc. — see the [reference doc](../reference/eks-setup-cli.md) for the full formula list).
+For each numeric field, the CLI suggests a sensible default based on the instance type you picked (heap = 25% of memory clamped to 1-8 GiB for Kafka, etc. — see the [CLI reference](../../docs/reference/eks-setup-cli.md) for the full formula list).
 
 After the questionnaire, a summary screen lists every choice. Confirm to start the build. Without the `-y` flag, it will ask to confirm every action it takes against the AWS CLI.
 
@@ -184,7 +186,7 @@ Results land in `./results/` on your laptop after the run completes.
 
 A poorly-chosen instance will cap your benchmark on AWS infrastructure limits — EBS bandwidth, network baseline, EBS IOPS — and you'll think you've found a problem in the system under test when really you've found a problem in the EC2 spec sheet. This section is the cheat sheet for picking instance types that don't lie to you.
 
-For automated selection, the wizard reads `eks-setup-cli/instance-types.yaml` and computes sensible defaults. This section is the *why* behind those choices, and the reference for picking by hand.
+For automated selection, the wizard reads `cloud/eks-cli/instance-types.yaml` and computes sensible defaults. This section is the *why* behind those choices, and the reference for picking by hand.
 
 ### The four properties that matter
 
@@ -203,7 +205,7 @@ For automated selection, the wizard reads `eks-setup-cli/instance-types.yaml` an
 
 NVMe wins in narrower cases than people often assume. The two real ones are: (a) you've picked an instance whose NVMe throughput is meaningfully higher than its EBS bandwidth (rare; check `instance-types.yaml`), or (b) you want the cost benefit of bundled storage on i-series instances. The trade-off is durability — instance termination loses the data.
 
-> See [page 03 — Scheduling and storage](03-scheduling-and-storage.md#nvme-instances) for the local-storage StorageClass setup.
+> See [03 — Scheduling and storage](../../docs/deployment/03-scheduling-and-storage.md#nvme-instances) for the local-storage StorageClass setup.
 
 #### 2. Network bandwidth
 
@@ -211,7 +213,7 @@ This is the limit that bites first on Kafka. Every produce → broker hop and ev
 
 For replication factor 3, **each MB/s of producer throughput becomes ~3 MB/s on the leader's network**: 1 MB/s in from the producer, 2 MB/s out to the two followers. Then consumer fetch traffic adds more on top.
 
-> **Size against the baseline, not the burst.** EC2 instances advertise an "up to N Gbps" network rate which is a *burst* number, sustained only while burst credits last (typically 5-30 minutes). Once credits exhaust, the instance falls back to its baseline rate without warning — so a benchmark sized to burst will look great for the first few minutes and then mysteriously cliff. Always size your benchmark to fit within the **baseline** throughput. The baseline value for every supported instance type is in `eks-setup-cli/instance-types.yaml` under the `networkBaselineGbps` field. The "Baseline ≠ burst" section below covers the same trap for EBS bandwidth.
+> **Size against the baseline, not the burst.** EC2 instances advertise an "up to N Gbps" network rate which is a *burst* number, sustained only while burst credits last (typically 5-30 minutes). Once credits exhaust, the instance falls back to its baseline rate without warning — so a benchmark sized to burst will look great for the first few minutes and then mysteriously cliff. Always size your benchmark to fit within the **baseline** throughput. The baseline value for every supported instance type is in `cloud/eks-cli/instance-types.yaml` under the `networkBaselineGbps` field. The "Baseline ≠ burst" section below covers the same trap for EBS bandwidth.
 
 Network-optimized variants (`m6in`, `m7in`, `i3en`, `i4i`, `i7ie`) carry 2-4× the network baseline of their standard counterparts at the same vCPU count. If your benchmark is going to push real throughput, jump straight to the `n` variants.
 
@@ -254,7 +256,7 @@ aws ec2 describe-instance-types \
   --query 'InstanceTypes[0].EbsInfo.EbsOptimizedInfo.BaselineBandwidthInMbps'
 ```
 
-Or — much faster — open `eks-setup-cli/instance-types.yaml`, which has `networkBaselineGbps` and `ebsBandwidthMBs` for every supported instance type. That YAML is the source of truth `eks-setup` uses.
+Or — much faster — open `cloud/eks-cli/instance-types.yaml`, which has `networkBaselineGbps` and `ebsBandwidthMBs` for every supported instance type. That YAML is the source of truth `eks-setup` uses.
 
 ### Picking instances for Kafka brokers
 
@@ -408,7 +410,9 @@ Verify with `kubectl get pods -n kube-system | grep ebs`.
 
 **Cross-AZ traffic showing up on the AWS bill.** Confirm every nodegroup landed in the same AZ: `kubectl get nodes -L topology.kubernetes.io/zone` should show one zone, and `kubectl get pods -n dimster -o wide` should show every pod on a node in that zone.
 
-## What's next
+## See also
 
-- [06 — External Kafka](06-external-kafka.md): if you chose `deploy: external` in the wizard, this page explains the `connection:` block.
-- [Internals — what `nodeLabel` and `pvcStorageClass` actually do](internals-scheduling-storage.md): exact Kustomize patches and the supported/unsupported feature list. Optional reading.
+- [05 — Cloud Kubernetes](../../docs/deployment/05-cloud-k8s.md) — shared overview across cloud Kubernetes targets.
+- [EKS Setup CLI Reference](../../docs/reference/eks-setup-cli.md) — flags, answers YAML schema, and default sizing formulas.
+- [06 — External Kafka](../../docs/deployment/06-external-kafka.md) — if you chose `deploy: external` in the wizard.
+- [Internals — what `nodeLabel` and `pvcStorageClass` actually do](../../docs/deployment/internals-scheduling-storage.md) — exact Kustomize patches and supported/unsupported features.

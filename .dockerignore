@@ -24,9 +24,10 @@ org/
 
 # Rust build artifacts and binaries (not used by the Java engine image)
 cli/target/
-eks-setup-cli/target/
+cloud/target/
 /dimster
 /eks-setup
+/gke-setup
 
 # Docs (not shipped in the runtime image)
 docs/
@@ -53,6 +54,7 @@ run/results/
 # Per-user / per-environment configs (must not leak into the image)
 dimster-config*.yaml
 eks-answers*.yaml
+gke-answers*.yaml
 
 # Python tooling
 .venv/

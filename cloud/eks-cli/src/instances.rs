@@ -113,3 +113,19 @@ impl InstanceTypes {
         self.specs.get(instance_type)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_instance_types_yaml_loads_cleanly() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("instance-types.yaml");
+        let types = InstanceTypes::load(&path).expect("failed to load eks instance-types.yaml");
+        let m6i = types.lookup("m6i.2xlarge").expect("missing m6i.2xlarge");
+        assert_eq!(m6i.vcpu, 8);
+        assert_eq!(m6i.memory_gib, 32);
+        let i4i = types.lookup("i4i.2xlarge").expect("missing i4i.2xlarge");
+        assert!(i4i.has_instance_store());
+    }
+}

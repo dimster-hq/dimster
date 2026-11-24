@@ -2,7 +2,7 @@
 
 The two fields covered on this page — `nodeLabel` and `pvcStorageClass` — are required for any serious benchmarking (`pvcStorageClass` can be omitted if the cluster's default storage class is good enough). Skip this page if you're only smoke-testing on a laptop. Read it before you stand anything up on a real cluster.
 
-> **Easy on-ramp for AWS users.** If you're benchmarking on AWS EKS, the [`eks-setup` wizard](05-aws-eks.md) sets both of these fields for you — it provisions labelled nodegroups, defines a tuned `gp3` StorageClass, and writes the right env block. You can read this page for understanding, but you won't have to manually do any of what it describes. For GKE / AKS / on-prem there's no equivalent wizard — refer to your cloud provider's docs for nodegroup labelling and StorageClass setup, then plug the resulting names into the env block as shown below.
+> **Easy on-ramp for AWS and GCP users.** If you're benchmarking on AWS EKS or GCP GKE, the [`eks-setup`](../../cloud/eks-cli/README.md) and [`gke-setup`](../../cloud/gke-cli/README.md) wizards set both of these fields for you — they provision labelled node groups/pools, define a tuned `gp3` / Hyperdisk / Persistent Disk / Local NVMe `StorageClass`, and write the right env block (see [05 — Cloud Kubernetes](05-cloud-k8s.md)). You can read this page for understanding, but you won't have to manually do any of what it describes. For AKS / on-prem there's no equivalent wizard — refer to your cloud provider's docs for nodegroup labelling and StorageClass setup, then plug the resulting names into the env block as shown below.
 
 ## The problem
 
@@ -36,7 +36,7 @@ environments:
 
 If no node carries the matching label, the pod stays `Pending` forever — there is no soft fallback. That's deliberate: silently scheduling Kafka onto the wrong node is the failure mode this field exists to prevent.
 
-You apply the labels to your cluster's nodes — typically by configuring nodegroups to label nodes at boot. On AWS, the `eks-setup` wizard handles this for you (see [page 05](05-aws-eks.md)). On other clouds, see your provider's nodegroup-labelling docs (`gcloud container node-pools create --node-labels=...`, `az aks nodepool add --labels ...`, or `kubectl label node` for static clusters).
+You apply the labels to your cluster's nodes — typically by configuring nodegroups to label nodes at boot. On AWS and GCP, the `eks-setup` and `gke-setup` wizards handle this for you (see [page 05](05-cloud-k8s.md)). On other clouds, see your provider's nodegroup-labelling docs (`gcloud container node-pools create --node-labels=...`, `az aks nodepool add --labels ...`, or `kubectl label node` for static clusters).
 
 ### Recommended pattern
 
@@ -76,7 +76,7 @@ Default StorageClasses on managed clusters are sized for general workloads, not 
 
 You define the StorageClass once in your cluster (StorageClass is cluster-scoped, not per-namespace), then reference it by name from every env that targets that cluster.
 
-On AWS EKS, the `eks-setup` wizard creates a `gp3` (or `gp3-fast`) StorageClass for you — see [page 05](05-aws-eks.md). On other clouds, your provider's docs cover the equivalent: `pd-ssd` / `hyperdisk-balanced` on GKE, `managed-csi-premium` or Premium SSD v2 on AKS. Apply the StorageClass YAML once with `kubectl apply -f`, then set `pvcStorageClass:` to its name.
+On AWS EKS, the `eks-setup` wizard creates a `gp3` (or `gp3-fast`) StorageClass for you — see [cloud/eks-cli/README.md](../../cloud/eks-cli/README.md). On GCP GKE, the `gke-setup` wizard creates a tuned Hyperdisk, `pd-ssd`, `pd-balanced`, or `local-storage` (Local NVMe SSD) StorageClass — see [cloud/gke-cli/README.md](../../cloud/gke-cli/README.md). On other clouds (e.g. AKS `managed-csi-premium` or Premium SSD v2), apply the StorageClass YAML once with `kubectl apply -f`, then set `pvcStorageClass:` to its name.
 
 ### NVMe instances
 
@@ -104,5 +104,5 @@ The cost of setting them is one nodegroup-config commit and one `StorageClass` Y
 ## What's next
 
 - [04 — Local](04-local.md): when a single-node cluster is genuinely fine.
-- [05 — AWS EKS](05-aws-eks.md): the `eks-setup` wizard sets both fields for you.
+- [05 — Cloud Kubernetes](05-cloud-k8s.md): the `eks-setup` and `gke-setup` wizards set both fields for you.
 - [Internals — what `nodeLabel` and `pvcStorageClass` actually do](internals-scheduling-storage.md): exact Kustomize patches, supported/unsupported features, code references. Optional reading.

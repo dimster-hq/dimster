@@ -27,11 +27,13 @@ output/
 
 # Rust CLI build artifacts
 cli/target/
-eks-setup-cli/target/
+cloud/target/
 /dimster
 /eks-setup
+/gke-setup
 cli/dimster
-eks-setup-cli/eks-setup
+cloud/eks-cli/eks-setup
+cloud/gke-cli/gke-setup
 
 # Local git bundles (used for backup / out-of-band sharing)
 *.bundle

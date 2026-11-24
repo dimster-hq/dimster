@@ -1,0 +1,126 @@
+# GCP Compute Engine machine type specifications for GKE benchmarks.
+# Used by gke-setup to suggest heap/CPU/memory defaults, filter compatible disk
+# types, pick the right GKE node boot disk, warn on VM storage ceilings, and
+# estimate hourly cluster costs before deployment.
+# Add new machine types here — no recompilation needed.
+#
+# Fields:
+#   vcpu               - vCPU count
+#   memoryGib          - RAM in GiB (note: c4 uses 3.75 GiB/vCPU; c4d uses ~3.875 GiB/vCPU)
+#   arch               - x86_64 | arm64
+#   hourlyUsd          - baseline us-central1 on-demand USD/hr (includes bundled Local SSDs on -lssd)
+#   networkGbps        - standard sustained egress bandwidth in Gbps
+#   tier1NetworkGbps   - optional Tier_1 egress bandwidth in Gbps (where supported)
+#   bootDiskType       - pd-balanced | hyperdisk-balanced (required by GKE node-pools create)
+#   supportedDiskTypes - disk types supported for Kafka data volumes on this machine family:
+#                        hyperdisk-balanced, hyperdisk-extreme, hyperdisk-throughput,
+#                        pd-ssd, pd-balanced
+#   diskBandwidthMiBs  - per-VM max network-attached disk throughput (MiB/s) for primary disk family
+#   diskMaxIops        - per-VM max network-attached disk IOPS for primary disk family
+#   localSsdMode       - none | fixed | attachable
+#   localSsdCount      - fixed count of 375 GiB Local NVMe SSDs (for -lssd shapes)
+#   maxLocalSsdCount   - max attachable 375 GiB Local NVMe SSDs via GKE --local-nvme-ssd-block (n2/n2d)
+
+# ---------------------------------------------------------------------------
+# Cost-optimized — E2 (good for infra/monitoring nodes; Persistent Disk only)
+# ---------------------------------------------------------------------------
+e2-standard-2: { vcpu: 2, memoryGib: 8,  arch: x86_64, hourlyUsd: 0.067, networkGbps: 4.0,  bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 240, diskMaxIops: 15000, localSsdMode: none }
+e2-standard-4: { vcpu: 4, memoryGib: 16, arch: x86_64, hourlyUsd: 0.134, networkGbps: 8.0,  bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 240, diskMaxIops: 15000, localSsdMode: none }
+e2-standard-8: { vcpu: 8, memoryGib: 32, arch: x86_64, hourlyUsd: 0.268, networkGbps: 16.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 240, diskMaxIops: 15000, localSsdMode: none }
+
+# ---------------------------------------------------------------------------
+# General purpose (Gen 2) — N2 / N2D (Persistent Disk + attachable Local NVMe SSDs)
+# Attach 1, 2, 4, or 8 x 375 GiB Local NVMe SSDs in GKE via --local-nvme-ssd-block.
+# ---------------------------------------------------------------------------
+n2-standard-4:   { vcpu: 4,  memoryGib: 16,  arch: x86_64, hourlyUsd: 0.194, networkGbps: 10.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 240,  diskMaxIops: 15000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+n2-standard-8:   { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.388, networkGbps: 16.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 800,  diskMaxIops: 15000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+n2-standard-16:  { vcpu: 16, memoryGib: 64,  arch: x86_64, hourlyUsd: 0.777, networkGbps: 32.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 25000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+n2-standard-32:  { vcpu: 32, memoryGib: 128, arch: x86_64, hourlyUsd: 1.554, networkGbps: 32.0, tier1NetworkGbps: 50.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 60000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+
+n2d-standard-4:  { vcpu: 4,  memoryGib: 16,  arch: x86_64, hourlyUsd: 0.169, networkGbps: 10.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 240,  diskMaxIops: 15000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+n2d-standard-8:  { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.338, networkGbps: 16.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 800,  diskMaxIops: 15000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+n2d-standard-16: { vcpu: 16, memoryGib: 64,  arch: x86_64, hourlyUsd: 0.676, networkGbps: 32.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 25000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+n2d-standard-32: { vcpu: 32, memoryGib: 128, arch: x86_64, hourlyUsd: 1.352, networkGbps: 32.0, bootDiskType: pd-balanced, supportedDiskTypes: [pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 60000, localSsdMode: attachable, maxLocalSsdCount: 8 }
+
+# ---------------------------------------------------------------------------
+# General purpose (Gen 4) — N4 (Intel Xeon, Hyperdisk-only; no PD, no Local SSD)
+# ---------------------------------------------------------------------------
+n4-standard-2:  { vcpu: 2,  memoryGib: 8,   arch: x86_64, hourlyUsd: 0.091, networkGbps: 10.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 240,  diskMaxIops: 30000,  localSsdMode: none }
+n4-standard-4:  { vcpu: 4,  memoryGib: 16,  arch: x86_64, hourlyUsd: 0.181, networkGbps: 10.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 240,  diskMaxIops: 30000,  localSsdMode: none }
+n4-standard-8:  { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.363, networkGbps: 16.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 480,  diskMaxIops: 30000,  localSsdMode: none }
+n4-standard-16: { vcpu: 16, memoryGib: 64,  arch: x86_64, hourlyUsd: 0.726, networkGbps: 32.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1200, diskMaxIops: 80000,  localSsdMode: none }
+n4-standard-32: { vcpu: 32, memoryGib: 128, arch: x86_64, hourlyUsd: 1.451, networkGbps: 32.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: none }
+
+# ---------------------------------------------------------------------------
+# General/Compute high-perf — C3 (Intel Sapphire Rapids + Titanium)
+# Supports BOTH Hyperdisk and Persistent Disk; -lssd variants bundle Local NVMe SSDs.
+# ---------------------------------------------------------------------------
+c3-standard-4:       { vcpu: 4,  memoryGib: 16,  arch: x86_64, hourlyUsd: 0.202, networkGbps: 23.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 400,  diskMaxIops: 25000,  localSsdMode: none }
+c3-standard-8:       { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.403, networkGbps: 23.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: none }
+c3-standard-22:      { vcpu: 22, memoryGib: 88,  arch: x86_64, hourlyUsd: 1.109, networkGbps: 23.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 1800, diskMaxIops: 120000, localSsdMode: none }
+c3-standard-44:      { vcpu: 44, memoryGib: 176, arch: x86_64, hourlyUsd: 2.218, networkGbps: 32.0, tier1NetworkGbps: 50.0,  bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 2400, diskMaxIops: 160000, localSsdMode: none }
+c3-standard-88:      { vcpu: 88, memoryGib: 352, arch: x86_64, hourlyUsd: 4.435, networkGbps: 64.0, tier1NetworkGbps: 100.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-extreme, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 5000, diskMaxIops: 350000, localSsdMode: none }
+
+c3-standard-4-lssd:  { vcpu: 4,  memoryGib: 16,  arch: x86_64, hourlyUsd: 0.243, networkGbps: 23.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 400,  diskMaxIops: 25000,  localSsdMode: fixed, localSsdCount: 1 }
+c3-standard-8-lssd:  { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.485, networkGbps: 23.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 2 }
+c3-standard-22-lssd: { vcpu: 22, memoryGib: 88,  arch: x86_64, hourlyUsd: 1.273, networkGbps: 23.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 1800, diskMaxIops: 120000, localSsdMode: fixed, localSsdCount: 4 }
+c3-standard-44-lssd: { vcpu: 44, memoryGib: 176, arch: x86_64, hourlyUsd: 2.546, networkGbps: 32.0, tier1NetworkGbps: 50.0,  bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 2400, diskMaxIops: 160000, localSsdMode: fixed, localSsdCount: 8 }
+
+# ---------------------------------------------------------------------------
+# General/Compute high-perf — C3D (AMD EPYC Genoa + Titanium)
+# Supports BOTH Hyperdisk and Persistent Disk; -lssd variants bundle Local NVMe SSDs.
+# ---------------------------------------------------------------------------
+c3d-standard-4:       { vcpu: 4,  memoryGib: 16,  arch: x86_64, hourlyUsd: 0.182, networkGbps: 20.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 400,  diskMaxIops: 25000,  localSsdMode: none }
+c3d-standard-8:       { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.363, networkGbps: 20.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: none }
+c3d-standard-16:      { vcpu: 16, memoryGib: 64,  arch: x86_64, hourlyUsd: 0.726, networkGbps: 20.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 75000,  localSsdMode: none }
+c3d-standard-30:      { vcpu: 30, memoryGib: 120, arch: x86_64, hourlyUsd: 1.362, networkGbps: 20.0, tier1NetworkGbps: 50.0,  bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 93750,  localSsdMode: none }
+c3d-standard-60:      { vcpu: 60, memoryGib: 240, arch: x86_64, hourlyUsd: 2.724, networkGbps: 40.0, tier1NetworkGbps: 100.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-extreme, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 5000, diskMaxIops: 350000, localSsdMode: none }
+
+c3d-standard-8-lssd:  { vcpu: 8,  memoryGib: 32,  arch: x86_64, hourlyUsd: 0.404, networkGbps: 20.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 1 }
+c3d-standard-16-lssd: { vcpu: 16, memoryGib: 64,  arch: x86_64, hourlyUsd: 0.768, networkGbps: 20.0, bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 75000,  localSsdMode: fixed, localSsdCount: 1 }
+c3d-standard-30-lssd: { vcpu: 30, memoryGib: 120, arch: x86_64, hourlyUsd: 1.444, networkGbps: 20.0, tier1NetworkGbps: 50.0,  bootDiskType: pd-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput, pd-ssd, pd-balanced], diskBandwidthMiBs: 1200, diskMaxIops: 93750,  localSsdMode: fixed, localSsdCount: 2 }
+
+# ---------------------------------------------------------------------------
+# Latest Intel — C4 (Intel Xeon 6 / Granite Rapids + Titanium, Hyperdisk-only)
+# Note: C4 uses 3.75 GiB RAM/vCPU and requires hyperdisk-balanced boot disks.
+# ---------------------------------------------------------------------------
+c4-standard-2:       { vcpu: 2,  memoryGib: 7,   arch: x86_64, hourlyUsd: 0.099, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 400,  diskMaxIops: 50000,  localSsdMode: none }
+c4-standard-4:       { vcpu: 4,  memoryGib: 15,  arch: x86_64, hourlyUsd: 0.198, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 400,  diskMaxIops: 50000,  localSsdMode: none }
+c4-standard-8:       { vcpu: 8,  memoryGib: 30,  arch: x86_64, hourlyUsd: 0.395, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: none }
+c4-standard-16:      { vcpu: 16, memoryGib: 60,  arch: x86_64, hourlyUsd: 0.791, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: none }
+c4-standard-32:      { vcpu: 32, memoryGib: 120, arch: x86_64, hourlyUsd: 1.582, networkGbps: 32.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: none }
+c4-standard-48:      { vcpu: 48, memoryGib: 180, arch: x86_64, hourlyUsd: 2.372, networkGbps: 50.0, tier1NetworkGbps: 100.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 2400, diskMaxIops: 160000, localSsdMode: none }
+c4-standard-96:      { vcpu: 96, memoryGib: 360, arch: x86_64, hourlyUsd: 4.745, networkGbps: 100.0, tier1NetworkGbps: 200.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-extreme, hyperdisk-throughput], diskBandwidthMiBs: 5000, diskMaxIops: 350000, localSsdMode: none }
+
+c4-standard-4-lssd:  { vcpu: 4,  memoryGib: 15,  arch: x86_64, hourlyUsd: 0.239, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 400,  diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 1 }
+c4-standard-8-lssd:  { vcpu: 8,  memoryGib: 30,  arch: x86_64, hourlyUsd: 0.436, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 1 }
+c4-standard-16-lssd: { vcpu: 16, memoryGib: 60,  arch: x86_64, hourlyUsd: 0.873, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: fixed, localSsdCount: 2 }
+c4-standard-32-lssd: { vcpu: 32, memoryGib: 120, arch: x86_64, hourlyUsd: 1.787, networkGbps: 32.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: fixed, localSsdCount: 5 }
+
+# ---------------------------------------------------------------------------
+# Google Axion Arm64 — C4A (Hyperdisk-only; strong price/performance like Graviton)
+# Note: Build arm64 Docker images when using C4A, and keep all pools arm64.
+# ---------------------------------------------------------------------------
+c4a-standard-2:       { vcpu: 2,  memoryGib: 8,   arch: arm64, hourlyUsd: 0.090, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 400,  diskMaxIops: 50000,  localSsdMode: none }
+c4a-standard-4:       { vcpu: 4,  memoryGib: 16,  arch: arm64, hourlyUsd: 0.180, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: none }
+c4a-standard-8:       { vcpu: 8,  memoryGib: 32,  arch: arm64, hourlyUsd: 0.359, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1000, diskMaxIops: 50000,  localSsdMode: none }
+c4a-standard-16:      { vcpu: 16, memoryGib: 64,  arch: arm64, hourlyUsd: 0.718, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: none }
+c4a-standard-32:      { vcpu: 32, memoryGib: 128, arch: arm64, hourlyUsd: 1.437, networkGbps: 23.0, tier1NetworkGbps: 50.0,  bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 2400, diskMaxIops: 160000, localSsdMode: none }
+c4a-standard-64:      { vcpu: 64, memoryGib: 256, arch: arm64, hourlyUsd: 2.874, networkGbps: 50.0, tier1NetworkGbps: 100.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-extreme, hyperdisk-throughput], diskBandwidthMiBs: 5000, diskMaxIops: 240000, localSsdMode: none }
+
+c4a-standard-4-lssd:  { vcpu: 4,  memoryGib: 16,  arch: arm64, hourlyUsd: 0.221, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 1 }
+c4a-standard-8-lssd:  { vcpu: 8,  memoryGib: 32,  arch: arm64, hourlyUsd: 0.441, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1000, diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 2 }
+c4a-standard-16-lssd: { vcpu: 16, memoryGib: 64,  arch: arm64, hourlyUsd: 0.883, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: fixed, localSsdCount: 4 }
+c4a-standard-32-lssd: { vcpu: 32, memoryGib: 128, arch: arm64, hourlyUsd: 1.683, networkGbps: 23.0, tier1NetworkGbps: 50.0,  bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 2400, diskMaxIops: 160000, localSsdMode: fixed, localSsdCount: 6 }
+
+# ---------------------------------------------------------------------------
+# Latest AMD — C4D (AMD EPYC Turin + Titanium, Hyperdisk-only)
+# ---------------------------------------------------------------------------
+c4d-standard-4:       { vcpu: 4,  memoryGib: 15,  arch: x86_64, hourlyUsd: 0.187, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 400,  diskMaxIops: 50000,  localSsdMode: none }
+c4d-standard-8:       { vcpu: 8,  memoryGib: 31,  arch: x86_64, hourlyUsd: 0.374, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: none }
+c4d-standard-16:      { vcpu: 16, memoryGib: 62,  arch: x86_64, hourlyUsd: 0.748, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: none }
+c4d-standard-32:      { vcpu: 32, memoryGib: 124, arch: x86_64, hourlyUsd: 1.497, networkGbps: 32.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: none }
+
+c4d-standard-8-lssd:  { vcpu: 8,  memoryGib: 31,  arch: x86_64, hourlyUsd: 0.415, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 800,  diskMaxIops: 50000,  localSsdMode: fixed, localSsdCount: 1 }
+c4d-standard-16-lssd: { vcpu: 16, memoryGib: 62,  arch: x86_64, hourlyUsd: 0.789, networkGbps: 23.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: fixed, localSsdCount: 1 }
+c4d-standard-32-lssd: { vcpu: 32, memoryGib: 124, arch: x86_64, hourlyUsd: 1.579, networkGbps: 32.0, bootDiskType: hyperdisk-balanced, supportedDiskTypes: [hyperdisk-balanced, hyperdisk-throughput], diskBandwidthMiBs: 1600, diskMaxIops: 100000, localSsdMode: fixed, localSsdCount: 2 }

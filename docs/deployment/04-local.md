@@ -23,9 +23,9 @@ Local-cluster deployment is fully covered by the [Getting Started](../getting-st
 - Anything that wants to test storage-class behaviour, or instance-type-specific behaviour. None of those exist on a laptop. (For disk latency and IOPS/throughput caps alone, [09 — Emulated network-attached storage](09-emulated-network-storage.md) gets close on a Linux machine or in Colima.)
 - Comparisons between two configurations — even if your laptop is fast, background processes (browser, video calls, OS updates) make run-to-run variance dominate the signal.
 
-If any of those describe what you're trying to do, jump straight to [05 — AWS EKS](05-aws-eks.md), or — if you're on GKE / AKS / on-prem — bring your own cluster, label its nodegroups, define a StorageClass, and use the same env-block shape as the `exampleRemoteFull` template.
+If any of those describe what you're trying to do, jump straight to [05 — Cloud Kubernetes](05-cloud-k8s.md) for the `eks-setup` and `gke-setup` wizards, or — if you're on AKS / on-prem — bring your own cluster, label its nodegroups, define a StorageClass, and use the same env-block shape as the `exampleRemoteFull` template.
 
 ## What's next
 
-- [05 — AWS EKS](05-aws-eks.md) — the deepest first-class cloud path, with the `eks-setup` wizard.
+- [05 — Cloud Kubernetes](05-cloud-k8s.md) — AWS EKS (`eks-setup`), GCP GKE (`gke-setup`), and bring-your-own cloud k8s.
 - [06 — External Kafka](06-external-kafka.md) — point local workers at a managed Kafka service if you only want to benchmark client-side behaviour without standing up brokers.

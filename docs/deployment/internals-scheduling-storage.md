@@ -82,4 +82,4 @@ If your cluster needs any of the above, you have two options: (a) edit the base 
 ## See also
 
 - [03 — Scheduling and storage](03-scheduling-and-storage.md): the user-facing version of this material.
-- [05 — AWS EKS](05-aws-eks.md): the wizard generates an env block that uses these fields correctly.
+- [05 — Cloud Kubernetes](05-cloud-k8s.md): the `eks-setup` and `gke-setup` wizards generate env blocks that use these fields correctly.
