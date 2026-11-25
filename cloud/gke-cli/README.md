@@ -48,6 +48,8 @@ Starting with a GCP project:
 
 **Reusing `default-pool` for `infra`.** GKE always creates an initial `default-pool` during cluster creation. `gke-setup` sizes `default-pool` as the 1-node `role=infra` pool directly instead of creating a throwaway pool and deleting it, saving ~4 minutes on every cluster build.
 
+**Private GKE nodes + Cloud NAT by default.** `gke-setup` creates VPC-native clusters with `--enable-ip-alias --enable-private-nodes --enable-dns-access` and automatically configures (or reuses) a regional Cloud Router & Cloud NAT for outbound internet pulls (Docker Hub, etc.). Kubeconfig uses GKE's IAM-authenticated DNS control plane endpoint (`--dns-endpoint`), so `kubectl` and `./dimster` work from any workstation IP without opening authorized-network CIDR lists. Nodes have no public IPv4 addresses, so clusters work under GCP's `constraints/compute.vmExternalIpAccess` organization policy, consume only 1 shared external IP (instead of 1 per node), and cost slightly less than public node IPs for ≥2 VMs. On teardown, `gke-setup delete` removes the dedicated `{dimsterName}-nat-router` and NAT automatically.
+
 ## Prerequisites
 
 Install the Google Cloud CLI, `kubectl`, and the GKE auth plugin:
@@ -73,6 +75,7 @@ If you run `gcloud` by impersonating a dedicated service account (recommended), 
 |-----------|------|------------------|
 | Deployer SA (`--sa`) | `roles/container.admin` | Create, manage, and delete GKE clusters and node pools |
 | Deployer SA (`--sa`) | `roles/artifactregistry.admin` | Create/delete Artifact Registry Docker repos and push images |
+| Deployer SA (`--sa`) | `roles/compute.networkAdmin` | Create and clean up the regional Cloud Router & Cloud NAT for private GKE nodes |
 | Deployer SA (`--sa`) | `roles/compute.storageAdmin` | List and sweep orphaned GCE disks during `gke-setup delete` |
 | Deployer SA (`--sa`) | `roles/compute.viewer` | Query available zones, regional quotas, and live VM/disk usage |
 | Deployer SA (`--sa`) on Node VM SA | `roles/iam.serviceAccountUser` | Required (`iam.serviceAccounts.actAs`) for GKE to attach the node VM service account |
@@ -106,6 +109,12 @@ cp target/release/gke-setup ..
 cd ..
 ```
 
+or
+
+```bash
+cd cloud && cargo build --release -p gke-setup && cp target/release/gke-setup .. && cd ..
+```
+
 > On macOS Apple Silicon, sign the copied binary: `codesign --force --sign - ./gke-setup`.
 
 You now have `./gke-setup` next to `./dimster` at the project root.
@@ -127,13 +136,13 @@ Before creating a cluster, verify your tools, active project, impersonated servi
 The wizard walks through:
 
 1. **Environment name** — key under `environments:` in `dimster-config.yaml` (default `gke`).
-2. **GCP configuration & live quota snapshot** — project ID (auto-detected from `gcloud`), resource name prefix (cluster named `{dimsterName}-benchmark`), region, zone (queried via `gcloud`), a live summary of your project and regional GCP quotas (vCPUs across regions and per machine family, external IPs, Hyperdisk/PD/Local SSD headroom), GKE release channel (`regular`, `stable`, `rapid`, or pinned version), and optional kubelet static CPU Manager (`cpuManagerPolicy: static`).
+2. **GCP configuration & live quota snapshot** — project ID (auto-detected from `gcloud`), resource name prefix (cluster named `{dimsterName}-benchmark`), region, zone (queried via `gcloud`), a live summary of your project and regional GCP quotas (vCPUs across regions and per machine family, external IPs, Hyperdisk/PD/Local SSD headroom), GKE release channel (`regular`, `stable`, `rapid`, or pinned version), private GKE nodes + Cloud NAT (enabled by default), and optional kubelet static CPU Manager (`cpuManagerPolicy: static`).
 3. **Deploy mode** — `full` (Dimster manages Kafka in GKE) or `external` (workers only, points at an external Kafka such as Confluent Cloud). For external, see [06 — External Kafka](../../docs/deployment/06-external-kafka.md).
 4. **Kafka sizing** (full mode) — Kafka version, machine type (with specs, hourly rate hint, and computed defaults from `cloud/gke-cli/instance-types.yaml`), broker count, optional `TIER_1` networking (when supported by the machine type), JVM heap, CPU/memory requests, broker config, and thread overrides.
 5. **Kafka storage** (full mode) — filtered to disk types supported by your chosen Kafka machine type (Hyperdisk Balanced, Hyperdisk Extreme, Hyperdisk Throughput, `pd-ssd`, `pd-balanced`, or Local NVMe SSDs), with live GCP limit/ratio validation and VM ceiling warnings.
-6. **Infra + coordinator + monitoring** — small machine type for `default-pool` (default `e2-standard-2`); coordinator, Prometheus, and Grafana sizing.
+6. **Infra + coordinator + monitoring** — small machine type for `default-pool` (default `e2-standard-2`); coordinator node pool placement (`role=infra` default or `role=worker`), coordinator sizing, and Prometheus/Grafana sizing.
 7. **Worker sizing** — machine type (default `c3-standard-4`), initial count, autoscaling min/max, optional `TIER_1` networking, JVM heap, CPU/memory requests.
-8. **Pre-deploy quota check & hourly cost estimate** — before asking you to confirm, `gke-setup` checks your chosen nodes and disks against the queried GCP quotas and displays an itemized on-demand hourly (and daily) USD estimate covering VMs, Kafka storage, boot/infra disks, `TIER_1` networking, and the GKE control plane.
+8. **Pre-deploy quota check & hourly cost estimate** — before asking you to confirm, `gke-setup` checks your chosen nodes and disks against the queried GCP quotas and displays an itemized on-demand hourly (and daily) USD estimate covering VMs, Kafka storage, boot/infra disks, `TIER_1` networking, Cloud NAT (or external node IPs), and the GKE control plane.
 
 Without `-y`, the wizard asks for confirmation before kicking off setup and before every `gcloud` and `kubectl` command.
 
@@ -207,7 +216,7 @@ The full catalog of curated GCP machine specs and baseline hourly rates lives in
 
 1. **Effective disk performance = `min(disk provisioned limit, VM ceiling)`.** A `c4-standard-4` caps Hyperdisk Balanced at 400 MiB/s and 50,000 IOPS even if you provision a 2,400 MiB/s volume. `gke-setup` displays each machine type's VM ceiling from `instance-types.yaml` and warns when your StorageClass exceeds it.
 2. **4th-gen machines (`n4`, `c4`, `c4a`, `c4d`) are Hyperdisk-only.** They cannot attach `pd-balanced` or `pd-ssd` — not even as a node boot disk. `gke-setup` automatically sets `--disk-type=hyperdisk-balanced` for those node pools and filters out unsupported disk types during storage selection.
-3. **Keep the `infra` pool on a PD-capable machine (`e2-standard-2`).** Dimster's `benchmark-results` (`1Gi`) and `prometheus-data` (`50Gi`) PVCs bind to GKE's default `standard-rwo` (`pd-balanced`) StorageClass, which cannot attach to Hyperdisk-only infra nodes (`n4`/`c4`/`c4a`). `e2-standard-2` (2 dedicated vCPUs, 8 GiB RAM) is cheap, supports `standard-rwo`, and avoids shared-core E2 CPU reservations.
+3. **Hyperdisk-only `infra` / coordinator pools automatically use `dynamic-rwo`.** `e2-standard-2` is the cheapest `infra` default and uses `standard-rwo` (`pd-balanced`, saving Hyperdisk quota for Kafka). If you pick a Hyperdisk-only `infra` or coordinator pool (`n4`, `c4`, `c4a`, `c4d`), `gke-setup` automatically switches the cluster's default StorageClass to GKE's built-in `dynamic-rwo` so `prometheus-data` (`50Gi`) and `benchmark-results` (`4Gi`) provision Hyperdisk Balanced volumes cleanly.
 4. **Network bandwidth & `TIER_1`.** Unlike EC2's burst-credit cliff, GCP egress bandwidth is sustained per VM (C3/C4/C4A give 23 Gbps even at 4–8 vCPUs, which is ~2,875 MB/s!). Larger shapes (`n2-standard-32`, `c3d-standard-30`, `c4a-standard-32`, `c3-standard-44`, `c4-standard-48`) also unlock `TIER_1` networking (50–200 Gbps) via gVNIC, which `gke-setup` offers interactively.
 
 ### Quick-pick by workload shape
@@ -255,7 +264,9 @@ To keep the Artifact Registry repo so you don't have to re-push images next time
 
 ## Troubleshooting
 
-**`403 Required "iam.serviceAccounts.actAs" permission` during cluster create.** Your deployer service account is missing `roles/iam.serviceAccountUser` on the GKE node VM service account. Run `./cloud/gke-cli/grant-sa-permissions.sh` (or `./gke-setup check` to inspect missing permissions).
+**`403 Required "iam.serviceAccounts.actAs" permission` or `compute.routers.*` permission denied during cluster create.** Your deployer service account is missing `roles/iam.serviceAccountUser` or `roles/compute.networkAdmin`. Re-run `./cloud/gke-cli/grant-sa-permissions.sh` (or `./gke-setup check` to inspect missing permissions).
+
+**`Constraint constraints/compute.vmExternalIpAccess violated`.** Your GCP organization blocks public IPs on Compute Engine VMs. Leave `gcp.privateNodes: true` (the default) so `gke-setup` provisions private nodes with Cloud NAT.
 
 **`ErrImagePull` / `ImagePullBackOff` from `pkg.dev`.** Verify the GKE node VM service account has `roles/artifactregistry.reader`, and that you pushed the image with `./dimster build gke` after running `gcloud auth configure-docker <region>-docker.pkg.dev`.
 

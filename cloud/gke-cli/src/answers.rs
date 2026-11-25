@@ -50,6 +50,14 @@ pub struct GcpAnswers {
     /// Enable GKE Dataplane V2 (eBPF) for lower-overhead networking.
     #[serde(default = "default_true")]
     pub dataplane_v2: bool,
+    /// Provision GKE nodes without external IPs (`--enable-ip-alias --enable-private-nodes`)
+    /// and configure a regional Cloud Router + Cloud NAT for outbound internet access.
+    #[serde(default = "default_true")]
+    pub private_nodes: bool,
+    /// Optional `/28` CIDR for legacy VPC-peered private control planes (`--master-ipv4-cidr`).
+    /// Omitted by default so GKE uses Private Service Connect without CIDR collisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_ipv4_cidr: Option<String>,
     /// Optional custom VPC network (useful for VPC peering to external Kafka).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
@@ -119,6 +127,8 @@ pub struct WorkerAnswers {
 pub struct CoordinatorAnswers {
     #[serde(default = "default_infra_instance_type")]
     pub infra_instance_type: String,
+    #[serde(default = "default_coord_node_label")]
+    pub node_label: String,
     pub heap: String,
     pub cpu: String,
     pub memory: String,
@@ -144,6 +154,10 @@ fn default_monitoring() -> MonitoringAnswers {
 
 fn default_infra_instance_type() -> String {
     "e2-standard-2".to_string()
+}
+
+fn default_coord_node_label() -> String {
+    "role=infra".to_string()
 }
 
 fn default_env_name() -> String {
@@ -266,6 +280,8 @@ mod tests {
             gke_version: None,
             existing_image: None,
             dataplane_v2: true,
+            private_nodes: true,
+            master_ipv4_cidr: None,
             network: None,
             subnetwork: None,
             node_service_account: None,
@@ -308,6 +324,7 @@ mod tests {
             },
             coordinator: CoordinatorAnswers {
                 infra_instance_type: "e2-standard-2".into(),
+                node_label: "role=infra".into(),
                 heap: "-Xms512M -Xmx512M".into(),
                 cpu: "500m".into(),
                 memory: "1Gi".into(),

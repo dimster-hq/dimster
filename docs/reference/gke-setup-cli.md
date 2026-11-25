@@ -24,7 +24,7 @@ gke-setup check [--project <PROJECT_ID>]
 
 ### create
 
-Create an Artifact Registry Docker repository, a single-zone GKE Standard cluster (`default-pool` labeled `role=infra`, plus `kafka` and `workers` node pools), a tuned Kafka `StorageClass` (or Local NVMe SSD DaemonSet + static `local-storage` PVs), and the Dimster environment config.
+Create an Artifact Registry Docker repository, a regional Cloud Router & Cloud NAT (when `gcp.privateNodes` is `true`, the default), a single-zone GKE Standard cluster (`default-pool` labeled `role=infra`, plus `kafka` and `workers` node pools), a tuned Kafka `StorageClass` (or Local NVMe SSD DaemonSet + static `local-storage` PVs), and the Dimster environment config.
 
 During interactive setup (and `--dry-run` / `--answers` preview), `gke-setup create` queries your project and regional GCP quotas (project `CPUS_ALL_REGIONS`, per-family vCPUs, external IPs, Hyperdisk/PD/Local SSD limits, and live usage) so you can see available headroom before choosing machine types and disks. Once all sizing decisions are complete, it prints a quota validation summary and an itemized on-demand hourly USD cost estimate before prompting for confirmation.
 
@@ -48,7 +48,7 @@ Generated outputs:
 
 ### delete
 
-Gracefully delete PVCs (pinned explicitly to `gke_{project}_{zone}_{name}-benchmark`), delete the GKE cluster, sweep any orphaned GCE disks labeled `dimster-cluster={name}-benchmark`, and optionally delete the Artifact Registry repository.
+Gracefully delete PVCs (pinned explicitly to `gke_{project}_{zone}_{name}-benchmark`), delete the GKE cluster, sweep any orphaned GCE disks belonging to the cluster, delete the dedicated Cloud NAT & Cloud Router (`{name}-nat-router`) if present, and optionally delete the Artifact Registry repository.
 
 ```bash
 gke-setup delete [options]
@@ -83,6 +83,8 @@ gcp:
   # gkeVersion: "1.32"              # optional explicit Kubernetes version
   # existingImage: "us-central1-docker.pkg.dev/my-gcp-project/existing/dimster"
   dataplaneV2: true
+  privateNodes: true                # private GKE nodes + Cloud NAT (no external node IPs)
+  # masterIpv4Cidr: "172.16.0.0/28" # optional /28 CIDR for legacy VPC-peered control planes
   # network: "my-vpc"               # optional custom VPC (e.g. VPC peering)
   # subnetwork: "my-subnet"         # optional custom subnet
   # nodeServiceAccount: "node-sa@my-gcp-project.iam.gserviceaccount.com"
@@ -118,6 +120,7 @@ workers:
   tier1Networking: false
 coordinator:
   infraInstanceType: e2-standard-2
+  nodeLabel: role=infra             # role=infra | role=worker
   heap: "-Xms512M -Xmx512M"
   cpu: "500m"
   memory: "1Gi"

@@ -101,6 +101,10 @@ pub fn run_check(project_override: Option<&str>) -> Result<()> {
             "compute.zones.list",
             "compute.disks.list",
             "compute.disks.delete",
+            "compute.routers.list",
+            "compute.routers.create",
+            "compute.routers.update",
+            "compute.routers.delete",
         ];
 
         let mut used_fallback = false;
@@ -189,6 +193,10 @@ pub fn run_check(project_override: Option<&str>) -> Result<()> {
                 (
                     "Compute Disks API (compute.disks.list)",
                     &["compute", "disks", "list", "--project", proj, "--limit=1", "--format=value(name)"],
+                ),
+                (
+                    "Compute Routers API (compute.routers.list)",
+                    &["compute", "routers", "list", "--project", proj, "--limit=1", "--format=value(name)"],
                 ),
             ];
             for (label, args) in probes {
@@ -411,6 +419,18 @@ pub fn build_cluster_create_args(
     if answers.gcp.dataplane_v2 {
         args.push("--enable-dataplane-v2".into());
     }
+    if answers.gcp.private_nodes {
+        args.push("--enable-ip-alias".into());
+        args.push("--enable-private-nodes".into());
+        // GKE PSC private-node clusters lock down the IP control-plane endpoint
+        // by default (empty authorized networks); enable IAM-authenticated DNS
+        // control-plane access so kubectl/dimster work from any workstation IP.
+        args.push("--enable-dns-access".into());
+        if let Some(ref cidr) = answers.gcp.master_ipv4_cidr {
+            args.push("--master-ipv4-cidr".into());
+            args.push(cidr.clone());
+        }
+    }
 
     if answers.gcp.release_channel == "none" {
         args.push("--release-channel".into());
@@ -441,6 +461,26 @@ pub fn build_cluster_create_args(
         args.push(sa.clone());
     }
 
+    args
+}
+
+/// Build `gcloud container clusters get-credentials` arguments.
+/// Uses `--dns-endpoint` for private clusters so kubectl authenticates via GKE's
+/// IAM-gated DNS control plane endpoint (`*.gke.goog`).
+pub fn build_get_credentials_args(answers: &Answers) -> Vec<String> {
+    let mut args = vec![
+        "container".into(),
+        "clusters".into(),
+        "get-credentials".into(),
+        answers.cluster_name(),
+        "--zone".into(),
+        answers.gcp.zone.clone(),
+        "--project".into(),
+        answers.gcp.project.clone(),
+    ];
+    if answers.gcp.private_nodes {
+        args.push("--dns-endpoint".into());
+    }
     args
 }
 
@@ -630,6 +670,7 @@ pub fn build_dimster_env_spec(answers: &Answers, context: String) -> DimsterEnvS
             heap: answers.coordinator.heap.clone(),
             cpu: answers.coordinator.cpu.clone(),
             memory: answers.coordinator.memory.clone(),
+            node_label: Some(answers.coordinator.node_label.clone()),
         },
         monitoring: MonitoringRenderSpec {
             cgroup_metrics: true,
@@ -725,14 +766,15 @@ fn step_2_gke(
             sys_cfg_path.as_deref(),
         ))
     };
+    let creds_args = build_get_credentials_args(answers);
     let workers_args = build_workers_pool_args(answers, instance_types, sys_cfg_path.as_deref());
 
     if opts.mode == Mode::DryRun {
+        if answers.gcp.private_nodes {
+            ensure_cloud_nat(answers, opts)?;
+        }
         println!("  [dry-run] gcloud {}", cluster_args.join(" "));
-        println!(
-            "  [dry-run] gcloud container clusters get-credentials {} --zone {} --project {}",
-            cluster_name, answers.gcp.zone, answers.gcp.project
-        );
+        println!("  [dry-run] gcloud {}", creds_args.join(" "));
         if let Some(ref p) = sys_cfg_path {
             println!("  [dry-run] Write kubelet static CPU config to {}", p);
         }
@@ -741,6 +783,10 @@ fn step_2_gke(
         }
         println!("  [dry-run] gcloud {}", workers_args.join(" "));
         return Ok(());
+    }
+
+    if answers.gcp.private_nodes {
+        ensure_cloud_nat(answers, opts)?;
     }
 
     if let Some(ref p) = sys_cfg_path {
@@ -771,18 +817,7 @@ fn step_2_gke(
 
     // Fetch kubeconfig credentials so kubectl targets this cluster.
     println!("  Updating kubeconfig...");
-    let creds = Command::new("gcloud")
-        .args([
-            "container",
-            "clusters",
-            "get-credentials",
-            &cluster_name,
-            "--zone",
-            &answers.gcp.zone,
-            "--project",
-            &answers.gcp.project,
-        ])
-        .output()?;
+    let creds = Command::new("gcloud").args(&creds_args).output()?;
     if !creds.status.success() {
         let stderr = String::from_utf8_lossy(&creds.stderr);
         bail!("gcloud get-credentials failed: {}", stderr.trim());
@@ -841,6 +876,326 @@ fn list_node_pools(answers: &Answers) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Deterministic Cloud Router name owned by this Dimster deployment.
+pub fn nat_router_name(dimster_name: &str) -> String {
+    format!("{}-nat-router", dimster_name)
+}
+
+/// Deterministic Cloud NAT gateway name owned by this Dimster deployment.
+pub fn nat_gateway_name(dimster_name: &str) -> String {
+    format!("{}-nat", dimster_name)
+}
+
+fn network_basename(network: &str) -> &str {
+    network.rsplit('/').next().unwrap_or(network)
+}
+
+/// Result of inspecting existing regional Cloud Routers before provisioning Cloud NAT.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExistingNat {
+    /// A router on the target VPC already has a covering Cloud NAT (reuse it).
+    Ready { router_name: String, nat_name: String },
+    /// Our dedicated router exists on the target VPC, but has no NAT attached yet.
+    OurRouterWithoutNat,
+    /// No covering Cloud NAT or dedicated router exists yet.
+    None,
+}
+
+/// Inspect `gcloud compute routers list --regions <region> --format json` output
+/// to decide whether to reuse an existing covering NAT, attach a NAT to our
+/// existing router, or create both.
+pub fn find_existing_nat_router(
+    json_output: &str,
+    network: &str,
+    our_router: &str,
+) -> Result<ExistingNat> {
+    if json_output.trim().is_empty() {
+        return Ok(ExistingNat::None);
+    }
+    let routers: Vec<serde_json::Value> = serde_json::from_str(json_output)?;
+    let target_net = network_basename(network);
+    let mut found_our_router = false;
+
+    for router in routers {
+        let router_net = router
+            .get("network")
+            .and_then(|n| n.as_str())
+            .map(network_basename)
+            .unwrap_or("");
+        if router_net != target_net {
+            continue;
+        }
+        let Some(rname) = router.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let is_ours = rname == our_router;
+        if is_ours {
+            found_our_router = true;
+        }
+        if let Some(nats) = router.get("nats").and_then(|n| n.as_array()) {
+            for nat in nats {
+                let Some(nat_name) = nat.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                let covers_all = nat
+                    .get("sourceSubnetworkIpRangesToNat")
+                    .and_then(|s| s.as_str())
+                    .is_some_and(|s| s == "ALL_SUBNETWORKS_ALL_IP_RANGES");
+                if covers_all || is_ours {
+                    return Ok(ExistingNat::Ready {
+                        router_name: rname.to_string(),
+                        nat_name: nat_name.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if found_our_router {
+        Ok(ExistingNat::OurRouterWithoutNat)
+    } else {
+        Ok(ExistingNat::None)
+    }
+}
+
+/// Extract attached Cloud NAT names from `gcloud compute routers describe --format json`.
+pub fn parse_router_nat_names(json_output: &str) -> Result<Vec<String>> {
+    if json_output.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let router: serde_json::Value = serde_json::from_str(json_output)?;
+    let names = router
+        .get("nats")
+        .and_then(|n| n.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|nat| nat.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(names)
+}
+
+/// Ensure private GKE nodes have outbound internet egress via a regional Cloud NAT.
+/// Reuses an existing covering NAT on the same VPC/region if one is already present.
+fn ensure_cloud_nat(answers: &Answers, opts: RunOptions) -> Result<()> {
+    let project = &answers.gcp.project;
+    let region = &answers.gcp.region;
+    let network = answers.gcp.network.as_deref().unwrap_or("default");
+    let router = nat_router_name(&answers.gcp.dimster_name);
+    let nat = nat_gateway_name(&answers.gcp.dimster_name);
+
+    let router_args = [
+        "compute",
+        "routers",
+        "create",
+        router.as_str(),
+        "--network",
+        network,
+        "--region",
+        region.as_str(),
+        "--project",
+        project.as_str(),
+    ];
+    let nat_args = [
+        "compute",
+        "routers",
+        "nats",
+        "create",
+        nat.as_str(),
+        "--router",
+        router.as_str(),
+        "--region",
+        region.as_str(),
+        "--project",
+        project.as_str(),
+        "--auto-allocate-nat-external-ips",
+        "--nat-all-subnet-ip-ranges",
+    ];
+
+    if opts.mode == Mode::DryRun {
+        println!("  [dry-run] gcloud {} (if no covering Cloud NAT in {})", router_args.join(" "), region);
+        println!("  [dry-run] gcloud {}", nat_args.join(" "));
+        return Ok(());
+    }
+
+    let list_out = Command::new("gcloud")
+        .args([
+            "compute",
+            "routers",
+            "list",
+            "--project",
+            project,
+            "--regions",
+            region,
+            "--format",
+            "json",
+        ])
+        .output()?;
+
+    let existing = if list_out.status.success() {
+        let raw = String::from_utf8_lossy(&list_out.stdout);
+        find_existing_nat_router(&raw, network, &router)?
+    } else {
+        let stderr = String::from_utf8_lossy(&list_out.stderr);
+        bail!(
+            "Failed to inspect Cloud Routers in {} ({}). Ensure your deployer SA has \
+             roles/compute.networkAdmin (re-run ./cloud/gke-cli/grant-sa-permissions.sh), \
+             or set gcp.privateNodes: false if your project allows external node IPs.",
+            region,
+            stderr.trim()
+        );
+    };
+
+    match existing {
+        ExistingNat::Ready {
+            router_name,
+            nat_name,
+        } => {
+            println!(
+                "  ✓ Reusing existing Cloud NAT '{}' on router '{}' ({})",
+                nat_name, router_name, region
+            );
+            return Ok(());
+        }
+        ExistingNat::OurRouterWithoutNat => {
+            println!("  ✓ Cloud Router '{}' already exists", router);
+        }
+        ExistingNat::None => {
+            if let Err(e) = confirm_and_run(opts, "gcloud", &router_args) {
+                bail!(
+                    "{}\n  Hint: Creating Cloud Router/NAT requires roles/compute.networkAdmin \
+                     on your deployer SA (re-run ./cloud/gke-cli/grant-sa-permissions.sh).",
+                    e
+                );
+            }
+            println!("  ✓ Cloud Router '{}' created", router);
+        }
+    }
+
+    if let Err(e) = confirm_and_run(opts, "gcloud", &nat_args) {
+        bail!(
+            "{}\n  Hint: Configuring Cloud NAT requires roles/compute.networkAdmin \
+             on your deployer SA (re-run ./cloud/gke-cli/grant-sa-permissions.sh).",
+            e
+        );
+    }
+    println!(
+        "  ✓ Cloud NAT '{}' created on router '{}' ({})",
+        nat, router, region
+    );
+    Ok(())
+}
+
+/// Delete our dedicated Cloud NAT gateway(s) and Cloud Router if present.
+/// Never touches routers with other names (e.g. shared corporate routers).
+fn delete_cloud_nat(dimster_name: &str, project: &str, region: &str, opts: RunOptions) -> Result<()> {
+    let router = nat_router_name(dimster_name);
+    let nat = nat_gateway_name(dimster_name);
+
+    if opts.mode == Mode::DryRun {
+        println!(
+            "  [dry-run] if router {} exists: gcloud compute routers nats delete {} --router {} --region {} --project {} --quiet",
+            router, nat, router, region, project
+        );
+        println!(
+            "  [dry-run] gcloud compute routers delete {} --region {} --project {} --quiet",
+            router, region, project
+        );
+        return Ok(());
+    }
+
+    let desc = Command::new("gcloud")
+        .args([
+            "compute",
+            "routers",
+            "describe",
+            &router,
+            "--region",
+            region,
+            "--project",
+            project,
+            "--format",
+            "json",
+        ])
+        .output()?;
+
+    if !desc.status.success() {
+        let stderr = String::from_utf8_lossy(&desc.stderr);
+        if stderr.contains("PERMISSION_DENIED") || stderr.contains("403") {
+            println!(
+                "  ⚠ Could not inspect Cloud Router '{}' (missing compute.routers permission?): {}",
+                router,
+                stderr.trim()
+            );
+            println!(
+                "    Check manually: gcloud compute routers list --regions {} --project {}",
+                region, project
+            );
+        } else {
+            println!(
+                "  ✓ Cloud Router '{}' does not exist (already deleted or not created)",
+                router
+            );
+        }
+        return Ok(());
+    }
+
+    let raw = String::from_utf8_lossy(&desc.stdout);
+    let nats = parse_router_nat_names(&raw)?;
+    for nat_name in &nats {
+        confirm_and_run(
+            opts,
+            "gcloud",
+            &[
+                "compute",
+                "routers",
+                "nats",
+                "delete",
+                nat_name,
+                "--router",
+                &router,
+                "--region",
+                region,
+                "--project",
+                project,
+                "--quiet",
+            ],
+        )?;
+        println!("  ✓ Cloud NAT '{}' deleted", nat_name);
+    }
+
+    confirm_and_run(
+        opts,
+        "gcloud",
+        &[
+            "compute",
+            "routers",
+            "delete",
+            &router,
+            "--region",
+            region,
+            "--project",
+            project,
+            "--quiet",
+        ],
+    )?;
+    println!("  ✓ Cloud Router '{}' deleted", router);
+    Ok(())
+}
+
+/// Return true when either the infra pool (hosting Prometheus) or the
+/// coordinator's target pool is Hyperdisk-only (`n4`/`c4`/`c4a`/`c4d`), meaning
+/// GKE's default PD-only `standard-rwo` StorageClass cannot attach to it and
+/// `gke-setup` should switch the cluster default to GKE's built-in `dynamic-rwo`.
+pub fn needs_dynamic_default_sc(answers: &Answers, instance_types: &InstanceTypes) -> bool {
+    let infra_hdb = instance_types.boot_disk_for(&answers.coordinator.infra_instance_type)
+        == "hyperdisk-balanced";
+    let coord_worker_hdb = answers.coordinator.node_label == "role=worker"
+        && instance_types.boot_disk_for(&answers.workers.instance_type) == "hyperdisk-balanced";
+    infra_hdb || coord_worker_hdb
+}
+
 fn step_3_verify_csi(
     answers: &Answers,
     instance_types: &InstanceTypes,
@@ -849,11 +1204,23 @@ fn step_3_verify_csi(
     println!("\n=== Step 3/5: Verify GKE Persistent Disk CSI Driver ===\n");
 
     let context = answers.kubectl_context();
+    let switch_to_dynamic = needs_dynamic_default_sc(answers, instance_types);
+
     if opts.mode == Mode::DryRun {
         println!(
             "  [dry-run] kubectl --context {} get csidrivers pd.csi.storage.gke.io",
             context
         );
+        if switch_to_dynamic {
+            println!(
+                "  [dry-run] kubectl --context {} annotate storageclass standard-rwo storageclass.kubernetes.io/is-default-class-",
+                context
+            );
+            println!(
+                "  [dry-run] kubectl --context {} annotate storageclass dynamic-rwo storageclass.kubernetes.io/is-default-class=true --overwrite",
+                context
+            );
+        }
         return Ok(());
     }
 
@@ -872,14 +1239,47 @@ fn step_3_verify_csi(
         println!("  ⚠ pd.csi.storage.gke.io not yet visible — cluster addons may still be starting");
     }
 
-    if instance_types
-        .lookup(&answers.coordinator.infra_instance_type)
-        .is_some_and(|s| s.is_hyperdisk_only())
-    {
-        println!(
-            "  ⚠ Infra node '{}' is Hyperdisk-only; ensure your default StorageClass supports Hyperdisk for benchmark-results PVC.",
-            answers.coordinator.infra_instance_type
-        );
+    if switch_to_dynamic {
+        let has_dynamic = Command::new("kubectl")
+            .args(["--context", &context, "get", "storageclass", "dynamic-rwo"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if has_dynamic {
+            println!("  Hyperdisk-only infra/coordinator pool detected — switching default StorageClass to 'dynamic-rwo'...");
+            confirm_and_run(
+                opts,
+                "kubectl",
+                &[
+                    "--context",
+                    &context,
+                    "annotate",
+                    "storageclass",
+                    "standard-rwo",
+                    "storageclass.kubernetes.io/is-default-class-",
+                ],
+            )?;
+            confirm_and_run(
+                opts,
+                "kubectl",
+                &[
+                    "--context",
+                    &context,
+                    "annotate",
+                    "storageclass",
+                    "dynamic-rwo",
+                    "storageclass.kubernetes.io/is-default-class=true",
+                    "--overwrite",
+                ],
+            )?;
+            println!("  ✓ Default StorageClass set to 'dynamic-rwo' (auto-selects Hyperdisk/PD per VM family)");
+        } else {
+            println!(
+                "  ⚠ Hyperdisk-only infra/coordinator pool detected, but 'dynamic-rwo' StorageClass was not found;"
+            );
+            println!(
+                "    ensure your default StorageClass supports Hyperdisk for Prometheus/benchmark-results PVCs."
+            );
+        }
     }
 
     Ok(())
@@ -1039,6 +1439,10 @@ pub fn generate_create_script(
     s.cmd(&format!("DIMSTER_NAME=\"{}\"", name));
     s.cmd(&format!("CLUSTER_NAME=\"{}\"", cluster_name));
     s.cmd(&format!("KUBE_CONTEXT=\"{}\"", context));
+    if answers.gcp.private_nodes {
+        let net = answers.gcp.network.as_deref().unwrap_or("default");
+        s.cmd(&format!("GCP_NETWORK=\"{}\"", net));
+    }
 
     // Step 1: Artifact Registry
     s.section("Step 1: Create Artifact Registry Repository");
@@ -1058,6 +1462,35 @@ pub fn generate_create_script(
 
     // Step 2: GKE Cluster & Node Pools
     s.section("Step 2: Create GKE Cluster & Node Pools");
+
+    if answers.gcp.private_nodes {
+        let router = nat_router_name(name);
+        let nat = nat_gateway_name(name);
+        s.comment("Ensure Cloud Router + Cloud NAT exist for private GKE node internet egress");
+        s.cmd(&format!("NAT_ROUTER=\"{}\"", router));
+        s.cmd(&format!("NAT_NAME=\"{}\"", nat));
+        s.cmd("EXISTING_NAT=$(gcloud compute routers list \\");
+        s.cmd("  --project=\"$GCP_PROJECT\" \\");
+        s.cmd("  --regions=\"$GCP_REGION\" \\");
+        s.cmd("  --filter=\"network~/${GCP_NETWORK}$ AND nats.sourceSubnetworkIpRangesToNat=ALL_SUBNETWORKS_ALL_IP_RANGES\" \\");
+        s.cmd("  --format=\"value(name)\" 2>/dev/null | head -n1 || true)");
+        s.cmd("if [ -n \"$EXISTING_NAT\" ]; then");
+        s.cmd("  echo \"Reusing existing Cloud NAT on router $EXISTING_NAT\"");
+        s.cmd("else");
+        s.cmd("  if ! gcloud compute routers describe \"$NAT_ROUTER\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" &>/dev/null; then");
+        s.cmd("    gcloud compute routers create \"$NAT_ROUTER\" --network=\"$GCP_NETWORK\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\"");
+        s.cmd("  fi");
+        s.cmd("  if ! gcloud compute routers nats describe \"$NAT_NAME\" --router=\"$NAT_ROUTER\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" &>/dev/null; then");
+        s.cmd("    gcloud compute routers nats create \"$NAT_NAME\" \\");
+        s.cmd("      --router=\"$NAT_ROUTER\" \\");
+        s.cmd("      --region=\"$GCP_REGION\" \\");
+        s.cmd("      --project=\"$GCP_PROJECT\" \\");
+        s.cmd("      --auto-allocate-nat-external-ips \\");
+        s.cmd("      --nat-all-subnet-ip-ranges");
+        s.cmd("  fi");
+        s.cmd("fi");
+        s.blank();
+    }
 
     let sys_cfg_path = if answers.cpu_manager_static {
         let p = format!("/tmp/gke-system-config-{}.yaml", name);
@@ -1080,7 +1513,15 @@ pub fn generate_create_script(
     s.cmd("fi");
     s.blank();
 
-    s.cmd("gcloud container clusters get-credentials \"$CLUSTER_NAME\" --zone=\"$GCP_ZONE\" --project=\"$GCP_PROJECT\"");
+    let creds_dns = if answers.gcp.private_nodes {
+        " --dns-endpoint"
+    } else {
+        ""
+    };
+    s.cmd(&format!(
+        "gcloud container clusters get-credentials \"$CLUSTER_NAME\" --zone=\"$GCP_ZONE\" --project=\"$GCP_PROJECT\"{}",
+        creds_dns
+    ));
     s.blank();
 
     if !answers.is_external() {
@@ -1106,6 +1547,13 @@ pub fn generate_create_script(
     // Step 3: Verify PD CSI driver
     s.section("Step 3: Verify GKE Persistent Disk CSI Driver");
     s.cmd("kubectl --context \"$KUBE_CONTEXT\" get csidrivers pd.csi.storage.gke.io");
+    if needs_dynamic_default_sc(answers, instance_types) {
+        s.comment("Hyperdisk-only infra/coordinator pool: switch default StorageClass to GKE's built-in dynamic-rwo");
+        s.cmd("if kubectl --context \"$KUBE_CONTEXT\" get storageclass dynamic-rwo &>/dev/null; then");
+        s.cmd("  kubectl --context \"$KUBE_CONTEXT\" annotate storageclass standard-rwo storageclass.kubernetes.io/is-default-class- || true");
+        s.cmd("  kubectl --context \"$KUBE_CONTEXT\" annotate storageclass dynamic-rwo storageclass.kubernetes.io/is-default-class=true --overwrite");
+        s.cmd("fi");
+    }
 
     // Step 4: StorageClass
     s.section("Step 4: Create StorageClass");
@@ -1198,16 +1646,25 @@ pub fn delete_all(
     let cluster_name = format!("{}-benchmark", dimster_name);
     let context = gke_kubectl_context(project, zone, &cluster_name);
 
-    // Step 1: Graceful PVC delete pinned explicitly to this cluster's context.
-    println!("\n=== Step 1/4: Delete PVCs (graceful) ===\n");
-    delete_cluster_pvcs(
+    // Capture the cluster's base32 ID from its live node boot disks before deletion:
+    // every GKE PVC disk (including `dynamic-rwo` and `standard-rwo`) carries
+    // `cluster-id-gke-io=<id>` from creation even before GKE adds `goog-k8s-cluster-name`.
+    let cluster_id = if opts.mode != Mode::DryRun {
+        discover_gke_cluster_id(&cluster_name, project, zone)
+    } else {
+        None
+    };
+
+    // Step 1: Graceful PVC + PV delete pinned explicitly to this cluster's context.
+    println!("\n=== Step 1/5: Delete PVCs (graceful) ===\n");
+    let known_pv_disks = delete_cluster_pvcs(
         opts,
         Some(&context),
         &format!("GKE cluster '{}' in {}", cluster_name, zone),
     )?;
 
     // Step 2: Delete GKE cluster
-    println!("\n=== Step 2/4: Delete GKE Cluster ===\n");
+    println!("\n=== Step 2/5: Delete GKE Cluster ===\n");
     let del_args = [
         "container",
         "clusters",
@@ -1245,12 +1702,23 @@ pub fn delete_all(
         }
     }
 
-    // Step 3: Sweep orphaned GCE disks labeled with this cluster (graceful on 403)
-    println!("\n=== Step 3/4: Sweep Orphaned GCE Disks ===\n");
-    sweep_orphaned_disks(&cluster_name, project, zone, opts)?;
+    // Step 3: Sweep orphaned GCE disks belonging to this cluster (graceful on 403)
+    println!("\n=== Step 3/5: Sweep Orphaned GCE Disks ===\n");
+    sweep_orphaned_disks(
+        &cluster_name,
+        cluster_id.as_deref(),
+        &known_pv_disks,
+        project,
+        zone,
+        opts,
+    )?;
 
-    // Step 4: Delete Artifact Registry repository
-    println!("\n=== Step 4/4: Delete Artifact Registry Repository ===\n");
+    // Step 4: Delete dedicated Cloud NAT & Cloud Router (if created by gke-setup)
+    println!("\n=== Step 4/5: Delete Cloud NAT & Router ===\n");
+    delete_cloud_nat(dimster_name, project, region, opts)?;
+
+    // Step 5: Delete Artifact Registry repository
+    println!("\n=== Step 5/5: Delete Artifact Registry Repository ===\n");
     if keep_registry {
         println!("  Skipped (--keep-registry)");
     } else if opts.mode == Mode::DryRun {
@@ -1309,15 +1777,51 @@ pub fn delete_all(
     Ok(())
 }
 
+/// Look up the GKE cluster's base32 ID (`goog-gke-cluster-id-base32`) from its
+/// live node boot disks before cluster deletion so Step 3 can match PVC disks
+/// carrying `cluster-id-gke-io=<id>`.
+fn discover_gke_cluster_id(cluster_name: &str, project: &str, zone: &str) -> Option<String> {
+    let filter = format!("labels.goog-k8s-cluster-name={}", cluster_name);
+    let out = Command::new("gcloud")
+        .args([
+            "compute",
+            "disks",
+            "list",
+            "--project",
+            project,
+            "--zones",
+            zone,
+            "--filter",
+            &filter,
+            "--format",
+            "value(labels.goog-gke-cluster-id-base32)",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// Extract names of unattached GCE disks belonging to `cluster_name` from
 /// `gcloud compute disks list --format=json` output.
 ///
-/// Matches either our custom StorageClass label (`dimster-cluster`) or GKE's
-/// built-in cluster label (`goog-k8s-cluster-name`, which covers default
-/// `standard-rwo` PVCs such as `benchmark-results` and `prometheus-data`).
-/// Filtering `users` client-side avoids GCE's invalid server-side `-users:*`
-/// filter on repeated fields.
-pub fn find_orphaned_cluster_disks(json_output: &str, cluster_name: &str) -> Result<Vec<String>> {
+/// Matches any unattached disk (`users` empty) that carries our custom
+/// StorageClass label (`dimster-cluster`), GKE's cluster-name label
+/// (`goog-k8s-cluster-name`), GKE's immediate `cluster-id-gke-io` label
+/// (captured from node boot disks before cluster delete), or appears in the
+/// PV backing disk list captured during Step 1.
+pub fn find_orphaned_cluster_disks(
+    json_output: &str,
+    cluster_name: &str,
+    cluster_id: Option<&str>,
+    known_pv_disks: &[String],
+) -> Result<Vec<String>> {
     if json_output.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -1331,21 +1835,30 @@ pub fn find_orphaned_cluster_disks(json_output: &str, cluster_name: &str) -> Res
         if attached {
             continue;
         }
-        let Some(labels) = disk.get("labels").and_then(|l| l.as_object()) else {
+        let Some(name) = disk.get("name").and_then(|n| n.as_str()) else {
             continue;
         };
-        let matches_cluster = labels
-            .get("dimster-cluster")
-            .and_then(|v| v.as_str())
-            .is_some_and(|v| v == cluster_name)
-            || labels
-                .get("goog-k8s-cluster-name")
-                .and_then(|v| v.as_str())
-                .is_some_and(|v| v == cluster_name);
-        if !matches_cluster {
-            continue;
-        }
-        if let Some(name) = disk.get("name").and_then(|n| n.as_str()) {
+        let matches_known = known_pv_disks.iter().any(|k| k == name);
+        let matches_label = disk
+            .get("labels")
+            .and_then(|l| l.as_object())
+            .is_some_and(|labels| {
+                labels
+                    .get("dimster-cluster")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|v| v == cluster_name)
+                    || labels
+                        .get("goog-k8s-cluster-name")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|v| v == cluster_name)
+                    || cluster_id.is_some_and(|id| {
+                        labels
+                            .get("cluster-id-gke-io")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|v| v == id)
+                    })
+            });
+        if matches_known || matches_label {
             orphaned.push(name.to_string());
         }
     }
@@ -1354,22 +1867,23 @@ pub fn find_orphaned_cluster_disks(json_output: &str, cluster_name: &str) -> Res
 
 fn sweep_orphaned_disks(
     cluster_name: &str,
+    cluster_id: Option<&str>,
+    known_pv_disks: &[String],
     project: &str,
     zone: &str,
     opts: RunOptions,
 ) -> Result<()> {
-    let label_filter = format!(
-        "labels.dimster-cluster={} OR labels.goog-k8s-cluster-name={}",
-        cluster_name, cluster_name
-    );
-
     if opts.mode == Mode::DryRun {
         println!(
-            "  [dry-run] gcloud compute disks list --project {} --zones {} --filter \"{}\" --format json",
-            project, zone, label_filter
+            "  [dry-run] gcloud compute disks list --project {} --zones {} --format json",
+            project, zone
         );
         println!(
-            "  [dry-run] for each unattached disk (users empty): gcloud compute disks delete <name> --zone {} --project {} --quiet",
+            "  [dry-run] match unattached disks by dimster-cluster={}, goog-k8s-cluster-name={}, cluster-id-gke-io, or Step 1 PV handles",
+            cluster_name, cluster_name
+        );
+        println!(
+            "  [dry-run] for each disk: gcloud compute disks delete <name> --zone {} --project {} --quiet",
             zone, project
         );
         return Ok(());
@@ -1384,8 +1898,6 @@ fn sweep_orphaned_disks(
             project,
             "--zones",
             zone,
-            "--filter",
-            &label_filter,
             "--format",
             "json",
         ])
@@ -1399,14 +1911,14 @@ fn sweep_orphaned_disks(
         );
         println!("    Check manually with:");
         println!(
-            "      gcloud compute disks list --project {} --zones {} --filter \"{}\"",
-            project, zone, label_filter
+            "      gcloud compute disks list --project {} --zones {}",
+            project, zone
         );
         return Ok(());
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
-    let disks = find_orphaned_cluster_disks(&raw, cluster_name)?;
+    let disks = find_orphaned_cluster_disks(&raw, cluster_name, cluster_id, known_pv_disks)?;
 
     if disks.is_empty() {
         println!("  ✓ No orphaned GCE disks found for cluster '{}'", cluster_name);
@@ -1467,6 +1979,7 @@ pub fn generate_delete_script(
     s.cmd(&format!("DIMSTER_NAME=\"{}\"", dimster_name));
     s.cmd(&format!("CLUSTER_NAME=\"{}\"", cluster_name));
     s.cmd(&format!("KUBE_CONTEXT=\"{}\"", context));
+    s.cmd("CLUSTER_ID=$(gcloud compute disks list --project=\"$GCP_PROJECT\" --zones=\"$GCP_ZONE\" --filter=\"labels.goog-k8s-cluster-name=$CLUSTER_NAME\" --format=\"value(labels.goog-gke-cluster-id-base32)\" 2>/dev/null | head -n1 || true)");
 
     s.section("Step 1: Delete PVCs (graceful)");
     s.cmd("if kubectl --context \"$KUBE_CONTEXT\" get ns --request-timeout=10s &>/dev/null; then");
@@ -1485,10 +1998,14 @@ pub fn generate_delete_script(
     s.cmd("fi");
 
     s.section("Step 3: Sweep Orphaned GCE Disks");
+    s.cmd("DISK_FILTER=\"labels.dimster-cluster=$CLUSTER_NAME OR labels.goog-k8s-cluster-name=$CLUSTER_NAME\"");
+    s.cmd("if [ -n \"$CLUSTER_ID\" ]; then");
+    s.cmd("  DISK_FILTER=\"$DISK_FILTER OR labels.cluster-id-gke-io=$CLUSTER_ID\"");
+    s.cmd("fi");
     s.cmd("ORPHANED_DISKS=$(gcloud compute disks list \\");
     s.cmd("  --project=\"$GCP_PROJECT\" \\");
     s.cmd("  --zones=\"$GCP_ZONE\" \\");
-    s.cmd("  --filter=\"labels.dimster-cluster=$CLUSTER_NAME OR labels.goog-k8s-cluster-name=$CLUSTER_NAME\" \\");
+    s.cmd("  --filter=\"$DISK_FILTER\" \\");
     s.cmd("  --format=\"csv[no-heading](name,users.len())\" | \\");
     s.cmd("  awk -F, '($2 == \"\" || $2 == \"0\") && $1 != \"\" {print $1}' || true)");
     s.cmd("if [ -z \"$ORPHANED_DISKS\" ]; then");
@@ -1500,10 +2017,23 @@ pub fn generate_delete_script(
     s.cmd("  done");
     s.cmd("fi");
 
+    s.section("Step 4: Delete Cloud NAT & Router");
+    s.cmd(&format!("NAT_ROUTER=\"{}\"", nat_router_name(dimster_name)));
+    s.cmd(&format!("NAT_NAME=\"{}\"", nat_gateway_name(dimster_name)));
+    s.cmd("if gcloud compute routers describe \"$NAT_ROUTER\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" &>/dev/null; then");
+    s.cmd("  if gcloud compute routers nats describe \"$NAT_NAME\" --router=\"$NAT_ROUTER\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" &>/dev/null; then");
+    s.cmd("    gcloud compute routers nats delete \"$NAT_NAME\" --router=\"$NAT_ROUTER\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" --quiet");
+    s.cmd("  fi");
+    s.cmd("  gcloud compute routers delete \"$NAT_ROUTER\" --region=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" --quiet");
+    s.cmd("  echo \"Cloud NAT and router $NAT_ROUTER deleted\"");
+    s.cmd("else");
+    s.cmd("  echo \"Cloud Router $NAT_ROUTER does not exist\"");
+    s.cmd("fi");
+
     if keep_registry {
-        s.section("Step 4: Delete Artifact Registry Repository — skipped (--keep-registry)");
+        s.section("Step 5: Delete Artifact Registry Repository — skipped (--keep-registry)");
     } else {
-        s.section("Step 4: Delete Artifact Registry Repository");
+        s.section("Step 5: Delete Artifact Registry Repository");
         s.cmd("if gcloud artifacts repositories describe \"$DIMSTER_NAME\" --location=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" &>/dev/null; then");
         s.cmd("  gcloud artifacts repositories delete \"$DIMSTER_NAME\" --location=\"$GCP_REGION\" --project=\"$GCP_PROJECT\" --quiet");
         s.cmd("  echo \"Artifact Registry repository deleted\"");
@@ -1557,6 +2087,8 @@ mod tests {
                 gke_version: None,
                 existing_image: None,
                 dataplane_v2: true,
+                private_nodes: true,
+                master_ipv4_cidr: None,
                 network: None,
                 subnetwork: None,
                 node_service_account: None,
@@ -1589,6 +2121,7 @@ mod tests {
             },
             coordinator: CoordinatorAnswers {
                 infra_instance_type: "e2-standard-2".into(),
+                node_label: "role=infra".into(),
                 heap: "-Xms512M -Xmx512M".into(),
                 cpu: "500m".into(),
                 memory: "1Gi".into(),
@@ -1646,6 +2179,27 @@ mod tests {
         assert!(script.contains("pvcSize: 500Gi"));
         assert!(script.contains("pvcStorageClass: dimster-hyperdisk-balanced-fast"));
         assert!(script.contains("cgroupMetrics: true"));
+        assert!(script.contains("nodeLabel: role=infra"));
+
+        let mut worker_coord = hdb_answers.clone();
+        worker_coord.coordinator.node_label = "role=worker".into();
+        let wc_spec = build_dimster_env_spec(&worker_coord, worker_coord.kubectl_context());
+        assert_eq!(
+            wc_spec.to_yaml_value()["coordinator"]["nodeLabel"],
+            "role=worker"
+        );
+        assert!(!needs_dynamic_default_sc(&hdb_answers, &types));
+
+        let mut hdb_infra = hdb_answers.clone();
+        hdb_infra.coordinator.infra_instance_type = "c4-standard-2".into();
+        assert!(needs_dynamic_default_sc(&hdb_infra, &types));
+        let hdb_infra_script = generate_create_script(&hdb_infra, &types).unwrap();
+        assert!(hdb_infra_script.contains("annotate storageclass dynamic-rwo"));
+
+        let mut hdb_worker_coord = hdb_answers.clone();
+        hdb_worker_coord.coordinator.node_label = "role=worker".into();
+        hdb_worker_coord.workers.instance_type = "c4-standard-8".into();
+        assert!(needs_dynamic_default_sc(&hdb_worker_coord, &types));
 
         let lssd_answers = sample_answers(
             "c3-standard-8-lssd",
@@ -1684,13 +2238,30 @@ mod tests {
         let json = r#"[
             {"name": "pvc-orphan-kafka", "labels": {"dimster-cluster": "bench-benchmark"}},
             {"name": "pvc-orphan-std", "labels": {"goog-k8s-cluster-name": "bench-benchmark"}, "users": []},
-            {"name": "pvc-attached", "labels": {"dimster-cluster": "bench-benchmark"}, "users": ["https://compute/instances/node-1"]},
-            {"name": "pvc-other-cluster", "labels": {"dimster-cluster": "other-benchmark"}},
+            {"name": "pvc-orphan-by-id", "labels": {"cluster-id-gke-io": "abc123clusterid"}},
+            {"name": "pvc-orphan-by-handle"},
+            {"name": "pvc-attached", "labels": {"cluster-id-gke-io": "abc123clusterid"}, "users": ["https://compute/instances/node-1"]},
+            {"name": "pvc-other-cluster", "labels": {"cluster-id-gke-io": "other999"}},
             {"name": "disk-unlabeled"}
         ]"#;
-        let orphaned = find_orphaned_cluster_disks(json, "bench-benchmark").unwrap();
-        assert_eq!(orphaned, vec!["pvc-orphan-kafka", "pvc-orphan-std"]);
-        assert!(find_orphaned_cluster_disks("  ", "bench-benchmark").unwrap().is_empty());
+        let known = vec!["pvc-orphan-by-handle".to_string()];
+        let orphaned =
+            find_orphaned_cluster_disks(json, "bench-benchmark", Some("abc123clusterid"), &known)
+                .unwrap();
+        assert_eq!(
+            orphaned,
+            vec![
+                "pvc-orphan-kafka",
+                "pvc-orphan-std",
+                "pvc-orphan-by-id",
+                "pvc-orphan-by-handle"
+            ]
+        );
+        assert!(
+            find_orphaned_cluster_disks("  ", "bench-benchmark", None, &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1757,5 +2328,104 @@ mod tests {
                     .into()
             )
         );
+    }
+
+    #[test]
+    fn private_nodes_emits_flags_and_nat_in_create_and_delete_scripts() {
+        let types = load_catalog();
+        let mut answers = sample_answers(
+            "c4-standard-8",
+            StorageAnswers {
+                storage_type: "hyperdisk-balanced".into(),
+                size: "500Gi".into(),
+                performance: Some("basic".into()),
+                iops: None,
+                throughput_mibs: None,
+                local_ssd_count: None,
+            },
+        );
+
+        let args = build_cluster_create_args(&answers, &types);
+        assert!(args.contains(&"--enable-ip-alias".to_string()));
+        assert!(args.contains(&"--enable-private-nodes".to_string()));
+        assert!(args.contains(&"--enable-dns-access".to_string()));
+        assert!(!args.contains(&"--enable-private-endpoint".to_string()));
+        assert!(!args.contains(&"--master-ipv4-cidr".to_string()));
+        let creds_args = build_get_credentials_args(&answers);
+        assert!(creds_args.contains(&"--dns-endpoint".to_string()));
+
+        let create_script = generate_create_script(&answers, &types).unwrap();
+        assert!(create_script.contains("NAT_ROUTER=\"bench-nat-router\""));
+        assert!(create_script.contains("gcloud compute routers nats create \"$NAT_NAME\""));
+        assert!(create_script.contains("--enable-private-nodes"));
+        assert!(create_script.contains("--enable-dns-access"));
+        assert!(create_script.contains("get-credentials \"$CLUSTER_NAME\" --zone=\"$GCP_ZONE\" --project=\"$GCP_PROJECT\" --dns-endpoint"));
+
+        let del_script =
+            generate_delete_script("bench", "my-proj", "us-central1", "us-central1-a", false);
+        assert!(del_script.contains("NAT_ROUTER=\"bench-nat-router\""));
+        assert!(del_script.contains("gcloud compute routers nats delete \"$NAT_NAME\""));
+        assert!(del_script.contains("gcloud compute routers delete \"$NAT_ROUTER\""));
+
+        // Optional explicit master CIDR is passed through when configured.
+        answers.gcp.master_ipv4_cidr = Some("172.16.0.0/28".into());
+        let cidr_args = build_cluster_create_args(&answers, &types);
+        assert!(cidr_args
+            .windows(2)
+            .any(|w| w == ["--master-ipv4-cidr", "172.16.0.0/28"]));
+
+        // Public-IP opt-out omits private node flags, DNS endpoint, and Cloud NAT setup.
+        answers.gcp.private_nodes = false;
+        let pub_args = build_cluster_create_args(&answers, &types);
+        assert!(!pub_args.contains(&"--enable-private-nodes".to_string()));
+        assert!(!pub_args.contains(&"--enable-dns-access".to_string()));
+        assert!(!pub_args.contains(&"--master-ipv4-cidr".to_string()));
+        assert!(!build_get_credentials_args(&answers).contains(&"--dns-endpoint".to_string()));
+        let pub_script = generate_create_script(&answers, &types).unwrap();
+        assert!(!pub_script.contains("gcloud compute routers create"));
+        assert!(!pub_script.contains("--dns-endpoint"));
+    }
+
+    #[test]
+    fn find_existing_nat_router_and_parse_nat_names_handle_all_cases() {
+        let reuse_json = r#"[
+            {
+                "name": "corp-router",
+                "network": "https://www.googleapis.com/compute/v1/projects/p/global/networks/default",
+                "nats": [{"name": "corp-nat", "sourceSubnetworkIpRangesToNat": "ALL_SUBNETWORKS_ALL_IP_RANGES"}]
+            }
+        ]"#;
+        assert_eq!(
+            find_existing_nat_router(reuse_json, "default", "bench-nat-router").unwrap(),
+            ExistingNat::Ready {
+                router_name: "corp-router".into(),
+                nat_name: "corp-nat".into(),
+            }
+        );
+        // Different VPC should NOT match.
+        assert_eq!(
+            find_existing_nat_router(reuse_json, "custom-vpc", "bench-nat-router").unwrap(),
+            ExistingNat::None
+        );
+
+        let router_no_nat = r#"[
+            {
+                "name": "bench-nat-router",
+                "network": "https://www.googleapis.com/compute/v1/projects/p/global/networks/default"
+            }
+        ]"#;
+        assert_eq!(
+            find_existing_nat_router(router_no_nat, "default", "bench-nat-router").unwrap(),
+            ExistingNat::OurRouterWithoutNat
+        );
+
+        let desc_json = r#"{"name":"bench-nat-router","nats":[{"name":"bench-nat"},{"name":"extra-nat"}]}"#;
+        assert_eq!(
+            parse_router_nat_names(desc_json).unwrap(),
+            vec!["bench-nat", "extra-nat"]
+        );
+        assert!(parse_router_nat_names(r#"{"name":"bench-nat-router"}"#)
+            .unwrap()
+            .is_empty());
     }
 }

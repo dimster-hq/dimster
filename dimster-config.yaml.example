@@ -227,6 +227,7 @@ environments:
   #     requests:
   #       cpu: "500m"
   #       memory: "2Gi"
+  #     nodeLabel: "role=infra"
   #   monitoring:
   #     nodeLabel: "role=infra"
   #     cgroupMetrics: true     # per-pod CPU/disk/network for the resources report
@@ -268,6 +269,7 @@ environments:
   #     requests:
   #       cpu: "500m"
   #       memory: "1Gi"
+  #     nodeLabel: "role=infra"
   #   monitoring:
   #     nodeLabel: "role=infra"
   #     cgroupMetrics: true

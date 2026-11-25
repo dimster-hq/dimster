@@ -15,8 +15,11 @@ use crate::answers::Answers;
 use crate::instances::{InstanceTypes, LOCAL_SSD_SIZE_GIB, LocalSsdMode};
 use crate::steps::NODE_BOOT_DISK_SIZE_GB_U32;
 
-/// Infra `standard-rwo` PVCs deployed by Dimster (`prometheus-data` 50Gi + `benchmark-results` 1Gi).
-pub const INFRA_STANDARD_RWO_GIB: u64 = 51;
+/// Default PVCs deployed by Dimster on the cluster's default StorageClass:
+/// `prometheus-data` (50Gi) on `role=infra` and `benchmark-results` (4Gi) on the coordinator pool.
+pub const PROMETHEUS_PVC_GIB: u64 = 50;
+pub const RESULTS_PVC_GIB: u64 = 4;
+pub const INFRA_PVCS_TOTAL_GIB: u64 = PROMETHEUS_PVC_GIB + RESULTS_PVC_GIB;
 
 /// Catalog VM families displayed in the regional quota summary.
 const DISPLAY_VM_FAMILIES: [&str; 9] = ["E2", "N2", "N2D", "N4", "C3", "C3D", "C4", "C4A", "C4D"];
@@ -660,7 +663,7 @@ pub fn print_available_quotas(quotas: &RegionQuotas) {
     }
     if let Some(q) = quotas.in_use_addresses {
         println!(
-            "  Regional external IPs:       {}  (1 per GKE node)",
+            "  Regional external IPs:       {}  (1 shared via Cloud NAT, or 1/node if public)",
             q.format_summary("IPs")
         );
     }
@@ -693,8 +696,9 @@ pub fn print_available_quotas(quotas: &RegionQuotas) {
         }
         if let Some(q) = quotas.ssd_total_gb {
             println!(
-                "    SSD / Balanced PD (SSD):   {}  (E2/N2/C3 boot + 51 GB infra PVCs)",
-                q.format_summary("GB")
+                "    SSD / Balanced PD (SSD):   {}  (E2/N2/C3 boot + {} GB PD infra PVCs)",
+                q.format_summary("GB"),
+                INFRA_PVCS_TOTAL_GIB
             );
         }
         if let Some(q) = quotas.hyperdisk_extreme_gb {
@@ -812,26 +816,56 @@ pub fn evaluate_plan_against_quotas(
 
     // 3. Nodes & External IPs
     if let Some(q) = quotas.in_use_addresses {
-        let note = (max_nodes > total_nodes && max_nodes > q.limit).then(|| {
-            format!(
-                "autoscaling workers.max={} would need {} IPs (> {} limit)",
-                answers.workers.max, max_nodes, q.limit
-            )
-        });
-        checks.push(build_check("External IPs (IN_USE_ADDRESSES)", total_nodes, "IPs", q, note));
+        if answers.gcp.private_nodes {
+            // Private nodes share 1 regional Cloud NAT external IP regardless of node count.
+            checks.push(build_check(
+                "External IPs (Cloud NAT)",
+                1,
+                "IPs",
+                q,
+                None,
+            ));
+        } else {
+            let note = (max_nodes > total_nodes && max_nodes > q.limit).then(|| {
+                format!(
+                    "autoscaling workers.max={} would need {} IPs (> {} limit)",
+                    answers.workers.max, max_nodes, q.limit
+                )
+            });
+            checks.push(build_check("External IPs (IN_USE_ADDRESSES)", total_nodes, "IPs", q, note));
+        }
     }
     if let Some(q) = quotas.instances {
         checks.push(build_check("VM Instances (INSTANCES)", total_nodes, "VMs", q, None));
     }
 
-    // 4. Storage quotas (50 GB boot disks + 51 GiB infra standard-rwo + Kafka data disks)
+    // 4. Storage quotas (50 GB boot disks + Prometheus 50Gi + results 4Gi + Kafka data disks)
     let boot_gb = NODE_BOOT_DISK_SIZE_GB_U32 as u64;
     let mut hdb_needed = 0u64;
     let mut hde_needed = 0u64;
     let mut hdt_needed = 0u64;
-    let mut ssd_needed = INFRA_STANDARD_RWO_GIB;
+    let mut ssd_needed = 0u64;
     let mut hdb_max_extra = 0u64;
     let mut ssd_max_extra = 0u64;
+
+    // Prometheus (50Gi) lands on infra; results (4Gi) lands on coordinator's pool.
+    // On Hyperdisk-only pools `gke-setup` switches default SC to `dynamic-rwo` (Hyperdisk Balanced).
+    if instance_types.boot_disk_for(&answers.coordinator.infra_instance_type) == "hyperdisk-balanced"
+    {
+        hdb_needed += PROMETHEUS_PVC_GIB;
+    } else {
+        ssd_needed += PROMETHEUS_PVC_GIB;
+    }
+    let coord_machine = if answers.coordinator.node_label == "role=worker" {
+        &answers.workers.instance_type
+    } else {
+        &answers.coordinator.infra_instance_type
+    };
+    if instance_types.boot_disk_for(coord_machine) == "hyperdisk-balanced" {
+        hdb_needed += RESULTS_PVC_GIB;
+    } else {
+        ssd_needed += RESULTS_PVC_GIB;
+    }
 
     let mut add_boot = |mt: &str, count: u64, extra_max: u64| {
         if instance_types.boot_disk_for(mt) == "hyperdisk-balanced" {
@@ -1018,6 +1052,8 @@ mod tests {
                 gke_version: None,
                 existing_image: None,
                 dataplane_v2: true,
+                private_nodes: true,
+                master_ipv4_cidr: None,
                 network: None,
                 subnetwork: None,
                 node_service_account: None,
@@ -1057,6 +1093,7 @@ mod tests {
             },
             coordinator: CoordinatorAnswers {
                 infra_instance_type: "e2-standard-2".into(),
+                node_label: "role=infra".into(),
                 heap: "-Xms512M -Xmx512M".into(),
                 cpu: "500m".into(),
                 memory: "1Gi".into(),
@@ -1189,15 +1226,22 @@ mod tests {
         quotas.family_cpus.insert("E2".into(), QuotaEntry { limit: 24, usage: Some(0) });
 
         // Plan: 3x n4-standard-2 (6 vCPU) + 1x c3-standard-4 (4 vCPU) + 1x e2-standard-2 (2 vCPU) = 12 vCPUs
-        // HDB: 3x 50 boot + 3x 100 data = 450 GB <= 500; SSD: 2x 50 boot + 51 infra = 151 GB <= 250
-        // IPs: needs 5, limit 8, only 3 free -> ExceedsAvailable
+        // HDB: 3x 50 boot + 3x 100 data = 450 GB <= 500; SSD: 2x 50 boot + 54 infra = 154 GB <= 250
+        // Private nodes (default): needs only 1 shared Cloud NAT IP <= 3 free -> Ok
+        let items_priv = evaluate_plan_against_quotas(&answers, &types, &quotas);
+        let ips_priv = items_priv.iter().find(|i| i.label.contains("Cloud NAT")).unwrap();
+        assert_eq!(ips_priv.needed, 1);
+        assert_eq!(ips_priv.status, QuotaStatus::Ok);
+
+        // Public nodes: needs 5 IPs, limit 8, only 3 free -> ExceedsAvailable
+        answers.gcp.private_nodes = false;
         let items = evaluate_plan_against_quotas(&answers, &types, &quotas);
         let hdb = items.iter().find(|i| i.label.contains("HDB_TOTAL_GB")).unwrap();
         assert_eq!(hdb.needed, 450);
         assert_eq!(hdb.status, QuotaStatus::Ok);
 
         let ssd = items.iter().find(|i| i.label.contains("SSD_TOTAL_GB")).unwrap();
-        assert_eq!(ssd.needed, 151);
+        assert_eq!(ssd.needed, 154);
         assert_eq!(ssd.status, QuotaStatus::Ok);
 
         let ips = items.iter().find(|i| i.label.contains("IN_USE_ADDRESSES")).unwrap();

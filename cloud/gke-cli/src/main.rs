@@ -213,6 +213,12 @@ fn print_summary(answers: &answers::Answers) {
     println!("  Project:  {}", answers.gcp.project);
     println!("  Cluster:  {}", answers.cluster_name());
     println!("  Location: {} ({})", answers.gcp.region, answers.gcp.zone);
+    let net_mode = if answers.gcp.private_nodes {
+        "private nodes + Cloud NAT (no public node IPs)"
+    } else {
+        "public node IPs"
+    };
+    println!("  Network:  {}", net_mode);
     println!("  Image:    {}", answers.image_repo());
     if answers.cpu_manager_static {
         println!("  CPU Mgr:  static (kubelet cpuManagerPolicy=static)");
@@ -246,13 +252,21 @@ fn print_summary(answers: &answers::Answers) {
         answers.workers.cpu,
         answers.workers.memory
     );
+    let infra_desc = if answers.coordinator.node_label == "role=infra" {
+        "default-pool: coordinator + Grafana + Prometheus"
+    } else {
+        "default-pool: Grafana + Prometheus"
+    };
     println!(
-        "  Infra:    1x {} (default-pool: coordinator + Grafana + Prometheus)",
-        answers.coordinator.infra_instance_type
+        "  Infra:    1x {} ({})",
+        answers.coordinator.infra_instance_type, infra_desc
     );
     println!(
-        "  Coord:    heap: {}, cpu: {}, mem: {}",
-        answers.coordinator.heap, answers.coordinator.cpu, answers.coordinator.memory
+        "  Coord:    nodeLabel: {}, heap: {}, cpu: {}, mem: {}",
+        answers.coordinator.node_label,
+        answers.coordinator.heap,
+        answers.coordinator.cpu,
+        answers.coordinator.memory
     );
 }
 

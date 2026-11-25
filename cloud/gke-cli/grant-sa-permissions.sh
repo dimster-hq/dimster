@@ -5,6 +5,7 @@
 # Roles granted to the deployer service account (--sa):
 #   * roles/container.admin          - create/manage/delete GKE clusters & node pools
 #   * roles/artifactregistry.admin   - create/push/delete Artifact Registry Docker repos
+#   * roles/compute.networkAdmin     - create/delete Cloud Router & Cloud NAT for private nodes
 #   * roles/compute.storageAdmin     - list & sweep orphaned GCE disks on teardown
 #   * roles/compute.viewer           - list zones & inspect Compute Engine metadata
 #   * roles/iam.serviceAccountUser   - attach the node VM SA during GKE creation
@@ -112,6 +113,7 @@ echo "=== 2. Grant project-level roles to deployer SA ==="
 for ROLE in \
     roles/container.admin \
     roles/artifactregistry.admin \
+    roles/compute.networkAdmin \
     roles/compute.storageAdmin \
     roles/compute.viewer; do
     run_cmd gcloud projects add-iam-policy-binding "$PROJECT" \

@@ -73,6 +73,11 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
 
     let (release_channel, gke_version) = ask_gke_version()?;
 
+    let private_nodes = Confirm::new()
+        .with_prompt("Use private GKE nodes + Cloud NAT (no public IPs on nodes; recommended)?")
+        .default(true)
+        .interact()?;
+
     let cpu_manager_static = Confirm::new()
         .with_prompt("Enable kubelet static CPU Manager on Kafka/worker pools?")
         .default(false)
@@ -234,7 +239,7 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
     };
 
     // --- Infra + Coordinator + Monitoring ---
-    println!("\n=== Infra Node (coordinator, Grafana, Prometheus) ===\n");
+    println!("\n=== Infra Node (Grafana, Prometheus, and optionally coordinator) ===\n");
 
     let infra_instance_type: String = Input::new()
         .with_prompt("Infra machine type")
@@ -251,22 +256,36 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
         );
         let available = gke_allocatable_memory_gib(spec.memory_gib);
         println!(
-            "  {}Gi allocatable (shared by coordinator, Prometheus, Grafana)",
+            "  {}Gi allocatable on infra node",
             available
         );
         if spec.is_hyperdisk_only() {
             println!(
-                "  ⚠ {} is Hyperdisk-only: GKE's default 'standard-rwo' (pd-balanced) StorageClass",
+                "  ℹ {} is Hyperdisk-only: gke-setup will switch the cluster's default StorageClass",
                 infra_instance_type
             );
             println!(
-                "    cannot attach to it for the 1Gi benchmark-results PVC. Prefer e2-standard-2,"
+                "    to 'dynamic-rwo' so Prometheus (50Gi) and benchmark-results (4Gi) use Hyperdisk Balanced."
             );
-            println!("    n2-standard-2, or c3-standard-4 unless you set a Hyperdisk default SC.");
         }
     } else {
         println!("  ⚠ Unknown machine type — auto-suggestions disabled");
     }
+
+    let coord_pool_options = [
+        "infra node pool (role=infra — default; keeps coordinator off benchmark workers)",
+        "worker node pool (role=worker — frees CPU/RAM on a small infra node)",
+    ];
+    let coord_pool_sel = Select::new()
+        .with_prompt("Coordinator node pool")
+        .items(&coord_pool_options)
+        .default(0)
+        .interact()?;
+    let coord_node_label = if coord_pool_sel == 1 {
+        "role=worker".to_string()
+    } else {
+        "role=infra".to_string()
+    };
 
     let coord_heap: String = Input::new()
         .with_prompt("Coordinator JVM heap")
@@ -285,14 +304,22 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
 
     println!("\n  --- Monitoring Resources (Prometheus + Grafana) ---\n");
 
+    // Only subtract coordinator requests from infra monitoring defaults when
+    // the coordinator actually runs on the infra node pool.
+    let (infra_coord_cpu, infra_coord_mem) = if coord_node_label == "role=infra" {
+        (coord_cpu.as_str(), coord_memory.as_str())
+    } else {
+        ("0", "0")
+    };
+
     let (prom_cpu_default, prom_mem_default, grafana_cpu_default, grafana_mem_default) =
         compute_monitoring_defaults(
             infra_spec.as_ref().map(|s| s.vcpu),
             infra_spec
                 .as_ref()
                 .map(|s| gke_allocatable_memory_gib(s.memory_gib)),
-            &coord_cpu,
-            &coord_memory,
+            infra_coord_cpu,
+            infra_coord_mem,
         );
 
     let prom_cpu: String = Input::new()
@@ -330,6 +357,19 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
         );
         let available = gke_allocatable_memory_gib(spec.memory_gib);
         println!("  {}Gi allocatable for worker pods", available);
+        if coord_node_label == "role=worker" {
+            println!(
+                "  ℹ Coordinator will also run on role=worker — leave headroom ({} CPU, {} mem) on worker requests.",
+                coord_cpu, coord_memory
+            );
+            if spec.is_hyperdisk_only() {
+                println!(
+                    "  ℹ {} is Hyperdisk-only: gke-setup will switch the default StorageClass to 'dynamic-rwo'",
+                    worker_instance_type
+                );
+                println!("    so the coordinator's 4Gi benchmark-results PVC uses Hyperdisk Balanced.");
+            }
+        }
         if let Some(ref ks) = kafka_spec
             && ks.arch != spec.arch
         {
@@ -383,6 +423,8 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
                 gke_version,
                 existing_image: None,
                 dataplane_v2: true,
+                private_nodes,
+                master_ipv4_cidr: None,
                 network: None,
                 subnetwork: None,
                 node_service_account: None,
@@ -415,6 +457,7 @@ pub fn ask_all(instance_types: &InstanceTypes) -> Result<(Answers, RegionQuotas)
             },
             coordinator: CoordinatorAnswers {
                 infra_instance_type,
+                node_label: coord_node_label,
                 heap: coord_heap,
                 cpu: coord_cpu,
                 memory: coord_memory,

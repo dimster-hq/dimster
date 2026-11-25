@@ -9,7 +9,10 @@ use cloud_common::sizing::parse_storage_gib;
 
 use crate::answers::Answers;
 use crate::instances::{InstanceSpec, InstanceTypes, LOCAL_SSD_SIZE_GIB, LocalSsdMode};
-use crate::quotas::{INFRA_STANDARD_RWO_GIB, infer_vcpus_from_name, machine_family};
+use crate::quotas::{
+    INFRA_PVCS_TOTAL_GIB, PROMETHEUS_PVC_GIB, RESULTS_PVC_GIB, infer_vcpus_from_name,
+    machine_family,
+};
 use crate::steps::NODE_BOOT_DISK_SIZE_GB_U32;
 use crate::storage::{HDB_BASE_IOPS, HDB_BASE_THROUGHPUT_MIBS, HDE_MIN_IOPS, HDT_MIN_THROUGHPUT_MIBS};
 
@@ -18,6 +21,18 @@ const HOURS_PER_MONTH: f64 = 730.0;
 
 /// Global flat GKE Standard control-plane management fee (USD/hr per cluster).
 pub const GKE_CONTROL_PLANE_USD_PER_HR: f64 = 0.10;
+
+/// Global flat GCP rates for external IPv4 addresses and Public Cloud NAT.
+const EXTERNAL_IP_USD_PER_HR: f64 = 0.005;
+const CLOUD_NAT_PER_VM_USD_PER_HR: f64 = 0.0014;
+const CLOUD_NAT_MAX_GATEWAY_USD_PER_HR: f64 = 0.044;
+
+/// Hourly Public Cloud NAT cost (per-VM gateway fee capped at 32 VMs + 1 auto-allocated external IP).
+pub fn cloud_nat_hourly_usd(total_nodes: u32) -> f64 {
+    let gw = (total_nodes.min(32) as f64 * CLOUD_NAT_PER_VM_USD_PER_HR)
+        .min(CLOUD_NAT_MAX_GATEWAY_USD_PER_HR);
+    gw + EXTERNAL_IP_USD_PER_HR
+}
 
 // Baseline `us-central1` on-demand monthly storage rates (USD / unit-month).
 const HDB_SPACE_USD_PER_GIB_MO: f64 = 0.08;
@@ -208,12 +223,19 @@ pub fn estimate_cluster_cost(answers: &Answers, instance_types: &InstanceTypes) 
     let boot_monthly = kafka_nodes as f64 * boot_gb * boot_rate(&answers.kafka.instance_type)
         + answers.workers.count as f64 * boot_gb * boot_rate(&answers.workers.instance_type)
         + boot_gb * boot_rate(&answers.coordinator.infra_instance_type);
-    let infra_pvc_monthly = INFRA_STANDARD_RWO_GIB as f64 * PD_BALANCED_USD_PER_GIB_MO;
+    let coord_machine = if answers.coordinator.node_label == "role=worker" {
+        &answers.workers.instance_type
+    } else {
+        &answers.coordinator.infra_instance_type
+    };
+    let infra_pvc_monthly = PROMETHEUS_PVC_GIB as f64
+        * boot_rate(&answers.coordinator.infra_instance_type)
+        + RESULTS_PVC_GIB as f64 * boot_rate(coord_machine);
     items.push(CostLineItem {
         label: "Boot & infra disks".into(),
         detail: format!(
             "{}x {} GB boot + {} GiB infra PVCs",
-            total_nodes, NODE_BOOT_DISK_SIZE_GB_U32, INFRA_STANDARD_RWO_GIB
+            total_nodes, NODE_BOOT_DISK_SIZE_GB_U32, INFRA_PVCS_TOTAL_GIB
         ),
         hourly_usd: monthly_to_hourly(boot_monthly + infra_pvc_monthly, mult),
         approximated: false,
@@ -229,7 +251,33 @@ pub fn estimate_cluster_cost(answers: &Answers, instance_types: &InstanceTypes) 
         });
     }
 
-    // 6. GKE control plane management fee (global flat $0.10/hr)
+    // 6. Cloud NAT (private nodes) or public external VM IPv4 addresses
+    let extra_workers = answers.workers.max.saturating_sub(answers.workers.count);
+    let extra_net_hr = if answers.gcp.private_nodes {
+        let base_nat = cloud_nat_hourly_usd(total_nodes);
+        let scaled_nat = cloud_nat_hourly_usd(total_nodes + extra_workers);
+        items.push(CostLineItem {
+            label: "Cloud NAT".into(),
+            detail: format!(
+                "{} private VMs + 1 NAT IP (+$0.045/GiB internet pulls)",
+                total_nodes
+            ),
+            hourly_usd: base_nat,
+            approximated: false,
+        });
+        scaled_nat - base_nat
+    } else {
+        let base_ips = total_nodes as f64 * EXTERNAL_IP_USD_PER_HR;
+        items.push(CostLineItem {
+            label: "External node IPs".into(),
+            detail: format!("{}x public VM IPv4 ($0.005/hr each)", total_nodes),
+            hourly_usd: base_ips,
+            approximated: false,
+        });
+        extra_workers as f64 * EXTERNAL_IP_USD_PER_HR
+    };
+
+    // 7. GKE control plane management fee (global flat $0.10/hr)
     items.push(CostLineItem {
         label: "GKE control plane".into(),
         detail: "1 zonal cluster ($0/hr if free-tier credit applies)".into(),
@@ -240,14 +288,14 @@ pub fn estimate_cluster_cost(answers: &Answers, instance_types: &InstanceTypes) 
     let total_hourly_usd: f64 = items.iter().map(|i| i.hourly_usd).sum();
 
     // Compute autoscaled ceiling when workers.max > workers.count.
-    let extra_workers = answers.workers.max.saturating_sub(answers.workers.count);
     let max_autoscaled_hourly_usd = if extra_workers > 0 {
         let extra_boot_hr = monthly_to_hourly(
             extra_workers as f64 * boot_gb * boot_rate(&answers.workers.instance_type),
             mult,
         );
-        let extra_hr =
-            extra_workers as f64 * (worker_unit_hr + extra_worker_tier1_each) + extra_boot_hr;
+        let extra_hr = extra_workers as f64 * (worker_unit_hr + extra_worker_tier1_each)
+            + extra_boot_hr
+            + extra_net_hr;
         Some(total_hourly_usd + extra_hr)
     } else {
         None
@@ -433,6 +481,8 @@ mod tests {
                 gke_version: None,
                 existing_image: None,
                 dataplane_v2: true,
+                private_nodes: true,
+                master_ipv4_cidr: None,
                 network: None,
                 subnetwork: None,
                 node_service_account: None,
@@ -472,6 +522,7 @@ mod tests {
             },
             coordinator: CoordinatorAnswers {
                 infra_instance_type: "e2-standard-2".into(),
+                node_label: "role=infra".into(),
                 heap: "-Xms512M -Xmx512M".into(),
                 cpu: "500m".into(),
                 memory: "1Gi".into(),
@@ -491,19 +542,39 @@ mod tests {
         let us = base_answers();
         let cost_us = estimate_cluster_cost(&us, &types);
         assert_eq!(cost_us.regional_multiplier, 1.0);
-        // 3*0.091 + 0.202 + 0.067 + storage(~0.033) + boot/infra(~0.037) + gke(0.10) ~= 0.712/hr
-        assert!((cost_us.total_hourly_usd - 0.712).abs() < 0.02);
-        // Autoscaling max=4 adds 3x c3-standard-4 (~0.606) + 3x 50GB pd-balanced boot (~0.021)
+        // 3*0.091 + 0.202 + 0.067 + storage(~0.033) + boot/infra(~0.037) + nat(0.012) + gke(0.10) ~= 0.724/hr
+        assert!((cost_us.total_hourly_usd - 0.724).abs() < 0.02);
+        // Autoscaling max=4 adds 3x c3-standard-4 (~0.606) + 3x 50GB pd-balanced boot (~0.021) + 3x NAT VM fee (0.0042)
         let max_us = cost_us.max_autoscaled_hourly_usd.unwrap();
-        assert!((max_us - (cost_us.total_hourly_usd + 0.627)).abs() < 0.02);
+        assert!((max_us - (cost_us.total_hourly_usd + 0.631)).abs() < 0.02);
 
         let mut eu = us;
         eu.gcp.region = "europe-west1".into();
         let cost_eu = estimate_cluster_cost(&eu, &types);
         assert_eq!(cost_eu.regional_multiplier, 1.10);
-        // Everything except the flat $0.10/hr GKE control plane scales by 1.10x.
-        let expected_eu = (cost_us.total_hourly_usd - 0.10) * 1.10 + 0.10;
+        // Everything except flat global fees (GKE control plane $0.10 + Cloud NAT $0.012) scales by 1.10x.
+        let global_flat = GKE_CONTROL_PLANE_USD_PER_HR + cloud_nat_hourly_usd(5);
+        let expected_eu = (cost_us.total_hourly_usd - global_flat) * 1.10 + global_flat;
         assert!((cost_eu.total_hourly_usd - expected_eu).abs() < 0.001);
+    }
+
+    #[test]
+    fn private_nodes_cloud_nat_cheaper_than_public_ips_and_caps_at_32_vms() {
+        let types = load_catalog();
+        let priv_a = base_answers();
+        let mut pub_a = base_answers();
+        pub_a.gcp.private_nodes = false;
+
+        let priv_cost = estimate_cluster_cost(&priv_a, &types);
+        let pub_cost = estimate_cluster_cost(&pub_a, &types);
+        let nat_item = priv_cost.items.iter().find(|i| i.label == "Cloud NAT").unwrap();
+        let ip_item = pub_cost.items.iter().find(|i| i.label == "External node IPs").unwrap();
+        // 5 nodes: NAT = 5*0.0014 + 0.005 = $0.012/hr vs public IPs = 5*0.005 = $0.025/hr
+        assert!((nat_item.hourly_usd - 0.012).abs() < 0.0001);
+        assert!((ip_item.hourly_usd - 0.025).abs() < 0.0001);
+        assert!(priv_cost.total_hourly_usd < pub_cost.total_hourly_usd);
+        // Cloud NAT gateway fee caps at $0.044/hr + $0.005/hr IP = $0.049/hr for >= 32 VMs.
+        assert!((cloud_nat_hourly_usd(64) - 0.049).abs() < 0.0001);
     }
 
     #[test]

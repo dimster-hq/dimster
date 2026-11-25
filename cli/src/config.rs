@@ -510,6 +510,9 @@ pub struct CoordinatorEnvConfig {
     pub heap: Option<String>,
     #[serde(default)]
     pub requests: Option<ResourceRequests>,
+    /// Optional explicit node affinity label (`key=value`). When omitted,
+    /// `dimster deploy` inherits `monitoring.nodeLabel` (or `workers.nodeLabel`).
+    pub node_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -1813,5 +1816,26 @@ environments:
         assert!(env_error(&cfg, "badTag").contains("topic tag 'a-b'"));
         // An explicit tag rescues an env name that can't be one.
         assert!(cfg.get_env("renamed-env").is_ok());
+    }
+
+    #[test]
+    fn coordinator_node_label_parses_when_present_and_defaults_none() {
+        let with_label = env_from_yaml("coordinator:\n  nodeLabel: role=worker\n").unwrap();
+        assert_eq!(
+            with_label
+                .coordinator
+                .as_ref()
+                .and_then(|c| c.node_label.as_deref()),
+            Some("role=worker")
+        );
+
+        let without_label = env_from_yaml("coordinator:\n  heap: -Xms512M -Xmx512M\n").unwrap();
+        assert!(
+            without_label
+                .coordinator
+                .as_ref()
+                .and_then(|c| c.node_label.as_deref())
+                .is_none()
+        );
     }
 }

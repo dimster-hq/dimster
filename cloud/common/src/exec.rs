@@ -177,8 +177,58 @@ pub fn pvc_user_namespaces(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// PV and backing cloud-disk names extracted from `kubectl get pv -o json` for
+/// dynamically provisioned (`reclaimPolicy: Delete`) user PVs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserDeletePvs {
+    pub pv_names: Vec<String>,
+    pub volume_names: Vec<String>,
+}
+
+/// Parse `kubectl get pv -o json` and return all `reclaimPolicy: Delete` PVs
+/// claimed by non-system namespaces, along with their backing CSI volume
+/// basenames (e.g. `pvc-...` on GKE or `vol-...` on EKS).
+pub fn parse_user_delete_pvs(json_output: &str) -> Result<UserDeletePvs> {
+    if json_output.trim().is_empty() {
+        return Ok(UserDeletePvs::default());
+    }
+    let val: serde_json::Value = serde_json::from_str(json_output)?;
+    let mut out = UserDeletePvs::default();
+    let Some(items) = val.get("items").and_then(|i| i.as_array()) else {
+        return Ok(out);
+    };
+    for pv in items {
+        let reclaim = pv
+            .pointer("/spec/persistentVolumeReclaimPolicy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if reclaim != "Delete" {
+            continue;
+        }
+        let ns = pv
+            .pointer("/spec/claimRef/namespace")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if ns.is_empty() || is_system_namespace(ns) {
+            continue;
+        }
+        if let Some(name) = pv.pointer("/metadata/name").and_then(|v| v.as_str()) {
+            out.pv_names.push(name.to_string());
+        }
+        if let Some(handle) = pv.pointer("/spec/csi/volumeHandle").and_then(|v| v.as_str()) {
+            let basename = handle.rsplit('/').next().unwrap_or(handle);
+            if !basename.is_empty() {
+                out.volume_names.push(basename.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Append the bash body that stops PVC-holding workloads (so Kubernetes drops
-/// `pvc-protection` finalizers) and deletes PVCs in each non-system namespace.
+/// `pvc-protection` finalizers), deletes PVCs in each non-system namespace, and
+/// waits for the backing `Delete`-policy PVs to disappear so CSI `DeleteVolume`
+/// completes before the cluster control plane is destroyed.
 pub fn emit_pvc_cleanup_script(
     s: &mut Script,
     ctx_var: &str,
@@ -192,6 +242,10 @@ pub fn emit_pvc_cleanup_script(
     s.cmd("  if [ -z \"$PVC_NAMESPACES\" ]; then");
     s.cmd("    echo \"No user PVCs found\"");
     s.cmd("  else");
+    s.cmd(&format!(
+        "    USER_DELETE_PVS=$(kubectl --context \"{}\" get pv -o jsonpath='{{range .items[*]}}{{.metadata.name}} {{.spec.persistentVolumeReclaimPolicy}} {{.spec.claimRef.namespace}}{{\"\\n\"}}{{end}}' | awk '$2 == \"Delete\" && $3 != \"\" && $3 !~ /^(kube-system|kube-public|kube-node-lease|gmp-system|gmp-public|gke-.*)$/ {{print \"pv/\"$1}}' || true)",
+        ctx_var
+    ));
     s.cmd("    for NS in $PVC_NAMESPACES; do");
     s.cmd("      echo \"Stopping workloads in namespace $NS so PVCs can detach...\"");
     s.cmd(&format!(
@@ -211,21 +265,32 @@ pub fn emit_pvc_cleanup_script(
         resource_noun
     ));
     s.cmd("    done");
+    s.cmd("    if [ -n \"$USER_DELETE_PVS\" ]; then");
+    s.cmd(&format!(
+        "      echo \"Waiting for {} to finish deleting backing PVs...\"",
+        csi_label
+    ));
+    s.cmd(&format!(
+        "      kubectl --context \"{}\" wait --for=delete $USER_DELETE_PVS --timeout=120s || true",
+        ctx_var
+    ));
+    s.cmd("    fi");
     s.cmd("  fi");
 }
 
 /// Best-effort deletion of user workloads and PVCs so the CSI driver frees
 /// cloud disks before the cluster itself is destroyed.
 ///
-/// Stopping StatefulSets/Deployments/Jobs in PVC-owning namespaces first is
-/// required because Kubernetes `pvc-protection` finalizers block PVC deletion
-/// until every pod mounting the PVC has terminated. Always targets an explicit
-/// kubeconfig `context` when provided so teardown can never wipe another cluster.
+/// Stopping StatefulSets/Deployments/Jobs first drops `pvc-protection`
+/// finalizers; waiting for the backing `Delete`-policy `PersistentVolume`s to
+/// disappear ensures the CSI driver's async `DeleteVolume` RPC completes before
+/// Step 2 tears down the control plane. Returns the captured CSI backing volume
+/// names so Step 3 can sweep any leftovers if a wait times out.
 pub fn delete_cluster_pvcs(
     opts: RunOptions,
     context: Option<&str>,
     cluster_desc: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let ctx_prefix = match context {
         Some(ctx) => format!("kubectl --context {}", ctx),
         None => "kubectl".to_string(),
@@ -244,7 +309,11 @@ pub fn delete_cluster_pvcs(
             "  [dry-run]   {} delete pvc --all -n <ns> --wait=true --timeout=120s",
             ctx_prefix
         );
-        return Ok(());
+        println!(
+            "  [dry-run]   {} wait --for=delete pv/<name>... --timeout=120s",
+            ctx_prefix
+        );
+        return Ok(Vec::new());
     }
 
     let mut probe_cmd = Command::new("kubectl");
@@ -260,7 +329,7 @@ pub fn delete_cluster_pvcs(
         _ => {
             println!("  ✓ kubectl cannot reach cluster — skipping graceful PVC delete");
             println!("    (orphaned disks will be swept in Step 3)");
-            return Ok(());
+            return Ok(Vec::new());
         }
     }
 
@@ -286,14 +355,27 @@ pub fn delete_cluster_pvcs(
             println!(
                 "  ⚠ Could not list PVCs — Step 3 will sweep remaining cloud disks"
             );
-            return Ok(());
+            return Ok(Vec::new());
         }
     };
 
     if namespaces.is_empty() {
         println!("  ✓ No user PVCs found in cluster");
-        return Ok(());
+        return Ok(Vec::new());
     }
+
+    // Snapshot Delete-policy PVs and their backing cloud disk names before deletion.
+    let mut pv_cmd = Command::new("kubectl");
+    if let Some(ctx) = context {
+        pv_cmd.args(["--context", ctx]);
+    }
+    let user_pvs = pv_cmd
+        .args(["get", "pv", "-o", "json"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_user_delete_pvs(&String::from_utf8_lossy(&o.stdout)).ok())
+        .unwrap_or_default();
 
     let mut all_clean = true;
     for ns in &namespaces {
@@ -348,14 +430,41 @@ pub fn delete_cluster_pvcs(
         }
     }
 
+    if !user_pvs.pv_names.is_empty() {
+        let pv_targets: Vec<String> = user_pvs
+            .pv_names
+            .iter()
+            .map(|n| format!("pv/{}", n))
+            .collect();
+        println!(
+            "  → {} wait --for=delete {} --timeout=120s",
+            ctx_prefix,
+            pv_targets.join(" ")
+        );
+        let mut wait_cmd = Command::new("kubectl");
+        if let Some(ctx) = context {
+            wait_cmd.args(["--context", ctx]);
+        }
+        wait_cmd.args(["wait", "--for=delete"]);
+        wait_cmd.args(&pv_targets);
+        wait_cmd.arg("--timeout=120s");
+        let wait_status = wait_cmd
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        if !matches!(wait_status, Ok(s) if s.success()) {
+            all_clean = false;
+        }
+    }
+
     if all_clean {
-        println!("  ✓ PVCs deleted; CSI driver will release cloud disks");
+        println!("  ✓ PVCs and backing cloud disks released by CSI driver");
     } else {
         println!(
-            "  ⚠ PVC delete did not complete cleanly — Step 3 will sweep remaining disks"
+            "  ⚠ PVC/PV delete did not complete cleanly — Step 3 will sweep remaining disks"
         );
     }
-    Ok(())
+    Ok(user_pvs.volume_names)
 }
 
 #[cfg(test)]
@@ -369,7 +478,41 @@ mod tests {
     }
 
     #[test]
-    fn emit_pvc_cleanup_script_stops_workloads_before_pvcs() {
+    fn parse_user_delete_pvs_extracts_delete_policy_user_volumes_only() {
+        let json = r#"{
+            "items": [
+                {
+                    "metadata": {"name": "pvc-1"},
+                    "spec": {
+                        "persistentVolumeReclaimPolicy": "Delete",
+                        "claimRef": {"namespace": "dimster"},
+                        "csi": {"volumeHandle": "projects/p/zones/europe-west1-b/disks/pvc-1"}
+                    }
+                },
+                {
+                    "metadata": {"name": "kafka-nvme-0"},
+                    "spec": {
+                        "persistentVolumeReclaimPolicy": "Retain",
+                        "claimRef": {"namespace": "dimster"}
+                    }
+                },
+                {
+                    "metadata": {"name": "pvc-sys"},
+                    "spec": {
+                        "persistentVolumeReclaimPolicy": "Delete",
+                        "claimRef": {"namespace": "kube-system"},
+                        "csi": {"volumeHandle": "projects/p/zones/europe-west1-b/disks/pvc-sys"}
+                    }
+                }
+            ]
+        }"#;
+        let parsed = parse_user_delete_pvs(json).unwrap();
+        assert_eq!(parsed.pv_names, vec!["pvc-1"]);
+        assert_eq!(parsed.volume_names, vec!["pvc-1"]);
+    }
+
+    #[test]
+    fn emit_pvc_cleanup_script_stops_workloads_before_pvcs_and_waits_for_pvs() {
         let mut s = Script::new();
         emit_pvc_cleanup_script(&mut s, "$KUBE_CONTEXT", "PD CSI driver", "GCE disks");
         let rendered = s.render();
@@ -379,7 +522,10 @@ mod tests {
         let pvc_idx = rendered
             .find("delete pvc --all -n \"$NS\"")
             .expect("pvc delete command");
-        assert!(stop_idx < pvc_idx);
+        let pv_wait_idx = rendered
+            .find("wait --for=delete $USER_DELETE_PVS")
+            .expect("pv wait command");
+        assert!(stop_idx < pvc_idx && pvc_idx < pv_wait_idx);
         assert!(rendered.contains("gke-.*"));
     }
 }

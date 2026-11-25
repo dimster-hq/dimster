@@ -117,6 +117,7 @@ dependencies = [
  "anyhow",
  "dialoguer",
  "serde",
+ "serde_json",
  "serde_yaml",
 ]
 

@@ -187,6 +187,7 @@ pub fn build_dimster_env_spec(
             heap: answers.coordinator.heap.clone(),
             cpu: answers.coordinator.cpu.clone(),
             memory: answers.coordinator.memory.clone(),
+            node_label: Some("role=infra".into()),
         },
         monitoring: MonitoringRenderSpec {
             cgroup_metrics: true,
@@ -1030,13 +1031,13 @@ pub fn delete_all(
 
     println!("\n=== Step 1/4: Delete PVCs (graceful) ===\n");
     if let Some(ref ctx) = eks_context {
-        delete_cluster_pvcs(
+        let _ = delete_cluster_pvcs(
             opts,
             Some(ctx),
             &format!("EKS cluster '{}' in {}", cluster_name, region),
         )?;
     } else if opts.mode == Mode::DryRun {
-        delete_cluster_pvcs(
+        let _ = delete_cluster_pvcs(
             opts,
             None,
             &format!("EKS cluster '{}' in {}", cluster_name, region),

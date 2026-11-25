@@ -45,14 +45,13 @@ pub struct WorkersRenderSpec {
 }
 
 /// Coordinator configuration rendered under `environments.<env>.coordinator`.
-///
-/// Note: `cli/src/config.rs` (`CoordinatorEnvConfig`) intentionally has no
-/// `nodeLabel` field — the coordinator automatically follows `monitoring.nodeLabel`.
 #[derive(Debug, Clone)]
 pub struct CoordinatorRenderSpec {
     pub heap: String,
     pub cpu: String,
     pub memory: String,
+    /// Optional explicit `nodeLabel` (`role=infra` or `role=worker`).
+    pub node_label: Option<String>,
 }
 
 /// Monitoring configuration rendered under `environments.<env>.monitoring`.
@@ -198,6 +197,9 @@ impl DimsterEnvSpec {
             Value::String(self.coordinator.memory.clone()),
         );
         coordinator.insert(Value::String("requests".into()), Value::Mapping(coord_reqs));
+        if let Some(ref label) = self.coordinator.node_label {
+            coordinator.insert(Value::String("nodeLabel".into()), Value::String(label.clone()));
+        }
         env.insert(Value::String("coordinator".into()), Value::Mapping(coordinator));
 
         let mut monitoring = Mapping::new();
@@ -409,6 +411,7 @@ mod tests {
                 heap: "-Xms512M -Xmx512M".into(),
                 cpu: "500m".into(),
                 memory: "1Gi".into(),
+                node_label: Some("role=infra".into()),
             },
             monitoring: MonitoringRenderSpec {
                 cgroup_metrics: true,
@@ -450,10 +453,16 @@ mod tests {
         );
         assert_eq!(env["kafka"]["nodeLabel"], "role=kafka");
         assert_eq!(env["workers"]["nodeLabel"], "role=worker");
-        // Coordinator has no nodeLabel field in cli/src/config.rs
-        assert!(env["coordinator"].get("nodeLabel").is_none());
+        assert_eq!(env["coordinator"]["nodeLabel"], "role=infra");
         assert_eq!(env["monitoring"]["nodeLabel"], "role=infra");
         assert_eq!(env["monitoring"]["cgroupMetrics"], true);
+
+        let mut worker_coord = sample_full_spec();
+        worker_coord.coordinator.node_label = Some("role=worker".into());
+        assert_eq!(
+            worker_coord.to_yaml_value()["coordinator"]["nodeLabel"],
+            "role=worker"
+        );
     }
 
     #[test]

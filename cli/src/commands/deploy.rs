@@ -778,6 +778,7 @@ fn deploy(
         .and_then(|c| c.requests.as_ref())
         .and_then(|r| r.memory.as_deref())
         .unwrap_or(def_coord_memory);
+    let coord_node_label = coordinator.and_then(|c| c.node_label.as_deref());
 
     let monitoring = env_config.monitoring.as_ref();
     let monitoring_node_label = monitoring.and_then(|m| m.node_label.as_deref());
@@ -1541,80 +1542,28 @@ fn deploy(
         }
     }
 
-    // Worker node affinity (applies when workers are being deployed)
+    // Worker node affinity
     if components.contains(&Component::Workers) {
         if let Some(label) = worker_node_label {
-            let (key, value) = parse_node_label(label)?;
-            patches.push_str(&format!(
-                r#"  - target:
-      kind: Deployment
-      name: benchmark-worker
-    patch: |
-      - op: add
-        path: /spec/template/spec/affinity
-        value:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: {key}
-                      operator: In
-                      values: ["{value}"]
-"#
-            ));
-            // Coordinator goes on worker nodes only if no monitoring label is set
-            if monitoring_node_label.is_none() && components.contains(&Component::Coordinator) {
-                patches.push_str(&format!(
-                    r#"  - target:
-      kind: Deployment
-      name: benchmark-coordinator
-    patch: |
-      - op: add
-        path: /spec/template/spec/affinity
-        value:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: {key}
-                      operator: In
-                      values: ["{value}"]
-"#
-                ));
-            }
+            append_deployment_node_affinity_patch(&mut patches, "benchmark-worker", label)?;
         }
     }
 
-    // Monitoring node affinity — coordinator, Grafana, and Prometheus
-    if let Some(label) = monitoring_node_label {
-        let (key, value) = parse_node_label(label)?;
-        // Only apply to components that are being deployed
-        let mut targets: Vec<&str> = Vec::new();
-        if components.contains(&Component::Coordinator) {
-            targets.push("benchmark-coordinator");
+    // Coordinator node affinity — explicit coordinator.nodeLabel wins,
+    // otherwise inherit monitoring.nodeLabel or fall back to workers.nodeLabel.
+    if components.contains(&Component::Coordinator) {
+        if let Some(label) =
+            resolve_coordinator_node_label(coord_node_label, monitoring_node_label, worker_node_label)
+        {
+            append_deployment_node_affinity_patch(&mut patches, "benchmark-coordinator", label)?;
         }
-        if components.contains(&Component::Monitoring) {
-            targets.push("grafana");
-            targets.push("prometheus");
-        }
-        for name in targets {
-            patches.push_str(&format!(
-                r#"  - target:
-      kind: Deployment
-      name: {name}
-    patch: |
-      - op: add
-        path: /spec/template/spec/affinity
-        value:
-          nodeAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              nodeSelectorTerms:
-                - matchExpressions:
-                    - key: {key}
-                      operator: In
-                      values: ["{value}"]
-"#
-            ));
+    }
+
+    // Monitoring node affinity — Grafana and Prometheus
+    if components.contains(&Component::Monitoring) {
+        if let Some(label) = monitoring_node_label {
+            append_deployment_node_affinity_patch(&mut patches, "grafana", label)?;
+            append_deployment_node_affinity_patch(&mut patches, "prometheus", label)?;
         }
     }
 
@@ -2339,6 +2288,44 @@ fn parse_node_label(label: &str) -> Result<(&str, &str)> {
     })
 }
 
+/// Resolve the effective `nodeAffinity` label for `benchmark-coordinator`.
+/// Explicit `coordinator.nodeLabel` wins; otherwise inherit `monitoring.nodeLabel`,
+/// falling back to `workers.nodeLabel` when neither is set.
+fn resolve_coordinator_node_label<'a>(
+    coord_label: Option<&'a str>,
+    monitoring_label: Option<&'a str>,
+    worker_label: Option<&'a str>,
+) -> Option<&'a str> {
+    coord_label.or(monitoring_label).or(worker_label)
+}
+
+/// Append a Kustomize JSON patch pinning a Deployment to nodes matching `label`.
+fn append_deployment_node_affinity_patch(
+    patches: &mut String,
+    deployment_name: &str,
+    label: &str,
+) -> Result<()> {
+    let (key, value) = parse_node_label(label)?;
+    patches.push_str(&format!(
+        r#"  - target:
+      kind: Deployment
+      name: {deployment_name}
+    patch: |
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          nodeAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              nodeSelectorTerms:
+                - matchExpressions:
+                    - key: {key}
+                      operator: In
+                      values: ["{value}"]
+"#
+    ));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3030,5 +3017,33 @@ spec:
         };
         let matches = nodes_matching_target(&nodes, &target).unwrap();
         assert_eq!(matches, vec!["node-a", "node-c"]);
+    }
+
+    #[test]
+    fn coordinator_node_label_precedence_and_patch() {
+        assert_eq!(
+            resolve_coordinator_node_label(Some("role=worker"), Some("role=infra"), Some("role=worker")),
+            Some("role=worker")
+        );
+        assert_eq!(
+            resolve_coordinator_node_label(None, Some("role=infra"), Some("role=worker")),
+            Some("role=infra")
+        );
+        assert_eq!(
+            resolve_coordinator_node_label(None, None, Some("role=worker")),
+            Some("role=worker")
+        );
+        assert_eq!(resolve_coordinator_node_label(None, None, None), None);
+
+        let mut patches = String::new();
+        append_deployment_node_affinity_patch(&mut patches, "benchmark-coordinator", "role=worker")
+            .unwrap();
+        assert!(patches.contains("name: benchmark-coordinator"));
+        assert!(patches.contains("key: role"));
+        assert!(patches.contains("values: [\"worker\"]"));
+        assert!(
+            append_deployment_node_affinity_patch(&mut patches, "benchmark-coordinator", "invalid")
+                .is_err()
+        );
     }
 }
