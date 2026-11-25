@@ -19,32 +19,24 @@ package dev.dimster.utils.distributor;
 
 /**
  * Cycles through the shared {@link MessageDistributor#RANDOM_KEYS} pool in
- * order. Multiple producer threads share one instance and race on
- * {@code currentIndex} — the race on the field itself is benign (threads
- * may see slightly out-of-order or repeated keys near the wrap), so we
- * don't synchronize.
- *
- * <p>Correctness invariant: the array index used in {@link #next()} is the
- * post-increment value captured into a local variable, never a re-read of
- * {@code currentIndex}. Re-reading the field would expose this race:
- * thread A increments to 9999 and falls through the if-check, thread B
- * then increments the field to 10000, and A's array access reads
- * {@code currentIndex == 10000} — an {@code ArrayIndexOutOfBoundsException}.
- * Using the local {@code idx} guarantees the index is in
- * {@code [0, UNIQUE_COUNT)} regardless of how the field gets stomped on
- * by other threads.
+ * order. Each producer thread maintains its own cursor via {@link ThreadLocal}
+ * so concurrent producers do not bounce a shared cache line on every send, and
+ * returns pre-allocated {@link MessageDistributor#KEY_TARGETS} with zero
+ * per-message allocation.
  */
 public final class KeyRoundRobin implements MessageDistributor {
 
-    private int currentIndex = 0;
+    // Stores a 1-element int[] per thread (no back-reference to KeyRoundRobin).
+    private final ThreadLocal<int[]> cursor = ThreadLocal.withInitial(() -> new int[1]);
 
     @Override
     public Target next() {
-        int idx = ++currentIndex;
+        int[] box = cursor.get();
+        int idx = box[0]++;
         if (idx >= UNIQUE_COUNT) {
             idx = 0;
-            currentIndex = 0;
+            box[0] = 1;
         }
-        return Target.ofKey(RANDOM_KEYS[idx]);
+        return KEY_TARGETS[idx];
     }
 }

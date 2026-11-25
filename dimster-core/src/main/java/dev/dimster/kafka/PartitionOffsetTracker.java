@@ -50,24 +50,25 @@ class PartitionOffsetTracker {
     long getHighestCommittable() {
         long highest = lastCommittable;
 
-        // Find the first hole in completed offsets
+        // Walk received offsets in ascending order and prune committed entries in place
+        // (O(committed) instead of scanning the full completedOffsets set on every poll).
         for (var it = receivedOffsets.iterator(); it.hasNext(); ) {
             long candidate = it.next();
 
-            if (!completedOffsets.contains(candidate)) {
+            if (!completedOffsets.remove(candidate)) {
                 // Candidate is a hole - stop here
                 break;
-            } else {
-                // This offset is completed, it's the new highest
-                highest = candidate;
             }
+            it.remove();
+            highest = candidate;
         }
 
-        // Clean up old state only if we found new committable offsets
         if (highest > lastCommittable) {
-            receivedOffsets.headSet(highest, true).clear();
-            final long highestCommittable = highest;
-            completedOffsets.removeIf(o -> o <= highestCommittable);
+            // Rare fallback: cleans up any offset marked complete without a matching markReceived.
+            if (completedOffsets.size() > receivedOffsets.size()) {
+                final long highestCommittable = highest;
+                completedOffsets.removeIf(o -> o <= highestCommittable);
+            }
             lastCommittable = highest;
         }
 

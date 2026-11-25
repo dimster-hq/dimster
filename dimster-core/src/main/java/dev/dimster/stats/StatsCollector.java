@@ -3,6 +3,7 @@ package dev.dimster.stats;
 import java.io.StringWriter;
 import java.nio.ByteBuffer;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -13,9 +14,11 @@ import java.util.concurrent.atomic.LongAdder;
 
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.Recorder;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 
 import dev.dimster.MessageType;
 import dev.dimster.datagen.RecordFormat;
+import dev.dimster.flink.FlinkEmitTime;
 import dev.dimster.kafka.ConsumerCallback;
 import dev.dimster.worker.commands.CountersStats;
 import dev.dimster.worker.commands.PerPartitionStats;
@@ -69,24 +72,26 @@ public class StatsCollector implements ConsumerCallback {
     private final LongAdder totalTransactionsCommitted = new LongAdder();
     private final LongAdder totalTransactionsAborted = new LongAdder();
 
-    private final Recorder publishLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
-    private final Recorder scheduleLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
-    private final Recorder publishDelayLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
-    private final Recorder endToEndLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    // Global latency/batch recorders use ShardedRecorder (per-thread SingleWriterRecorder)
+    // to avoid multi-thread atomic contention on the hot producer/consumer paths.
+    private final ShardedRecorder publishLatencyRecorder = new ShardedRecorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder scheduleLatencyRecorder = new ShardedRecorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder publishDelayLatencyRecorder = new ShardedRecorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder endToEndLatencyRecorder = new ShardedRecorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     // Delivery latency: publish timestamp → poll return time (before per-record processing).
     // Only meaningful when consumers simulate processing time — otherwise the value is
     // indistinguishable from endToEndLatency. Gated by recordDeliveryLatency so the
     // histogram + per-record CPU cost are skipped on the common no-processing workload.
-    private final Recorder endToEndDeliveryLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder endToEndDeliveryLatencyRecorder = new ShardedRecorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
     private volatile boolean recordDeliveryLatency = false;
     // End-to-end latency split at the Flink job, from the emit time it stamps
     // on each output record (FlinkEmitTime): producer send → Flink emit, and
     // Flink emit → consumer processing start. Empty without a Flink stage.
-    private final Recorder producerToFlinkLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
-    private final Recorder flinkToConsumerLatencyRecorder = new Recorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
-    private final Recorder pollBatchSizeRecorder = new Recorder(100_000, 3);
-    private final Recorder commitSyncLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
-    private final Recorder processingTimeRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 3);
+    private final ShardedRecorder producerToFlinkLatencyRecorder = new ShardedRecorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder flinkToConsumerLatencyRecorder = new ShardedRecorder(E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder pollBatchSizeRecorder = new ShardedRecorder(100_000, 3);
+    private final ShardedRecorder commitSyncLatencyRecorder = new ShardedRecorder(NON_E2E_LATENCY_MAX_MICROS, LATENCY_SIG_DIGITS);
+    private final ShardedRecorder processingTimeRecorder = new ShardedRecorder(NON_E2E_LATENCY_MAX_MICROS, 3);
     /**
      * Producer transaction commit latency. Read directly by PrometheusEndpoint
      * for /metrics scraping (we deliberately do not serialize this across the
@@ -94,9 +99,12 @@ public class StatsCollector implements ConsumerCallback {
      * EOS workloads, and adding cross-hop histogram transport would expand
      * scope beyond the v1 transactions feature).
      */
-    private final Recorder transactionCommitLatencyRecorder = new Recorder(NON_E2E_LATENCY_MAX_MICROS, 3);
+    private final ShardedRecorder transactionCommitLatencyRecorder = new ShardedRecorder(NON_E2E_LATENCY_MAX_MICROS, 3);
 
-    // Per-partition tracking (3 significant digits to keep memory reasonable)
+    // Per-partition tracking (3 significant digits to keep memory reasonable).
+    // Intentionally kept as Recorder rather than ShardedRecorder so memory stays
+    // bounded at O(partitions) instead of O(partitions * threads); consumer partitions
+    // also have a single writer thread per partition in classic consumer groups.
     private static final int PER_PARTITION_SIG_DIGITS = 3;
     private volatile boolean perPartitionEnabled = false;
     private final ConcurrentHashMap<String, Recorder> ppPublishLatencyRecorders = new ConcurrentHashMap<>();
@@ -107,6 +115,9 @@ public class StatsCollector implements ConsumerCallback {
     private final ConcurrentHashMap<String, Histogram> ppE2eDeliveryLatencyCumulative = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LongAdder> ppMessagesSent = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, LongAdder> ppMessagesReceived = new ConcurrentHashMap<>();
+    // Caches "topic:partition" labels so per-partition metrics avoid per-message String allocation.
+    private final ConcurrentHashMap<String, ConcurrentHashMap<Integer, String>> topicPartitionKeyCache =
+            new ConcurrentHashMap<>();
 
     // Per-consumer tracking
     private volatile boolean perConsumerEnabled = false;
@@ -138,6 +149,29 @@ public class StatsCollector implements ConsumerCallback {
     }
 
     public void recordSendSuccess(long sendTimeNanos, int payloadSize) {
+        recordSendSuccessInternal(sendTimeNanos, payloadSize);
+    }
+
+    public void recordSendSuccess(long sendTimeNanos, int payloadSize, String topicPartition) {
+        long latencyMicrosSafe = recordSendSuccessInternal(sendTimeNanos, payloadSize);
+        if (perPartitionEnabled) {
+            recordPerPartitionSend(topicPartition, latencyMicrosSafe);
+        }
+    }
+
+    /**
+     * Direct-callback overload avoiding eager {@code topic + ":" + partition}
+     * string concatenation when per-partition metrics are disabled, and reusing
+     * cached partition keys when enabled.
+     */
+    public void recordSendSuccess(long sendTimeNanos, int payloadSize, String topic, int partition) {
+        long latencyMicrosSafe = recordSendSuccessInternal(sendTimeNanos, payloadSize);
+        if (perPartitionEnabled) {
+            recordPerPartitionSend(topicPartitionKey(topic, partition), latencyMicrosSafe);
+        }
+    }
+
+    private long recordSendSuccessInternal(long sendTimeNanos, int payloadSize) {
         messagesSent.increment();
         totalMessagesSent.increment();
         bytesSent.add(payloadSize);
@@ -146,21 +180,22 @@ public class StatsCollector implements ConsumerCallback {
         long latencyMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - sendTimeNanos);
         long latencyMicrosSafe = Math.min(latencyMicros, NON_E2E_LATENCY_MAX_MICROS - 1);
         publishLatencyRecorder.recordValue(latencyMicrosSafe);
+        return latencyMicrosSafe;
     }
 
-    public void recordSendSuccess(long sendTimeNanos, int payloadSize, String topicPartition) {
-        recordSendSuccess(sendTimeNanos, payloadSize);
+    private void recordPerPartitionSend(String topicPartition, long latencyMicrosSafe) {
+        ppPublishLatencyRecorders
+                .computeIfAbsent(topicPartition, k -> new Recorder(NON_E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS))
+                .recordValue(latencyMicrosSafe);
+        ppMessagesSent
+                .computeIfAbsent(topicPartition, k -> new LongAdder())
+                .increment();
+    }
 
-        if (perPartitionEnabled) {
-            long latencyMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - sendTimeNanos);
-            long safe = Math.min(latencyMicros, NON_E2E_LATENCY_MAX_MICROS - 1);
-            ppPublishLatencyRecorders
-                    .computeIfAbsent(topicPartition, k -> new Recorder(NON_E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS))
-                    .recordValue(safe);
-            ppMessagesSent
-                    .computeIfAbsent(topicPartition, k -> new LongAdder())
-                    .increment();
-        }
+    private String topicPartitionKey(String topic, int partition) {
+        return topicPartitionKeyCache
+                .computeIfAbsent(topic, t -> new ConcurrentHashMap<>())
+                .computeIfAbsent(partition, p -> topic + ":" + p);
     }
 
     /**
@@ -197,7 +232,9 @@ public class StatsCollector implements ConsumerCallback {
     }
 
     public void recordSendError(Throwable ex, long sendTimeNanos) {
-        if (ex.getCause() instanceof org.apache.kafka.common.errors.TimeoutException) {
+        // Direct Kafka callbacks pass TimeoutException directly; CompletableFuture wraps it in CompletionException.
+        if (ex instanceof org.apache.kafka.common.errors.TimeoutException
+                || ex.getCause() instanceof org.apache.kafka.common.errors.TimeoutException) {
             timeoutErrors.increment();
             totalTimeoutErrors.increment();
         }
@@ -217,15 +254,31 @@ public class StatsCollector implements ConsumerCallback {
             probesReceived.increment();
             return;
         }
-        messageReceived(payload.length, publishTimestampMillis, deliveryTime, processingStartTime);
+        recordNonProbeMessage(payload.length, topic, partition, publishTimestampMillis, deliveryTime, processingStartTime);
+    }
+
+    @Override
+    public void messageReceived(ByteBuffer payload, RecordFormat format, String topic, int partition,
+                                long publishTimestampMillis, Instant deliveryTime, Instant processingStartTime) {
+        if (format.typeOfBuffer(payload) == MessageType.PROBE) {
+            probesReceived.increment();
+            return;
+        }
+        int payloadSize = payload != null ? payload.remaining() : 0;
+        recordNonProbeMessage(payloadSize, topic, partition, publishTimestampMillis, deliveryTime, processingStartTime);
+    }
+
+    private void recordNonProbeMessage(int payloadSize, String topic, int partition,
+                                       long publishTimestampMillis, Instant deliveryTime, Instant processingStartTime) {
+        messageReceived(payloadSize, publishTimestampMillis, deliveryTime, processingStartTime);
 
         if (perPartitionEnabled) {
-            String key = topic + ":" + partition;
-            long publishTimeNanos = TimeUnit.MILLISECONDS.toNanos(publishTimestampMillis);
+            String key = topicPartitionKey(topic, partition);
+            long publishMicros = publishTimestampMillis * 1_000L;
 
             // Per-partition e2e latency (measured at processing start time)
-            long processingStartTimeNanos = TimeUnit.SECONDS.toNanos(processingStartTime.getEpochSecond()) + processingStartTime.getNano();
-            long endToEndLatencyMicros = TimeUnit.NANOSECONDS.toMicros(processingStartTimeNanos - publishTimeNanos);
+            long processingStartMicros = instantToMicros(processingStartTime);
+            long endToEndLatencyMicros = processingStartMicros - publishMicros;
             if (endToEndLatencyMicros > 0) {
                 ppE2eLatencyRecorders
                         .computeIfAbsent(key, k -> new Recorder(E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS))
@@ -239,8 +292,7 @@ public class StatsCollector implements ConsumerCallback {
             // Gated so we don't allocate per-partition recorders for an uninformative metric
             // when no consumer simulates processing time.
             if (recordDeliveryLatency) {
-                long deliveryTimeNanos = TimeUnit.SECONDS.toNanos(deliveryTime.getEpochSecond()) + deliveryTime.getNano();
-                long deliveryLatencyMicros = TimeUnit.NANOSECONDS.toMicros(deliveryTimeNanos - publishTimeNanos);
+                long deliveryLatencyMicros = instantToMicros(deliveryTime) - publishMicros;
                 if (deliveryLatencyMicros > 0) {
                     ppE2eDeliveryLatencyRecorders
                             .computeIfAbsent(key, k -> new Recorder(E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS))
@@ -251,17 +303,102 @@ public class StatsCollector implements ConsumerCallback {
     }
 
     @Override
+    public void partitionBatchReceived(String topic, int partition,
+                                       List<ConsumerRecord<String, ByteBuffer>> records,
+                                       RecordFormat format, Instant deliveryTime,
+                                       boolean checkFlinkEmitTime) {
+        int size = records.size();
+        if (size == 0) {
+            return;
+        }
+
+        long deliveryMicros = instantToMicros(deliveryTime);
+        boolean recordDelivery = this.recordDeliveryLatency;
+        boolean perPartition = this.perPartitionEnabled;
+
+        long batchMsgs = 0;
+        long batchBytes = 0;
+        long batchProbes = 0;
+        long batchPpMsgs = 0;
+
+        // Resolved lazily on first positive-latency record so non-positive batches never
+        // allocate per-partition recorders, while amortizing lookups to once per poll.
+        String ppKey = null;
+        Recorder ppE2e = null;
+        Recorder ppDelivery = null;
+
+        try (ShardedRecorder.Batch e2eBatch = endToEndLatencyRecorder.openBatch()) {
+            for (int i = 0; i < size; i++) {
+                ConsumerRecord<String, ByteBuffer> record = records.get(i);
+                ByteBuffer payload = record.value();
+                if (format.typeOfBuffer(payload) == MessageType.PROBE) {
+                    batchProbes++;
+                    continue;
+                }
+
+                batchMsgs++;
+                batchBytes += (payload != null ? payload.remaining() : 0);
+
+                long publishTimestampMillis = record.timestamp();
+                long latencyMicros = deliveryMicros - publishTimestampMillis * 1_000L;
+                if (latencyMicros > 0) {
+                    long capped = Math.min(latencyMicros, E2E_LATENCY_MAX_MICROS);
+                    e2eBatch.recordValue(capped);
+                    if (recordDelivery) {
+                        endToEndDeliveryLatencyRecorder.recordValue(capped);
+                    }
+                    if (perPartition) {
+                        if (ppE2e == null) {
+                            ppKey = topicPartitionKey(topic, partition);
+                            ppE2e = ppE2eLatencyRecorders.computeIfAbsent(
+                                    ppKey, k -> new Recorder(E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS));
+                        }
+                        ppE2e.recordValue(capped);
+                        batchPpMsgs++;
+                        if (recordDelivery) {
+                            if (ppDelivery == null) {
+                                ppDelivery = ppE2eDeliveryLatencyRecorders.computeIfAbsent(
+                                        ppKey, k -> new Recorder(E2E_LATENCY_MAX_MICROS, PER_PARTITION_SIG_DIGITS));
+                            }
+                            ppDelivery.recordValue(capped);
+                        }
+                    }
+                }
+
+                if (checkFlinkEmitTime) {
+                    long emitMicros = FlinkEmitTime.micros(record.headers());
+                    if (emitMicros >= 0) {
+                        recordFlinkLatencies(publishTimestampMillis, emitMicros, deliveryMicros);
+                    }
+                }
+            }
+        }
+
+        if (batchProbes > 0) {
+            probesReceived.add(batchProbes);
+        }
+        if (batchMsgs > 0) {
+            messagesReceived.add(batchMsgs);
+            totalMessagesReceived.add(batchMsgs);
+            bytesReceived.add(batchBytes);
+            totalBytesReceived.add(batchBytes);
+        }
+        if (batchPpMsgs > 0) {
+            ppMessagesReceived.computeIfAbsent(ppKey, k -> new LongAdder()).add(batchPpMsgs);
+        }
+    }
+
+    @Override
     public void messageReceived(int payloadSize, long publishTimestampMillis, Instant deliveryTime, Instant processingStartTime) {
         messagesReceived.increment();
         totalMessagesReceived.increment();
         bytesReceived.add(payloadSize);
         totalBytesReceived.add(payloadSize);
 
-        long publishTimeNanos = TimeUnit.MILLISECONDS.toNanos(publishTimestampMillis);
+        long publishMicros = publishTimestampMillis * 1_000L;
 
         // Standard e2e latency: from publish to when processing starts
-        long processingStartTimeNanos = TimeUnit.SECONDS.toNanos(processingStartTime.getEpochSecond()) + processingStartTime.getNano();
-        long endToEndLatencyMicros = TimeUnit.NANOSECONDS.toMicros(processingStartTimeNanos - publishTimeNanos);
+        long endToEndLatencyMicros = instantToMicros(processingStartTime) - publishMicros;
         if (endToEndLatencyMicros > 0) {
             endToEndLatencyRecorder.recordValue(Math.min(endToEndLatencyMicros, E2E_LATENCY_MAX_MICROS));
         }
@@ -269,8 +406,7 @@ public class StatsCollector implements ConsumerCallback {
         // Delivery e2e latency: from publish to when poll() returns
         // (only informative when consumers simulate processing time, otherwise equals endToEndLatency).
         if (recordDeliveryLatency) {
-            long deliveryTimeNanos = TimeUnit.SECONDS.toNanos(deliveryTime.getEpochSecond()) + deliveryTime.getNano();
-            long endToEndDeliveryLatencyMicros = TimeUnit.NANOSECONDS.toMicros(deliveryTimeNanos - publishTimeNanos);
+            long endToEndDeliveryLatencyMicros = instantToMicros(deliveryTime) - publishMicros;
             if (endToEndDeliveryLatencyMicros > 0) {
                 endToEndDeliveryLatencyRecorder.recordValue(Math.min(endToEndDeliveryLatencyMicros, E2E_LATENCY_MAX_MICROS));
             }
@@ -283,17 +419,32 @@ public class StatsCollector implements ConsumerCallback {
         if (format.typeOf(payload) == MessageType.PROBE) {
             return;
         }
+        recordFlinkLatencies(publishTimestampMillis, flinkEmitMicros, instantToMicros(processingStartTime));
+    }
+
+    @Override
+    public void flinkRecordReceived(ByteBuffer payload, RecordFormat format, long publishTimestampMillis,
+                                    long flinkEmitMicros, Instant processingStartTime) {
+        if (format.typeOfBuffer(payload) == MessageType.PROBE) {
+            return;
+        }
+        recordFlinkLatencies(publishTimestampMillis, flinkEmitMicros, instantToMicros(processingStartTime));
+    }
+
+    private void recordFlinkLatencies(long publishTimestampMillis, long flinkEmitMicros, long processingStartMicros) {
         // Like e2e, non-positive values (clock skew between hosts) are dropped.
-        long producerToFlinkMicros = flinkEmitMicros - TimeUnit.MILLISECONDS.toMicros(publishTimestampMillis);
+        long producerToFlinkMicros = flinkEmitMicros - publishTimestampMillis * 1_000L;
         if (producerToFlinkMicros > 0) {
             producerToFlinkLatencyRecorder.recordValue(Math.min(producerToFlinkMicros, E2E_LATENCY_MAX_MICROS));
         }
-        long processingStartMicros = TimeUnit.SECONDS.toMicros(processingStartTime.getEpochSecond())
-                + processingStartTime.getNano() / 1_000;
         long flinkToConsumerMicros = processingStartMicros - flinkEmitMicros;
         if (flinkToConsumerMicros > 0) {
             flinkToConsumerLatencyRecorder.recordValue(Math.min(flinkToConsumerMicros, E2E_LATENCY_MAX_MICROS));
         }
+    }
+
+    private static long instantToMicros(Instant instant) {
+        return TimeUnit.SECONDS.toMicros(instant.getEpochSecond()) + instant.getNano() / 1_000L;
     }
 
     @Override
@@ -385,16 +536,18 @@ public class StatsCollector implements ConsumerCallback {
         stats.totalTransactionsCommitted = totalTransactionsCommitted.sum();
         stats.totalTransactionsAborted = totalTransactionsAborted.sum();
 
-        stats.publishLatency = publishLatencyRecorder.getIntervalHistogram();
-        stats.scheduleLatency = scheduleLatencyRecorder.getIntervalHistogram();
-        stats.publishDelayLatency = publishDelayLatencyRecorder.getIntervalHistogram();
-        stats.endToEndLatency = endToEndLatencyRecorder.getIntervalHistogram();
-        stats.endToEndDeliveryLatency = endToEndDeliveryLatencyRecorder.getIntervalHistogram();
-        stats.producerToFlinkLatency = producerToFlinkLatencyRecorder.getIntervalHistogram();
-        stats.flinkToConsumerLatency = flinkToConsumerLatencyRecorder.getIntervalHistogram();
-        stats.pollBatchSize = pollBatchSizeRecorder.getIntervalHistogram();
-        stats.commitSyncLatency = commitSyncLatencyRecorder.getIntervalHistogram();
-        stats.processingTime = processingTimeRecorder.getIntervalHistogram();
+        // Drain directly into PeriodStats' pre-allocated histograms to avoid allocating
+        // and immediately discarding a second ~18 MB set of Histograms every period.
+        publishLatencyRecorder.getIntervalHistogramInto(stats.publishLatency);
+        scheduleLatencyRecorder.getIntervalHistogramInto(stats.scheduleLatency);
+        publishDelayLatencyRecorder.getIntervalHistogramInto(stats.publishDelayLatency);
+        endToEndLatencyRecorder.getIntervalHistogramInto(stats.endToEndLatency);
+        endToEndDeliveryLatencyRecorder.getIntervalHistogramInto(stats.endToEndDeliveryLatency);
+        producerToFlinkLatencyRecorder.getIntervalHistogramInto(stats.producerToFlinkLatency);
+        flinkToConsumerLatencyRecorder.getIntervalHistogramInto(stats.flinkToConsumerLatency);
+        pollBatchSizeRecorder.getIntervalHistogramInto(stats.pollBatchSize);
+        commitSyncLatencyRecorder.getIntervalHistogramInto(stats.commitSyncLatency);
+        processingTimeRecorder.getIntervalHistogramInto(stats.processingTime);
 
         if (perPartitionEnabled) {
             PerPartitionIntervals intervals = drainPerPartitionRecorders();
@@ -422,17 +575,7 @@ public class StatsCollector implements ConsumerCallback {
         perPartitionEnabled = false;
         perConsumerEnabled = false;
 
-        publishLatencyRecorder.reset();
-        scheduleLatencyRecorder.reset();
-        publishDelayLatencyRecorder.reset();
-        endToEndLatencyRecorder.reset();
-        endToEndDeliveryLatencyRecorder.reset();
-        producerToFlinkLatencyRecorder.reset();
-        flinkToConsumerLatencyRecorder.reset();
-        pollBatchSizeRecorder.reset();
-        commitSyncLatencyRecorder.reset();
-        processingTimeRecorder.reset();
-        transactionCommitLatencyRecorder.reset();
+        resetRecorders();
 
         messagesSent.reset();
         bytesSent.reset();
@@ -455,8 +598,6 @@ public class StatsCollector implements ConsumerCallback {
         totalPartitionsRevoked.reset();
         totalTransactionsCommitted.reset();
         totalTransactionsAborted.reset();
-
-        clearPerPartitionState();
     }
 
     public void resetRecorders() {
@@ -566,6 +707,7 @@ public class StatsCollector implements ConsumerCallback {
         ppE2eDeliveryLatencyCumulative.clear();
         ppMessagesSent.clear();
         ppMessagesReceived.clear();
+        topicPartitionKeyCache.clear();
         pcMessagesReceived.clear();
     }
 

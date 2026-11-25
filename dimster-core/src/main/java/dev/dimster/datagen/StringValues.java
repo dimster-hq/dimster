@@ -111,6 +111,9 @@ abstract class StringValues {
 
     /** Base for kinds that build a value from a per-rank random generator. */
     private abstract static class Seeded extends StringValues {
+        // Reused per thread so uncached high-cardinality columns (UUID, IP, etc.)
+        // avoid allocating a fresh Builder + backing buffer on every row.
+        private static final ThreadLocal<Builder> LOCAL_BUILDER = ThreadLocal.withInitial(Builder::new);
         private final long columnSeed;
 
         Seeded(long columnSeed) {
@@ -119,7 +122,8 @@ abstract class StringValues {
 
         @Override
         final byte[] valueFor(long rank) {
-            Builder out = new Builder();
+            Builder out = LOCAL_BUILDER.get();
+            out.reset();
             build(new SplittableRandom(Hashing.rankSeed(columnSeed, rank)), out);
             return out.toArray();
         }
@@ -192,7 +196,10 @@ abstract class StringValues {
             } else if (pattern < 6) {
                 out.appendLower(f).appendLower(l);
             } else if (pattern < 8) {
-                out.appendLower(Arrays.copyOf(f, 1)).appendLower(l);
+                if (f.length > 0) {
+                    out.appendLowerByte(f[0]);
+                }
+                out.appendLower(l);
             } else if (pattern < 9) {
                 out.appendLower(f).append('.').appendLower(l).append(rnd.nextInt(10, 100));
             } else {
@@ -318,6 +325,8 @@ abstract class StringValues {
 
     /** A version 4 UUID in canonical form. */
     static final class Uuid extends Seeded {
+        private static final byte[] HEX = "0123456789abcdef".getBytes(StandardCharsets.US_ASCII);
+
         Uuid(long columnSeed) {
             super(columnSeed);
         }
@@ -326,7 +335,12 @@ abstract class StringValues {
         void build(SplittableRandom rnd, Builder out) {
             long msb = (rnd.nextLong() & ~0xF000L) | 0x4000L;                       // version 4
             long lsb = (rnd.nextLong() & 0x3FFFFFFFFFFFFFFFL) | 0x8000000000000000L; // IETF variant
-            out.append(new java.util.UUID(msb, lsb).toString());
+            // Format directly into out (8-4-4-4-12 lowercase hex), matching UUID.toString() byte-for-byte.
+            out.appendHex(msb >>> 32, 8, HEX).append('-')
+                    .appendHex(msb >>> 16, 4, HEX).append('-')
+                    .appendHex(msb, 4, HEX).append('-')
+                    .appendHex(lsb >>> 48, 4, HEX).append('-')
+                    .appendHex(lsb, 12, HEX);
         }
 
         @Override
@@ -358,8 +372,13 @@ abstract class StringValues {
 
     /** Minimal growable byte array for assembling ASCII/UTF-8 values. */
     static final class Builder {
+        private static final byte[] INT_MIN_BYTES = "-2147483648".getBytes(StandardCharsets.US_ASCII);
         private byte[] buf = new byte[64];
         private int len;
+
+        void reset() {
+            len = 0;
+        }
 
         Builder append(byte[] bytes) {
             ensure(bytes.length);
@@ -386,8 +405,46 @@ abstract class StringValues {
             return this;
         }
 
+        /** Formats a signed base-10 int directly into {@code buf} without String allocation. */
         Builder append(int n) {
-            return append(Integer.toString(n));
+            if (n == 0) {
+                return append((byte) '0');
+            }
+            if (n == Integer.MIN_VALUE) {
+                return append(INT_MIN_BYTES);
+            }
+            ensure(11);
+            if (n < 0) {
+                buf[len++] = '-';
+                n = -n;
+            }
+            int start = len;
+            while (n > 0) {
+                int q = n / 10;
+                buf[len++] = (byte) ('0' + (n - q * 10));
+                n = q;
+            }
+            for (int lo = start, hi = len - 1; lo < hi; lo++, hi--) {
+                byte tmp = buf[lo];
+                buf[lo] = buf[hi];
+                buf[hi] = tmp;
+            }
+            return this;
+        }
+
+        /** Appends the lowest {@code digits} hex nibbles of {@code value}, big-endian. */
+        Builder appendHex(long value, int digits, byte[] hexAlphabet) {
+            ensure(digits);
+            for (int shift = (digits - 1) * 4; shift >= 0; shift -= 4) {
+                buf[len++] = hexAlphabet[(int) ((value >>> shift) & 0xFL)];
+            }
+            return this;
+        }
+
+        Builder appendLowerByte(byte b) {
+            ensure(1);
+            buf[len++] = (b >= 'A' && b <= 'Z') ? (byte) (b + 32) : b;
+            return this;
         }
 
         /** Appends with ASCII letters lowercased (dictionaries are ASCII). */

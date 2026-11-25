@@ -24,6 +24,6 @@ public final class KeyZipf implements MessageDistributor {
     @Override
     public Target next() {
         int idx = sampler.sample() - 1;
-        return Target.ofKey(RANDOM_KEYS[idx]);
+        return KEY_TARGETS[idx];
     }
 }

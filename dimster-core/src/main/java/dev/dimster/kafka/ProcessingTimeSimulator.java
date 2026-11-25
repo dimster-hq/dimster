@@ -7,6 +7,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -86,7 +87,7 @@ public class ProcessingTimeSimulator {
      * @return total sleep time in milliseconds
      */
     public long processBatch(
-            List<ConsumerRecord<String, byte[]>> records,
+            List<ConsumerRecord<String, ByteBuffer>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
             RecordFormat format,
@@ -117,8 +118,8 @@ public class ProcessingTimeSimulator {
      * types (AVAILABILITY, PROBE) and empty payloads complete instantly.
      * {@code format} locates the message type within the value.
      */
-    private static boolean appliesProcessingTime(ConsumerRecord<String, byte[]> record, RecordFormat format) {
-        int marker = format.typeOf(record.value());
+    private static boolean appliesProcessingTime(ConsumerRecord<String, ByteBuffer> record, RecordFormat format) {
+        int marker = format.typeOfBuffer(record.value());
         return marker == MessageType.NORMAL || marker == MessageType.CORRECTNESS;
     }
 
@@ -133,7 +134,7 @@ public class ProcessingTimeSimulator {
      * Each message starts after all prior messages have finished.
      */
     private long processBatchSequential(
-            List<ConsumerRecord<String, byte[]>> records,
+            List<ConsumerRecord<String, ByteBuffer>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
             RecordFormat format,
@@ -177,7 +178,7 @@ public class ProcessingTimeSimulator {
      * simulating work-stealing behavior. Sleep once for the slowest worker's total time.
      */
     private long processBatchConstrained(
-            List<ConsumerRecord<String, byte[]>> records,
+            List<ConsumerRecord<String, ByteBuffer>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
             RecordFormat format,
@@ -241,7 +242,7 @@ public class ProcessingTimeSimulator {
      * sleep once for the maximum processing time.
      */
     private long processBatchFullParallel(
-            List<ConsumerRecord<String, byte[]>> records,
+            List<ConsumerRecord<String, ByteBuffer>> records,
             AtomicBoolean closing,
             ConsumerCallback callback,
             RecordFormat format,
@@ -291,7 +292,7 @@ public class ProcessingTimeSimulator {
      * @param format the layout of the record value, to find its message type
      * @return CompletedRecord if processed immediately, null if queued
      */
-    public CompletedRecord offerAsync(ConsumerRecord<String, byte[]> record,
+    public CompletedRecord offerAsync(ConsumerRecord<String, ByteBuffer> record,
                                       Instant deliveryTime,
                                       RecordFormat format) {
         if (!continuousMode) {
@@ -410,12 +411,12 @@ public class ProcessingTimeSimulator {
      * records past their deadline on {@code drainTo()}.
      */
     static class DelayedRecord implements Delayed {
-        final ConsumerRecord<String, byte[]> record;
+        final ConsumerRecord<String, ByteBuffer> record;
         final Instant deliveryTime;
         final Instant simulatedStartTime;
         final long deadlineNanos;
 
-        DelayedRecord(ConsumerRecord<String, byte[]> record,
+        DelayedRecord(ConsumerRecord<String, ByteBuffer> record,
                       Instant deliveryTime,
                       Instant simulatedStartTime,
                       long processingMs,
@@ -444,7 +445,7 @@ public class ProcessingTimeSimulator {
      * Completed record with full ConsumerRecord and timing information for processing.
      * Returned by {@link #drainCompleted()} and {@link #offerAsync(ConsumerRecord, Instant, RecordFormat)}.
      */
-    public record CompletedRecord(ConsumerRecord<String, byte[]> record,
+    public record CompletedRecord(ConsumerRecord<String, ByteBuffer> record,
                                    Instant deliveryTime, Instant simulatedStartTime) {}
 
     /**

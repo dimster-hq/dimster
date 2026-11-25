@@ -207,6 +207,70 @@ public class RecordFormatTest {
         assertEquals(0, RecordFormat.AVRO.header(new byte[]{40, 1}).length);
     }
 
+    @Test
+    public void byteBufferHelpersMatchByteArrayMethodsWithoutMutatingCursors() {
+        byte[] correctness = CorrectnessPayload.header(9, 1234L, 1_700_000_000_000L, true);
+        List<byte[]> headers = List.of(
+                new byte[]{MessageType.NORMAL},
+                new byte[]{MessageType.PROBE},
+                correctness);
+
+        for (RecordFormat format : List.of(RecordFormat.AVRO, RecordFormat.JSON)) {
+            RowGenerator gen = new DatasetGenerator(resolve("orders", format)).newRowGenerator("producer-3", 3);
+            for (byte[] header : headers) {
+                byte[] value = gen.next(header);
+                byte[] padded = new byte[value.length + 13];
+                System.arraycopy(value, 0, padded, 5, value.length);
+                java.nio.ByteBuffer slice = java.nio.ByteBuffer.wrap(padded, 5, value.length);
+
+                assertEquals(format + " type", format.typeOf(value), format.typeOfBuffer(slice));
+                assertArrayEquals(format + " header", format.header(value), format.headerFromBuffer(slice));
+                assertArrayEquals(format + " toByteArray", value, RecordFormat.toByteArray(slice));
+                assertEquals(5, slice.position());
+                assertEquals(5 + value.length, slice.limit());
+            }
+        }
+
+        // RAW with heap slice and direct ByteBuffer (exercises non-array CRC path in decodeBuffer).
+        byte[] raw = Arrays.copyOf(correctness, 100);
+        java.nio.ByteBuffer direct = java.nio.ByteBuffer.allocateDirect(raw.length + 4);
+        direct.position(4);
+        direct.put(raw);
+        direct.position(4);
+        direct.limit(4 + raw.length);
+
+        assertEquals(MessageType.CORRECTNESS, RecordFormat.RAW.typeOfBuffer(direct));
+        var decoded = CorrectnessPayload.decodeBuffer(direct);
+        assertEquals(9, decoded.producerId());
+        assertEquals(1234L, decoded.sequence());
+        assertTrue(decoded.crcValid());
+        assertEquals(4, direct.position());
+        assertEquals(4 + raw.length, direct.limit());
+
+        for (RecordFormat format : RecordFormat.values()) {
+            assertEquals(-1, format.typeOfBuffer(null));
+            assertEquals(-1, format.typeOfBuffer(java.nio.ByteBuffer.allocate(0)));
+        }
+    }
+
+    @Test
+    public void jsonRecordWriterFormatsIntegerAndLongBoundaryValuesExactly() throws Exception {
+        ResolvedDataset dataset = DatasetResolver.resolve(spec(RecordFormat.JSON, columns(
+                "i", col(ColumnSpec.Type.INT, c -> {}),
+                "l", col(ColumnSpec.Type.LONG, c -> {}))));
+        JsonRecordWriter writer = new JsonRecordWriter(dataset);
+        long[] values = {0L, 1L, -1L, 42L, -42L, Integer.MIN_VALUE, Integer.MAX_VALUE,
+                Long.MIN_VALUE, Long.MAX_VALUE};
+        for (long v : values) {
+            writer.begin(new byte[]{MessageType.NORMAL});
+            writer.writeInt((int) v);
+            writer.writeLong(v);
+            JsonNode node = JSON.readTree(writer.finish());
+            assertEquals((int) v, node.get("i").asInt());
+            assertEquals(v, node.get("l").asLong());
+        }
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────────────
 
     static ResolvedDataset resolve(String preset, RecordFormat format) {
