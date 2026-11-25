@@ -40,6 +40,16 @@ public final class FlinkEmitTime {
         }
     }
 
+    /** Zero-copy {@link ByteBuffer} overload used by consumer wrappers. */
+    public static void reportBuffer(ConsumerCallback callback, ConsumerRecord<String, ByteBuffer> record,
+                                    RecordFormat format, Instant processingStartTime) {
+        long emitMicros = micros(record.headers());
+        if (emitMicros >= 0) {
+            callback.flinkRecordReceived(record.value(), format, record.timestamp(), emitMicros,
+                    processingStartTime);
+        }
+    }
+
     /** The emit time in epoch microseconds, or -1 when the record has no (valid) stamp. */
     public static long micros(Headers headers) {
         Header h = headers.lastHeader(HEADER);

@@ -89,27 +89,44 @@ public final class CorrectnessPayload {
      * If the payload is too small to decode, returns producerId=-1 and crcValid=false.
      */
     public static DecodedMessage decode(byte[] payload) {
-        if (payload.length < HEADER_SIZE) {
+        if (payload == null || payload.length < HEADER_SIZE) {
+            return new DecodedMessage(-1, -1, -1, false);
+        }
+        return decodeBuffer(ByteBuffer.wrap(payload));
+    }
+
+    /**
+     * Zero-copy {@link ByteBuffer} variant of {@link #decode(byte[])}. Reads via
+     * absolute offsets so the caller's position and limit are never mutated.
+     */
+    public static DecodedMessage decodeBuffer(ByteBuffer payload) {
+        if (payload == null || payload.remaining() < HEADER_SIZE) {
             return new DecodedMessage(-1, -1, -1, false);
         }
 
-        ByteBuffer buf = ByteBuffer.wrap(payload);
-        byte type = buf.get();
+        int start = payload.position();
+        int remaining = payload.remaining();
+        byte type = payload.get(start);
         if (type != MessageType.CORRECTNESS) {
             return new DecodedMessage(-1, -1, -1, false);
         }
 
-        int producerId = buf.getInt();
-        long sequence = buf.getLong();
-        long timestampMs = buf.getLong();
-        byte flags = buf.get();
+        int producerId = payload.getInt(start + 1);
+        long sequence = payload.getLong(start + 5);
+        long timestampMs = payload.getLong(start + 13);
+        byte flags = payload.get(start + 21);
 
         boolean crcValid = true;
         if ((flags & FLAG_HAS_CRC) != 0) {
-            if (payload.length >= HEADER_WITH_CRC_SIZE) {
-                int storedCrc = buf.getInt();
+            if (remaining >= HEADER_WITH_CRC_SIZE) {
+                int storedCrc = payload.getInt(start + 22);
                 CRC32 crc = new CRC32();
-                crc.update(payload, 0, CRC_DATA_LENGTH);
+                if (payload.hasArray()) {
+                    crc.update(payload.array(), payload.arrayOffset() + start, CRC_DATA_LENGTH);
+                } else {
+                    ByteBuffer slice = payload.slice(start, CRC_DATA_LENGTH);
+                    crc.update(slice);
+                }
                 crcValid = storedCrc == (int) crc.getValue();
             } else {
                 // Flag says CRC present but payload too short

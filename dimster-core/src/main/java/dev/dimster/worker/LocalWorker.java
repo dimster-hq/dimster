@@ -2,6 +2,7 @@ package dev.dimster.worker;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -49,6 +50,7 @@ import dev.dimster.spi.kafka.RawProducer;
 import dev.dimster.kafka.KafkaMetricsSource;
 import dev.dimster.kafka.KafkaProducerWrapper;
 import dev.dimster.kafka.KafkaShareConsumerWrapper;
+import dev.dimster.kafka.NoOpDeserializer;
 import dev.dimster.metrics.PrometheusEndpoint;
 import dev.dimster.metrics.ShareGroupLagMonitor;
 import dev.dimster.stats.StatsCollector;
@@ -59,6 +61,7 @@ import dev.dimster.utils.UniformRateLimiter;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.ByteBufferDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -126,7 +129,9 @@ public class LocalWorker implements Worker {
     // running producer when only one needs to stop, runProducer() consults
     // this set on each loop iteration — a producer whose name appears here
     // exits cleanly. The cleanup path then closes the underlying KafkaProducer.
-    private final Set<String> stoppedProducerNames = ConcurrentHashMap.newKeySet();
+    // Per-producer stop flag so runProducer() checks a single volatile boolean
+    // on the hot path instead of hashing into a ConcurrentHashMap per message.
+    private final ConcurrentHashMap<String, AtomicBoolean> producerStopFlags = new ConcurrentHashMap<>();
 
     // Captured at startLoad() so addProducers() invoked later can spin up a
     // matching runProducer task with the same distributor / rate.
@@ -384,7 +389,7 @@ public class LocalWorker implements Worker {
         // task on the new producer.
         this.activeMessageDistributor = messageDistributor;
         this.producerIdCounter.set(0);
-        this.stoppedProducerNames.clear();
+        this.producerStopFlags.clear();
         this.producerTasks.clear();
         this.producerThreads.clear();
 
@@ -461,12 +466,15 @@ public class LocalWorker implements Worker {
         int sentInTxn = 0;
         long txnStartNanos = 0L;
 
-        // Cache the producer's name so the per-producer stop check is a
-        // straight set lookup (not a clientName() round-trip per loop).
+        // Cache the producer's name, topic, and per-producer stop flag once so the
+        // hot loop avoids per-message map lookups and wrapper indirections.
         final String producerName = producer.clientName();
+        final String topicForLog = producer.getTopic();
+        final AtomicBoolean stopped = stopFlagFor(producerName);
         producerThreads.put(producerName, Thread.currentThread());
+
         try {
-            while (!testCompleted && !stoppedProducerNames.contains(producerName)) {
+            while (!testCompleted && !stopped.get()) {
                 if (producersPaused) {
                     // Don't leave a half-open transaction parked indefinitely:
                     // close it out (commit or abort) before sleeping.
@@ -491,11 +499,13 @@ public class LocalWorker implements Worker {
                 }
                 byte[] payloadData = rowGen.next(header);
 
-                final long intendedSendTime = acquireNextSendTime();
-                if (!sleepUntilSendTimeOrProducerStopped(intendedSendTime, producerName)) {
+                ScheduledRateLimiter schedule = scheduledRateLimiter;
+                final long intendedSendTime = schedule != null ? schedule.acquire() : rateLimiter.acquire();
+
+                final long sendTime = awaitSendTimeOrProducerStopped(intendedSendTime, stopped);
+                if (sendTime == Long.MIN_VALUE) {
                     break;
                 }
-                final long sendTime = System.nanoTime();
 
                 // Record publish delay before sendAsync(), else a period of unavailability
                 // or spike in publish latency delays us from recording this value.
@@ -519,39 +529,43 @@ public class LocalWorker implements Worker {
                 MessageDistributor.Target target = messageDistributor.next();
                 String key = keyFromRow ? rowGen.key() : target.key();
 
-                CompletableFuture<KafkaProducerWrapper.SendResult> f = producer.sendAsync(
-                        key, target.partition(), payloadData);
+                final int pSize = payloadData.length;
+                final boolean print = printMessages;
+                if (!print && checker == null) {
+                    // Hot path: direct Kafka Callback avoids allocating a 3-stage
+                    // CompletableFuture chain, SendResult, and "topic:partition" string per record.
+                    producer.sendAsync(key, target.partition(), payloadData, (metadata, ex) -> {
+                        if (ex != null) {
+                            stats.recordSendError(ex, sendTime);
+                            log.warn("On complete error: {}", ex.toString());
+                        } else {
+                            stats.recordSendSuccess(sendTime, pSize, metadata.topic(), metadata.partition());
+                        }
+                    });
+                } else {
+                    // Rendered now, while the record is at hand; empty unless printContents is on.
+                    final String contents = print ? RecordPrinter.logSuffix(recordPrinter, key, payloadData) : "";
+                    producer.sendAsync(key, target.partition(), payloadData, (metadata, ex) -> {
+                        if (ex != null) {
+                            stats.recordSendError(ex, sendTime);
+                            log.warn("On complete error: {}", ex.toString());
+                        } else {
+                            stats.recordSendSuccess(sendTime, pSize, metadata.topic(), metadata.partition());
+                            if (print) {
+                                log.info("PRODUCED topic={} partition={} offset={} timestamp={}{}",
+                                        topicForLog, metadata.partition(),
+                                        metadata.offset(), metadata.timestamp(), contents);
+                            }
+                            if (checker != null) {
+                                checker.messageSent(producerId, seq, topicForLog);
+                            }
+                        }
+                    });
+                }
                 if (transactional) sentInTxn++;
 
                 stats.recordScheduleLatency(
                         TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - sendTime));
-
-                final int pSize = payloadData.length;
-                final boolean print = printMessages;
-                final String topicForLog = producer.getTopic();
-                // Rendered now, while the record is at hand; empty unless printContents is on.
-                final String contents = print ? RecordPrinter.logSuffix(recordPrinter, key, payloadData) : "";
-                f.thenAccept((sendResult) -> {
-                    stats.recordSendSuccess(sendTime, pSize, sendResult.topicPartition());
-                    if (print) {
-                        log.info("PRODUCED topic={} partition={} offset={} timestamp={}{}",
-                                topicForLog, sendResult.partition(),
-                                sendResult.offset(), sendResult.timestamp(), contents);
-                    }
-                    if (checker != null) {
-                        checker.messageSent(producerId, seq, producer.getTopic());
-                    }
-                }).exceptionally(ex -> {
-                    // Stats only — never mutate loop-visible state from here.
-                    // For transactional producers, commitTransaction() will
-                    // surface the same failure on the producer-loop thread,
-                    // which is the single source of truth for the abort
-                    // decision. This avoids a cross-thread race where a late
-                    // callback for batch A could poison batch B.
-                    stats.recordSendError(ex, sendTime);
-                    log.warn("On complete error: " + ex);
-                    return null;
-                });
 
                 if (transactional
                         && (sentInTxn >= messagesPerTxn
@@ -609,19 +623,24 @@ public class LocalWorker implements Worker {
     }
 
     /**
-     * Sleep until the shared rate limiter's next send time. removeProducers
-     * unparks the producer thread after setting the stop flag, so a parked
-     * task can leave promptly instead of waking later and sending after close.
+     * Sleep until the shared rate limiter's next send time, returning the
+     * {@code System.nanoTime()} observed on exit (saving a redundant clock read)
+     * or {@link Long#MIN_VALUE} if the producer was stopped.
      */
-    private boolean sleepUntilSendTimeOrProducerStopped(long intendedTime, String producerName) {
+    private long awaitSendTimeOrProducerStopped(long intendedTime, AtomicBoolean stopped) {
+        long now;
         long sleepNs;
-        while ((sleepNs = intendedTime - System.nanoTime()) > 0) {
-            if (testCompleted || stoppedProducerNames.contains(producerName)) {
-                return false;
+        while ((sleepNs = intendedTime - (now = System.nanoTime())) > 0) {
+            if (testCompleted || stopped.get()) {
+                return Long.MIN_VALUE;
             }
             LockSupport.parkNanos(sleepNs);
         }
-        return !(testCompleted || stoppedProducerNames.contains(producerName));
+        return (testCompleted || stopped.get()) ? Long.MIN_VALUE : now;
+    }
+
+    private AtomicBoolean stopFlagFor(String producerName) {
+        return producerStopFlags.computeIfAbsent(producerName, k -> new AtomicBoolean(false));
     }
 
     /**
@@ -748,14 +767,6 @@ public class LocalWorker implements Worker {
                 schedule.type, schedule.maxConfiguredRate());
         scheduledRateLimiter = new ScheduledRateLimiter(schedule, scheduleStartEpochMillis);
         rateLimiter = null;
-    }
-
-    private long acquireNextSendTime() {
-        ScheduledRateLimiter schedule = scheduledRateLimiter;
-        if (schedule != null) {
-            return schedule.acquire();
-        }
-        return rateLimiter.acquire();
     }
 
     @Override
@@ -1048,11 +1059,9 @@ public class LocalWorker implements Worker {
             Properties perProducerProps = transactional
                     ? cloneWithTransactionalId(producerProps, vp.transactionalId(hostname))
                     : producerProps;
-            // Defence-in-depth: if a prior remove left this name in the
-            // stop set (the bug fixed in removeProducers), claim it back
-            // here so the about-to-start runProducer thread doesn't see
-            // its name as "stopped" on the very first iteration.
-            stoppedProducerNames.remove(vp.name());
+            // Defence-in-depth: if a prior remove left this name flagged stopped,
+            // clear it here so the replacement runProducer task starts cleanly.
+            stopFlagFor(vp.name()).set(false);
             var kafkaProducer = KafkaSpi.factory().<String, byte[]>newProducer(perProducerProps);
             var wrapper = new KafkaProducerWrapper(kafkaProducer, vp.topic(), vp.name(),
                     vp.producerIdx(), vp.pinnedPartitions(), transactional);
@@ -1077,9 +1086,9 @@ public class LocalWorker implements Worker {
     public synchronized void removeProducers(List<String> producerNames) throws IOException {
         if (producerNames.isEmpty()) return;
         // Phase 1: signal each producer's runProducer task to exit cleanly.
-        // The loop checks this set before and after its rate-limiter sleep.
+        // The loop checks its AtomicBoolean flag before and after its rate-limiter sleep.
         for (String name : producerNames) {
-            stoppedProducerNames.add(name);
+            stopFlagFor(name).set(true);
         }
         unparkProducerTasks(producerNames);
         waitForProducerTasksToStop(producerNames);
@@ -1112,15 +1121,9 @@ public class LocalWorker implements Worker {
         producerThreads.keySet().removeAll(producerNames);
         activeProducerGenerations.keySet().removeAll(producerNames);
         producerFailures.keySet().removeAll(producerNames);
-        // Clean up stoppedProducerNames for ALL requested names, not just
-        // those whose wrappers we found. A name can appear in the request
-        // without a corresponding wrapper if a prior failed
-        // restartProducers removed the wrapper but didn't get to re-add
-        // it (e.g. the new KafkaProducer constructor threw). Without this
-        // cleanup, the next addProducers for the same name would spawn a
-        // runProducer that exits on its first iteration because
-        // stoppedProducerNames still flags the name as stopped.
-        stoppedProducerNames.removeAll(producerNames);
+        // Clean up producerStopFlags for ALL requested names (including any name whose
+        // wrapper was absent after a failed restart) so a subsequent addProducers starts clean.
+        producerStopFlags.keySet().removeAll(producerNames);
         updateKafkaMetricsSources();
     }
 
@@ -1369,11 +1372,18 @@ public class LocalWorker implements Worker {
                 allProps.put(k, v);
             });
 
-            var kafkaConsumer = KafkaSpi.factory().<String, byte[]>newShareConsumer(clientProps);
+            // Zero-copy ByteBuffer values avoid a per-record byte[] copy in ByteArrayDeserializer;
+            // skip UTF-8 key deserialization completely unless message printing is enabled.
+            clientProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteBufferDeserializer.class.getName());
+            if (!printMessages && !printContents) {
+                clientProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, NoOpDeserializer.class.getName());
+            }
+
+            var kafkaConsumer = KafkaSpi.factory().<String, ByteBuffer>newShareConsumer(clientProps);
             return new KafkaShareConsumerWrapper(kafkaConsumer, allProps, consumerCallback, vc.topic(),
                     vc.name(),
                     consumerSet.consumerProcMsMin(), consumerSet.consumerProcMsMax(), consumerSet.consumerProcParallelism(),
-                    printMessages, consumerRecordPrinter, recordFormat);
+                    printMessages, consumerRecordPrinter, recordFormat, consumedThroughFlink);
         } else {
             var consumerProps = kafkaConfig.classicConsumerProperties();
             var clientProps = new Properties();
@@ -1389,18 +1399,23 @@ public class LocalWorker implements Worker {
                 allProps.put(k, v);
             });
 
+            clientProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteBufferDeserializer.class.getName());
+            if (!printMessages && !printContents) {
+                clientProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, NoOpDeserializer.class.getName());
+            }
+
             // Static partitions come straight off the VirtualConsumer (computed by TopologyPlanner).
             // KafkaConsumerWrapper treats null/empty the same way: empty -> dynamic group assignment.
             List<TopicPartition> staticPartitions = vc.staticPartitions().isEmpty()
                     ? null
                     : vc.staticPartitions();
 
-            var kafkaConsumer = KafkaSpi.factory().<String, byte[]>newConsumer(clientProps);
+            var kafkaConsumer = KafkaSpi.factory().<String, ByteBuffer>newConsumer(clientProps);
             return new KafkaConsumerWrapper(kafkaConsumer, allProps, consumerCallback, vc.topic(),
                     vc.name(),
                     consumerSet.consumerProcMsMin(), consumerSet.consumerProcMsMax(), consumerSet.consumerProcParallelism(),
                     staticPartitions, printMessages, consumerRecordPrinter, recordFormat,
-                    consumerSet.consumerProcMode(), consumerSet.consumerProcCapacity());
+                    consumerSet.consumerProcMode(), consumerSet.consumerProcCapacity(), consumedThroughFlink);
         }
     }
 

@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
@@ -101,7 +102,7 @@ public class KafkaConsumerWrapperRebalanceTest {
      * Captures subscription/assignment while returning empty polls until the
      * wrapper closes. It models only the stable SPI behavior this test needs.
      */
-    private static final class FakeRawConsumer implements RawConsumer<String, byte[]> {
+    private static final class FakeRawConsumer implements RawConsumer<String, ByteBuffer> {
         private volatile ConsumerRebalanceListener rebalanceListener;
         private volatile List<TopicPartition> staticAssignment;
 
@@ -116,7 +117,7 @@ public class KafkaConsumerWrapperRebalanceTest {
         }
 
         @Override
-        public ConsumerRecords<String, byte[]> poll(Duration timeout) {
+        public ConsumerRecords<String, ByteBuffer> poll(Duration timeout) {
             try {
                 Thread.sleep(timeout.toMillis());
             } catch (InterruptedException e) {

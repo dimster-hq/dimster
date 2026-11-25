@@ -1,5 +1,6 @@
 package dev.dimster.engines.correctness;
 
+import java.nio.ByteBuffer;
 import java.time.Instant;
 
 import dev.dimster.datagen.RecordFormat;
@@ -31,6 +32,32 @@ public class CorrectnessTracker implements ConsumerCallback {
         if (msg.producerId() >= 0) {
             checker.messageReceived(msg.producerId(), msg.sequence(), topic, partition, msg.crcValid());
         }
+    }
+
+    @Override
+    public void messageReceived(ByteBuffer payload, RecordFormat format, String topic, int partition,
+                                long publishTimestampMillis, Instant deliveryTime, Instant processingStartTime) {
+        stats.messageReceived(payload, format, topic, partition, publishTimestampMillis, deliveryTime, processingStartTime);
+
+        // RAW decodes straight from the ByteBuffer with zero copy; AVRO/JSON copy only the 22-26B header.
+        var msg = format == RecordFormat.RAW
+                ? CorrectnessPayload.decodeBuffer(payload)
+                : CorrectnessPayload.decode(format.headerFromBuffer(payload));
+        if (msg.producerId() >= 0) {
+            checker.messageReceived(msg.producerId(), msg.sequence(), topic, partition, msg.crcValid());
+        }
+    }
+
+    @Override
+    public void flinkRecordReceived(byte[] payload, RecordFormat format, long publishTimestampMillis,
+                                    long flinkEmitMicros, Instant processingStartTime) {
+        stats.flinkRecordReceived(payload, format, publishTimestampMillis, flinkEmitMicros, processingStartTime);
+    }
+
+    @Override
+    public void flinkRecordReceived(ByteBuffer payload, RecordFormat format, long publishTimestampMillis,
+                                    long flinkEmitMicros, Instant processingStartTime) {
+        stats.flinkRecordReceived(payload, format, publishTimestampMillis, flinkEmitMicros, processingStartTime);
     }
 
     @Override

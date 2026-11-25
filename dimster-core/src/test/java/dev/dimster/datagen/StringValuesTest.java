@@ -84,6 +84,19 @@ public class StringValuesTest {
         assertEquals(Long.MAX_VALUE, StringValues.valueSpace(ColumnSpec.Kind.SENTENCE, 8, 16, 6, 15));
     }
 
+    @Test
+    public void uuidFormattingMatchesJdkUuidToStringByteForByte() {
+        StringValues uuids = StringValues.of(ColumnSpec.Kind.UUID, SEED, 8, 16, 5, 15);
+        for (long rank = 0; rank < 1_000; rank++) {
+            var rnd = new java.util.SplittableRandom(Hashing.rankSeed(SEED, rank));
+            long msb = (rnd.nextLong() & ~0xF000L) | 0x4000L;
+            long lsb = (rnd.nextLong() & 0x3FFFFFFFFFFFFFFFL) | 0x8000000000000000L;
+            String expected = new java.util.UUID(msb, lsb).toString();
+            String actual = new String(uuids.valueFor(rank), StandardCharsets.UTF_8);
+            assertEquals("rank " + rank, expected, actual);
+        }
+    }
+
     private static void assertShape(ColumnSpec.Kind kind, String regex) {
         Pattern p = Pattern.compile(regex);
         for (long rank = 0; rank < 500; rank++) {

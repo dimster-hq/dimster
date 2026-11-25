@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import dev.dimster.spi.kafka.RawProducer;
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
@@ -150,6 +151,20 @@ public class KafkaProducerWrapper implements AutoCloseable, KafkaMetricsSource {
         });
 
         return future;
+    }
+
+    /**
+     * Direct-callback send for the producer hot path. Passes {@code callback}
+     * straight to Kafka's {@code RawProducer.send}, avoiding the per-record
+     * {@link CompletableFuture} chain, {@link SendResult}, and eager
+     * {@code topic + ":" + partition} string allocations.
+     */
+    public void sendAsync(String key, Integer partitionOverride, byte[] payload, Callback callback) {
+        Integer partition = resolvePartition(partitionOverride);
+        var record = partition != null
+                ? new ProducerRecord<>(topic, partition, key, payload)
+                : new ProducerRecord<>(topic, key, payload);
+        producer.send(record, callback);
     }
 
     /**

@@ -1,7 +1,10 @@
 package dev.dimster.kafka;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -18,6 +21,8 @@ import dev.dimster.flink.FlinkEmitTime;
 import dev.dimster.spi.kafka.AckType;
 import dev.dimster.spi.kafka.RawShareConsumer;
 import dev.dimster.spi.kafka.ShareAckListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.TopicPartition;
@@ -25,6 +30,12 @@ import org.apache.kafka.common.errors.WakeupException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Runs a Kafka share-group consumer (KIP-932) and translates polling,
+ * acknowledgement, and simulated processing into Dimster's callback and metrics
+ * abstractions. Uses zero-copy {@link ByteBuffer} values and a single-pass fast
+ * path when {@code procMsMax == 0}.
+ */
 public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListener, KafkaMetricsSource {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaShareConsumerWrapper.class);
@@ -37,7 +48,7 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
     // impl is chosen at startup via ServiceLoader (KafkaClientFactory) and is
     // only available on dimster builds against Kafka 4.2+; pre-4.2 builds fail
     // fast at workload-build time via the factory's capabilities() check.
-    private final RawShareConsumer<String, byte[]> consumer;
+    private final RawShareConsumer<String, ByteBuffer> consumer;
     private final ConsumerCallback callback;
     private final String name;
     private final boolean explicitAck;
@@ -71,6 +82,8 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
     /** Layout of the consumed values (RAW for the payload dataset, else the
      *  dataset's format), used to find each record's message type. */
     private final RecordFormat recordFormat;
+    /** When true, inspect record headers for Flink emit-time stamps; skipped on non-Flink runs. */
+    private final boolean checkFlinkEmitTime;
 
     /**
      * @param name canonical client name from {@code VirtualConsumer.name()}
@@ -78,7 +91,7 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
      *     the planner uses, so {@code LocalWorker.removeConsumers} can
      *     look up wrappers by name.
      */
-    public KafkaShareConsumerWrapper(RawShareConsumer<String, byte[]> consumer,
+    public KafkaShareConsumerWrapper(RawShareConsumer<String, ByteBuffer> consumer,
                                      Properties consumerConfig,
                                      ConsumerCallback callback,
                                      String topic,
@@ -89,12 +102,29 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
                                      boolean printMessages,
                                      RecordPrinter recordPrinter,
                                      RecordFormat recordFormat) {
+        this(consumer, consumerConfig, callback, topic, name, procMsMin, procMsMax,
+                procParallelism, printMessages, recordPrinter, recordFormat, true);
+    }
+
+    public KafkaShareConsumerWrapper(RawShareConsumer<String, ByteBuffer> consumer,
+                                     Properties consumerConfig,
+                                     ConsumerCallback callback,
+                                     String topic,
+                                     String name,
+                                     int procMsMin,
+                                     int procMsMax,
+                                     int procParallelism,
+                                     boolean printMessages,
+                                     RecordPrinter recordPrinter,
+                                     RecordFormat recordFormat,
+                                     boolean checkFlinkEmitTime) {
         this.consumer = consumer;
         this.callback = callback;
         this.name = name;
         this.printMessages = printMessages;
         this.recordPrinter = recordPrinter;
         this.recordFormat = recordFormat;
+        this.checkFlinkEmitTime = checkFlinkEmitTime;
 
         this.explicitAck = "explicit".equalsIgnoreCase(
                 (String) consumerConfig.getOrDefault("share.acknowledgement.mode", "implicit"));
@@ -125,9 +155,9 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
 
     /** Adjust the simulated per-record processing time at runtime. Thread-safe. */
     public void setProcessingTime(int minMs, int maxMs) {
+        this.processingTimeSimulator = new ProcessingTimeSimulator(minMs, maxMs, procParallelism);
         this.procMsMin = minMs;
         this.procMsMax = maxMs;
-        this.processingTimeSimulator = new ProcessingTimeSimulator(minMs, maxMs, procParallelism);
     }
 
     private void pollLoop() {
@@ -135,64 +165,28 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
         try {
             while (!closing.get()) {
                 try {
-                    var records = consumer.poll(pollTimeout);
-                    if (log.isDebugEnabled()) log.debug("Poll Complete. client={} records={}", this.name, records.count());
+                    ConsumerRecords<String, ByteBuffer> records = consumer.poll(pollTimeout);
                     if (closing.get()) return;
                     running = true;
                     Instant deliveryTime = Instant.now();
-                    callback.pollCompleted(records.count());
-                    callback.batchReceived(name, records.count());
-                    boolean needsCommit = !records.isEmpty();
-
-                    // Convert records to list for index-based access
-                    var recordList = new java.util.ArrayList<org.apache.kafka.clients.consumer.ConsumerRecord<String, byte[]>>();
-                    for (var record : records) {
-                        if (printMessages && log.isDebugEnabled()) {
-                            log.debug("RECEIVED client={} topic={} partition={} offset={}", this.name,
-                                    record.topic(), record.partition(), record.offset());
-                        }
-                        recordList.add(record);
+                    int recordCount = records.count();
+                    if (log.isDebugEnabled()) {
+                        log.debug("Poll Complete. client={} records={}", this.name, recordCount);
+                    }
+                    callback.pollCompleted(recordCount);
+                    callback.batchReceived(name, recordCount);
+                    if (recordCount == 0) {
+                        continue;
                     }
 
-                    // Process the records with simulated processing time --------------
-                    processingTimeSimulator.processBatch(
-                            recordList,
-                            closing,
-                            callback,
-                            recordFormat,
-                            deliveryTime,
-                            (messageIdx, simulatedProcessingStartTime) -> {
-                                // Process single message with its simulated processing start time
-                                var record = recordList.get(messageIdx);
-
-                                // Print the messages if configured
-                                if (printMessages) {
-                                    long e2eLatencyMs = simulatedProcessingStartTime.toEpochMilli() - record.timestamp();
-                                    byte[] value = record.value();
-                                    String msgType = MessageType.nameOf(recordFormat.typeOf(value));
-                                    log.info("PROCESSED client={} topic={} partition={} offset={} timestamp={} e2eLatencyMs={} type={}{}",
-                                            this.name,
-                                            record.topic(), record.partition(),
-                                            record.offset(), record.timestamp(), e2eLatencyMs, msgType,
-                                            RecordPrinter.logSuffix(recordPrinter, record.key(), value));
-                                }
-
-                                // Records stats
-                                callback.messageReceived(record.value(), recordFormat, record.topic(), record.partition(),
-                                        record.timestamp(), deliveryTime, simulatedProcessingStartTime);
-                                FlinkEmitTime.report(callback, record, recordFormat, simulatedProcessingStartTime);
-
-                                // Maybe acknowledge
-                                // Note: acknowledge(ACCEPT) is local-only (no network I/O),
-                                // so its position relative to the aggregate sleep is immaterial.
-                                if (explicitAck) {
-                                    consumer.acknowledge(record, AckType.ACCEPT);
-                                }
-                            }
-                    );
+                    if (procMsMax == 0) {
+                        processFastPath(records, deliveryTime);
+                    } else {
+                        processWithSimulatedDelay(records, recordCount, deliveryTime);
+                    }
 
                     // Maybe do manual commit --------------
-                    if (needsCommit && manualCommitMode != ManualCommitMode.Poll) {
+                    if (manualCommitMode != ManualCommitMode.Poll) {
                         if (log.isDebugEnabled()) log.debug("Commit. client={}", this.name);
                         if (manualCommitMode == ManualCommitMode.CommitAsync) {
                             consumer.commitAsync();
@@ -200,7 +194,7 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
                         } else if (manualCommitMode == ManualCommitMode.CommitSync) {
                             long startNanos = System.nanoTime();
                             consumer.commitSync();
-                            long latencyMicros = java.util.concurrent.TimeUnit.NANOSECONDS.toMicros(
+                            long latencyMicros = TimeUnit.NANOSECONDS.toMicros(
                                     System.nanoTime() - startNanos);
                             callback.commitSyncCompleted(latencyMicros);
                         }
@@ -223,6 +217,95 @@ public class KafkaShareConsumerWrapper implements AutoCloseable, ShareAckListene
             running = false;
             log.info("Share consumer poll loop ended: {}", name);
         }
+    }
+
+    private void processFastPath(ConsumerRecords<String, ByteBuffer> records, Instant deliveryTime) {
+        boolean debugReceive = printMessages && log.isDebugEnabled();
+        for (TopicPartition tp : records.partitions()) {
+            List<ConsumerRecord<String, ByteBuffer>> partRecords = records.records(tp);
+            int size = partRecords.size();
+            if (size == 0) {
+                continue;
+            }
+            if (!printMessages) {
+                callback.partitionBatchReceived(tp.topic(), tp.partition(), partRecords,
+                        recordFormat, deliveryTime, checkFlinkEmitTime);
+                if (explicitAck) {
+                    for (int i = 0; i < size; i++) {
+                        consumer.acknowledge(partRecords.get(i), AckType.ACCEPT);
+                    }
+                }
+            } else {
+                for (int i = 0; i < size; i++) {
+                    ConsumerRecord<String, ByteBuffer> record = partRecords.get(i);
+                    if (debugReceive) {
+                        log.debug("RECEIVED client={} topic={} partition={} offset={}", this.name,
+                                record.topic(), record.partition(), record.offset());
+                    }
+                    logProcessedRecord(record, deliveryTime);
+                    callback.messageReceived(record.value(), recordFormat, tp.topic(), tp.partition(),
+                            record.timestamp(), deliveryTime, deliveryTime);
+                    if (checkFlinkEmitTime) {
+                        FlinkEmitTime.reportBuffer(callback, record, recordFormat, deliveryTime);
+                    }
+                    if (explicitAck) {
+                        consumer.acknowledge(record, AckType.ACCEPT);
+                    }
+                }
+            }
+        }
+    }
+
+    private void processWithSimulatedDelay(ConsumerRecords<String, ByteBuffer> records,
+                                           int recordCount, Instant deliveryTime) {
+        boolean debugReceive = printMessages && log.isDebugEnabled();
+        var recordList = new ArrayList<ConsumerRecord<String, ByteBuffer>>(recordCount);
+        for (TopicPartition tp : records.partitions()) {
+            List<ConsumerRecord<String, ByteBuffer>> partRecords = records.records(tp);
+            if (debugReceive) {
+                for (int i = 0, n = partRecords.size(); i < n; i++) {
+                    var r = partRecords.get(i);
+                    log.debug("RECEIVED client={} topic={} partition={} offset={}", this.name,
+                            r.topic(), r.partition(), r.offset());
+                }
+            }
+            recordList.addAll(partRecords);
+        }
+
+        processingTimeSimulator.processBatch(
+                recordList,
+                closing,
+                callback,
+                recordFormat,
+                deliveryTime,
+                (messageIdx, simulatedProcessingStartTime) -> {
+                    var record = recordList.get(messageIdx);
+                    if (printMessages) {
+                        logProcessedRecord(record, simulatedProcessingStartTime);
+                    }
+                    callback.messageReceived(record.value(), recordFormat, record.topic(), record.partition(),
+                            record.timestamp(), deliveryTime, simulatedProcessingStartTime);
+                    if (checkFlinkEmitTime) {
+                        FlinkEmitTime.reportBuffer(callback, record, recordFormat, simulatedProcessingStartTime);
+                    }
+                    // acknowledge(ACCEPT) is local-only (no network I/O).
+                    if (explicitAck) {
+                        consumer.acknowledge(record, AckType.ACCEPT);
+                    }
+                }
+        );
+    }
+
+    private void logProcessedRecord(ConsumerRecord<String, ByteBuffer> record, Instant processingStartTime) {
+        long e2eLatencyMs = processingStartTime.toEpochMilli() - record.timestamp();
+        ByteBuffer value = record.value();
+        String msgType = MessageType.nameOf(recordFormat.typeOfBuffer(value));
+        String suffix = recordPrinter != null
+                ? RecordPrinter.logSuffix(recordPrinter, record.key(), RecordFormat.toByteArray(value))
+                : "";
+        log.info("PROCESSED client={} topic={} partition={} offset={} timestamp={} e2eLatencyMs={} type={}{}",
+                this.name, record.topic(), record.partition(),
+                record.offset(), record.timestamp(), e2eLatencyMs, msgType, suffix);
     }
 
     public String getName() {

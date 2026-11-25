@@ -59,13 +59,13 @@ final class JsonRecordWriter implements RecordWriter {
     @Override
     public void writeLong(long value) {
         field();
-        writeAscii(Long.toString(value));
+        writeAsciiLong(value);
     }
 
     @Override
     public void writeInt(int value) {
         field();
-        writeAscii(Integer.toString(value));
+        writeAsciiLong(value);
     }
 
     @Override
@@ -137,6 +137,38 @@ final class JsonRecordWriter implements RecordWriter {
         for (byte b : bytes) {
             buf[pos++] = HEX[(b >> 4) & 0xF];
             buf[pos++] = HEX[b & 0xF];
+        }
+    }
+
+    private static final byte[] LONG_MIN_BYTES = "-9223372036854775808".getBytes(StandardCharsets.US_ASCII);
+
+    /** Formats a base-10 signed integer directly into {@code buf} without String allocation. */
+    private void writeAsciiLong(long value) {
+        if (value == 0L) {
+            ensure(1);
+            buf[pos++] = '0';
+            return;
+        }
+        if (value == Long.MIN_VALUE) {
+            writeRaw(LONG_MIN_BYTES);
+            return;
+        }
+        ensure(20);
+        if (value < 0L) {
+            buf[pos++] = '-';
+            value = -value;
+        }
+        int start = pos;
+        while (value > 0L) {
+            long q = value / 10L;
+            buf[pos++] = (byte) ('0' + (value - q * 10L));
+            value = q;
+        }
+        // Reverse digits written least-significant first.
+        for (int lo = start, hi = pos - 1; lo < hi; lo++, hi--) {
+            byte tmp = buf[lo];
+            buf[lo] = buf[hi];
+            buf[hi] = tmp;
         }
     }
 

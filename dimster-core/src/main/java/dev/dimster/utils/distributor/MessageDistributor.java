@@ -43,6 +43,8 @@ public sealed interface MessageDistributor
     int UNIQUE_COUNT = 10_000;
     int KEY_BYTE_SIZE = 7;
     String[] RANDOM_KEYS = generateKeys();
+    // Pre-allocated Targets matching RANDOM_KEYS so key-based distributors never allocate per send.
+    Target[] KEY_TARGETS = buildKeyTargets(RANDOM_KEYS);
 
     /**
      * The result of one {@link #next()} call. Either field may be null:
@@ -103,5 +105,13 @@ public sealed interface MessageDistributor
             keys[i] = encoder.encodeToString(buffer);
         }
         return keys;
+    }
+
+    private static Target[] buildKeyTargets(String[] keys) {
+        Target[] targets = new Target[keys.length];
+        for (int i = 0; i < keys.length; i++) {
+            targets[i] = Target.ofKey(keys[i]);
+        }
+        return targets;
     }
 }

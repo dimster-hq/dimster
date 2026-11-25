@@ -5,15 +5,12 @@ package dev.dimster.utils.distributor;
  * Partition 0 is always the hottest; partition (n-1) is the coldest. The
  * record is sent with a null key — Kafka's partitioner is bypassed via
  * the {@code ProducerRecord(topic, partition, key, value)} constructor.
- *
- * <p>Use this when you want a deterministic, maximally-skewed load profile
- * (e.g. for stressing share-group fetcher fairness or per-partition
- * back-pressure handling). For a softer skew that still hashes through
- * the partitioner, use {@link KeyZipf}.
  */
 public final class PartitionZipf implements MessageDistributor {
 
     private final ZipfSampler sampler;
+    // Pre-allocated targets avoid boxing Integer and allocating Target per send.
+    private final Target[] targets;
 
     public PartitionZipf(int partitionsPerTopic, double skew) {
         if (partitionsPerTopic < 1) {
@@ -22,11 +19,15 @@ public final class PartitionZipf implements MessageDistributor {
                             + partitionsPerTopic);
         }
         this.sampler = new ZipfSampler(partitionsPerTopic, skew);
+        this.targets = new Target[partitionsPerTopic];
+        for (int p = 0; p < partitionsPerTopic; p++) {
+            this.targets[p] = Target.ofPartition(p);
+        }
     }
 
     @Override
     public Target next() {
         // sampler returns [1, n]; partition numbers are 0-based.
-        return Target.ofPartition(sampler.sample() - 1);
+        return targets[sampler.sample() - 1];
     }
 }

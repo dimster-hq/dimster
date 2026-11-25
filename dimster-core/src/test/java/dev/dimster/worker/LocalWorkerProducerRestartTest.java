@@ -87,6 +87,42 @@ public class LocalWorkerProducerRestartTest {
         worker.close();
     }
 
+    @Test
+    public void directProducerCallbackRecordsStatsAndTimeoutErrorsAndStopsCleanly() throws Exception {
+        LocalWorker worker = new LocalWorker(false);
+        worker.enablePerPartitionMetrics();
+        CompletingRawProducer raw = new CompletingRawProducer(100);
+        String name = "producer-topic-i0";
+        KafkaProducerWrapper wrapper = new KafkaProducerWrapper(
+                raw, "topic", name, 0, new int[]{0, 1}, false);
+        setField(worker, "producers", new ArrayList<>(List.of(wrapper)));
+
+        worker.setDataset(DatasetResolver.payloadDataset(99, 0.5, 4, null));
+        worker.startLoad(new ProducerWorkAssignment(
+                100_000.0, MessageDistributorType.PINNED_PARTITIONS, 2, 1.0));
+        assertTrue("producer should send at least 100 messages",
+                raw.reachedTarget.await(5, TimeUnit.SECONDS));
+
+        worker.removeProducers(List.of(name));
+        var period = worker.getPeriodStats();
+
+        int totalSentAttempts = raw.sendCount.get();
+        int expectedTimeouts = totalSentAttempts / 25;
+        assertTrue("producer should attempt at least 100 sends", totalSentAttempts >= 100);
+        assertEquals("every send attempt must be recorded as success or error",
+                totalSentAttempts, period.messagesSent + period.errors);
+        assertEquals("timeout error from direct callback must be counted", expectedTimeouts, period.timeoutErrors);
+        assertEquals(expectedTimeouts, period.errors);
+        assertEquals(period.messagesSent * 100L, period.bytesSent);
+        assertEquals("publishLatency recorded for successes and failures",
+                totalSentAttempts, period.publishLatency.getTotalCount());
+        assertEquals("scheduleLatency recorded for every send",
+                totalSentAttempts, period.scheduleLatency.getTotalCount());
+        assertTrue("per-partition publish latency recorded",
+                period.perPartitionPublishLatency != null && !period.perPartitionPublishLatency.isEmpty());
+        worker.close();
+    }
+
     private static long registerProducerInstance(LocalWorker worker, String name) throws Exception {
         Method m = LocalWorker.class.getDeclaredMethod("registerProducerInstance", String.class);
         m.setAccessible(true);
@@ -132,5 +168,39 @@ public class LocalWorkerProducerRestartTest {
         @Override public void abortTransaction() {}
         @Override public Map<MetricName, ? extends Metric> metrics() { return Map.of(); }
         @Override public void close() { closed.set(true); }
+    }
+
+    /** Completes sends via Kafka's Callback (failing every 25th send with TimeoutException). */
+    private static class CompletingRawProducer implements RawProducer<String, byte[]> {
+        final CountDownLatch reachedTarget;
+        final AtomicInteger sendCount = new AtomicInteger(0);
+
+        CompletingRawProducer(int target) {
+            this.reachedTarget = new CountDownLatch(target);
+        }
+
+        @Override
+        public Future<RecordMetadata> send(ProducerRecord<String, byte[]> record, Callback callback) {
+            int n = sendCount.incrementAndGet();
+            if (callback != null) {
+                if (n % 25 == 0) {
+                    callback.onCompletion(null, new org.apache.kafka.common.errors.TimeoutException("synthetic"));
+                } else {
+                    int p = record.partition() != null ? record.partition() : 0;
+                    var tp = new org.apache.kafka.common.TopicPartition(record.topic(), p);
+                    callback.onCompletion(new RecordMetadata(tp, 0, n, System.currentTimeMillis(), 0,
+                            record.value().length), null);
+                }
+            }
+            reachedTarget.countDown();
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override public void initTransactions() {}
+        @Override public void beginTransaction() {}
+        @Override public void commitTransaction() {}
+        @Override public void abortTransaction() {}
+        @Override public Map<MetricName, ? extends Metric> metrics() { return Map.of(); }
+        @Override public void close() {}
     }
 }

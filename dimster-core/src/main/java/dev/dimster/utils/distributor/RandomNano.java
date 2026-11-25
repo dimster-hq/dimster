@@ -17,16 +17,17 @@
  */
 package dev.dimster.utils.distributor;
 
+import java.util.concurrent.ThreadLocalRandom;
+
 /**
- * Picks a key uniformly at random from the shared key pool, seeded by
- * {@code System.nanoTime()}. Cheap and stateless but exhibits no skew —
- * use {@link KeyZipf} when uneven load is desired.
+ * Picks a key uniformly at random from the shared key pool using
+ * {@link ThreadLocalRandom} (avoiding per-message {@code System.nanoTime()}
+ * calls) and returns pre-allocated {@link MessageDistributor#KEY_TARGETS}.
  */
 public final class RandomNano implements MessageDistributor {
 
     @Override
     public Target next() {
-        int randomIndex = Math.abs((int) System.nanoTime() % UNIQUE_COUNT);
-        return Target.ofKey(RANDOM_KEYS[randomIndex]);
+        return KEY_TARGETS[ThreadLocalRandom.current().nextInt(UNIQUE_COUNT)];
     }
 }

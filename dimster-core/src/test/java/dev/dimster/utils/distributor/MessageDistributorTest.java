@@ -231,6 +231,77 @@ public class MessageDistributorTest {
         assertEquals(0, errors.get());
     }
 
+    @Test
+    public void zipfSampler_aliasTableMatchesExactPmfAndLargeNFallbackWorks() {
+        // Verify Vose alias table PMF against exact analytical P(k) = k^(-s) / H_{n,s}.
+        int n = 265;
+        double s = 1.2;
+        double harmonic = 0.0;
+        for (int k = 1; k <= n; k++) {
+            harmonic += Math.pow(k, -s);
+        }
+        ZipfSampler sampler = new ZipfSampler(n, s);
+        var rnd = new java.util.SplittableRandom(12345L);
+        int draws = 200_000;
+        int[] counts = new int[n + 1];
+        for (int i = 0; i < draws; i++) {
+            int k = sampler.sample(rnd);
+            assertTrue(k >= 1 && k <= n);
+            counts[k]++;
+        }
+        for (int k : new int[]{1, 2, 3, 10}) {
+            double expected = Math.pow(k, -s) / harmonic;
+            double actual = counts[k] / (double) draws;
+            assertEquals("k=" + k, expected, actual, 0.005);
+        }
+
+        // Verify fallback rejection-inversion path (n > ALIAS_TABLE_MAX_N) stays deterministic and skewed.
+        int largeN = ZipfSampler.ALIAS_TABLE_MAX_N + 5_000;
+        ZipfSampler largeA = new ZipfSampler(largeN, 1.0);
+        ZipfSampler largeB = new ZipfSampler(largeN, 1.0);
+        var r1 = new java.util.SplittableRandom(77L);
+        var r2 = new java.util.SplittableRandom(77L);
+        int topHits = 0;
+        for (int i = 0; i < 10_000; i++) {
+            int v1 = largeA.sample(r1);
+            int v2 = largeB.sample(r2);
+            assertEquals(v1, v2);
+            assertTrue(v1 >= 1 && v1 <= largeN);
+            if (v1 == 1) topHits++;
+        }
+        assertTrue("rank 1 should dominate for largeN", topHits > 500);
+    }
+
+    @Test
+    public void roundRobinDistributorsAreThreadSafeAndPreAllocated() throws Exception {
+        MessageDistributor keyRr = MessageDistributor.of(MessageDistributorType.KEY_ROUND_ROBIN, 8, 0);
+        MessageDistributor partRr = MessageDistributor.of(MessageDistributorType.PARTITION_ROUND_ROBIN, 8, 0);
+
+        ExecutorService exec = Executors.newFixedThreadPool(4);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        for (int t = 0; t < 4; t++) {
+            exec.submit(() -> {
+                try {
+                    Set<Integer> parts = new HashSet<>();
+                    for (int i = 0; i < 8; i++) {
+                        parts.add(partRr.next().partition());
+                    }
+                    assertEquals(8, parts.size());
+                    for (int i = 0; i < 20_000; i++) {
+                        assertNotNull(keyRr.next().key());
+                    }
+                } catch (Throwable th) {
+                    error.compareAndSet(null, th);
+                }
+            });
+        }
+        exec.shutdown();
+        assertTrue(exec.awaitTermination(10, TimeUnit.SECONDS));
+        if (error.get() != null) {
+            throw new AssertionError("Concurrent round-robin distributor failed", error.get());
+        }
+    }
+
     // ─── Helpers ──────────────────────────────────────────────────────
 
     private static int indexOf(String key) {
