@@ -1,3 +1,5 @@
+//! Entry point for `eks-setup` — interactive EKS cluster setup CLI for Dimster.
+
 mod answers;
 mod instances;
 mod questions;
@@ -7,11 +9,14 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-
-use steps::Mode;
+use cloud_common::exec::{Mode, RunOptions};
+use cloud_common::sizing::resolve_instance_types_path;
 
 #[derive(Parser)]
-#[command(name = "eks-setup", about = "Interactive EKS cluster setup for Dimster benchmarks")]
+#[command(
+    name = "eks-setup",
+    about = "Interactive EKS cluster setup for Dimster benchmarks"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -26,7 +31,7 @@ enum Commands {
         answers: Option<String>,
 
         /// Path to instance types YAML file
-        #[arg(long, default_value = "eks-setup-cli/instance-types.yaml")]
+        #[arg(long, default_value = "cloud/eks-cli/instance-types.yaml")]
         instance_types: PathBuf,
 
         /// Show what would be executed without running anything
@@ -105,25 +110,26 @@ fn run_create(
     generate_script: bool,
     yes: bool,
 ) -> Result<()> {
-    steps::set_auto_accept(yes);
-    let mode = if generate_script {
-        Mode::GenerateScript
-    } else if dry_run {
-        Mode::DryRun
-    } else {
-        Mode::Execute
-    };
+    let opts = RunOptions::from_flags(dry_run, generate_script, yes);
 
-    if !matches!(mode, Mode::GenerateScript) {
+    if opts.mode != Mode::GenerateScript {
         println!("Dimster EKS Setup");
         println!("=================\n");
     }
 
-    let instance_types = instances::InstanceTypes::load(&instance_types)
-        .context(format!("Failed to load instance types from {:?}", instance_types))?;
+    let resolved = resolve_instance_types_path(
+        &instance_types,
+        &[
+            "cloud/eks-cli/instance-types.yaml",
+            "eks-cli/instance-types.yaml",
+            "instance-types.yaml",
+        ],
+    );
+    let instance_types = instances::InstanceTypes::load(&resolved)
+        .with_context(|| format!("Failed to load instance types from {:?}", resolved))?;
 
     let answers = if let Some(ref path) = answers_path {
-        if !matches!(mode, Mode::GenerateScript) {
+        if opts.mode != Mode::GenerateScript {
             println!("Loading answers from {}...\n", path);
         }
         answers::Answers::load(path)?
@@ -131,8 +137,7 @@ fn run_create(
         questions::ask_all(&instance_types)?
     };
 
-    if !matches!(mode, Mode::GenerateScript) {
-        // Show summary before executing
+    if opts.mode != Mode::GenerateScript {
         println!("\n=== Configuration Summary ===\n");
         println!("  Env key:  {}", answers.env_name);
         println!("  Cluster:  {}-benchmark", answers.aws.dimster_name);
@@ -143,30 +148,48 @@ fn run_create(
                 println!("  Bootstrap: {}", bs);
             }
         } else {
-            println!("  Kafka:    {} {}x {} (heap: {}, cpu: {}, mem: {})",
+            println!(
+                "  Kafka:    {} {}x {} (heap: {}, cpu: {}, mem: {})",
                 answers.kafka.version,
-                answers.kafka.count, answers.kafka.instance_type,
-                answers.kafka.heap, answers.kafka.cpu, answers.kafka.memory);
-            println!("  Storage:  {} ({})",
+                answers.kafka.count,
+                answers.kafka.instance_type,
+                answers.kafka.heap,
+                answers.kafka.cpu,
+                answers.kafka.memory
+            );
+            println!(
+                "  Storage:  {} ({})",
                 answers.storage.storage_type,
                 match answers.storage.performance.as_deref() {
-                    Some("provisioned") => format!("{}, {} IOPS, {} MB/s",
+                    Some("provisioned") => format!(
+                        "{}, {} IOPS, {} MB/s",
                         answers.storage.size,
                         answers.storage.iops.unwrap_or(0),
-                        answers.storage.throughput_mbs.unwrap_or(0)),
+                        answers.storage.throughput_mbs.unwrap_or(0)
+                    ),
                     _ => answers.storage.size.clone(),
-                });
+                }
+            );
         }
-        println!("  Workers:  {}x {} (heap: {}, cpu: {}, mem: {})",
-            answers.workers.count, answers.workers.instance_type,
-            answers.workers.heap, answers.workers.cpu, answers.workers.memory);
-        println!("  Infra:    1x {} (coordinator + Grafana + Prometheus)",
-            answers.coordinator.infra_instance_type);
-        println!("  Coord:    heap: {}, cpu: {}, mem: {}",
-            answers.coordinator.heap, answers.coordinator.cpu, answers.coordinator.memory);
+        println!(
+            "  Workers:  {}x {} (heap: {}, cpu: {}, mem: {})",
+            answers.workers.count,
+            answers.workers.instance_type,
+            answers.workers.heap,
+            answers.workers.cpu,
+            answers.workers.memory
+        );
+        println!(
+            "  Infra:    1x {} (coordinator + Grafana + Prometheus)",
+            answers.coordinator.infra_instance_type
+        );
+        println!(
+            "  Coord:    heap: {}, cpu: {}, mem: {}",
+            answers.coordinator.heap, answers.coordinator.cpu, answers.coordinator.memory
+        );
     }
 
-    if matches!(mode, Mode::Execute) && answers_path.is_none() && !yes {
+    if opts.mode == Mode::Execute && answers_path.is_none() && !opts.auto_accept {
         let proceed = dialoguer::Confirm::new()
             .with_prompt("\nProceed with setup?")
             .default(true)
@@ -178,9 +201,7 @@ fn run_create(
         }
     }
 
-    steps::run_all(&answers, mode)?;
-
-    Ok(())
+    steps::run_all(&answers, opts)
 }
 
 fn run_delete(
@@ -192,18 +213,10 @@ fn run_delete(
     generate_script: bool,
     yes: bool,
 ) -> Result<()> {
-    steps::set_auto_accept(yes);
-    let mode = if generate_script {
-        Mode::GenerateScript
-    } else if dry_run {
-        Mode::DryRun
-    } else {
-        Mode::Execute
-    };
+    let opts = RunOptions::from_flags(dry_run, generate_script, yes);
 
-    // Resolve dimster_name and region from answers file or flags
     let (dimster_name, aws_region) = if let Some(ref path) = answers_path {
-        if !matches!(mode, Mode::GenerateScript) {
+        if opts.mode != Mode::GenerateScript {
             println!("Loading answers from {}...\n", path);
         }
         let answers = answers::Answers::load(path)?;
@@ -217,7 +230,7 @@ fn run_delete(
 
     let cluster_name = format!("{}-benchmark", dimster_name);
 
-    if !matches!(mode, Mode::GenerateScript) {
+    if opts.mode != Mode::GenerateScript {
         println!("Dimster EKS Delete");
         println!("==================\n");
         println!("  Cluster:  {}", cluster_name);
@@ -225,7 +238,5 @@ fn run_delete(
         println!("  Keep ECR: {}", if keep_ecr { "yes" } else { "no" });
     }
 
-    steps::delete_all(&dimster_name, &aws_region, keep_ecr, mode)?;
-
-    Ok(())
+    steps::delete_all(&dimster_name, &aws_region, keep_ecr, opts)
 }

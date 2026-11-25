@@ -10,4 +10,5 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 1Gi
+      # 4Gi satisfies GCP Hyperdisk Balanced's 4 GB minimum volume size (for Gen-4 C4/N4/C4A nodes).
+      storage: 4Gi

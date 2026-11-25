@@ -1,8 +1,6 @@
 # Modifying Dimster itself
 
-This page is for **contributors** — anyone who wants to change Dimster's
-own source code (the Java engine, the Rust CLI, or the eks-setup CLI),
-not just run benchmarks against it.
+This page is for **contributors** — anyone who wants to change Dimster's own source code (the Java engine, the Rust CLI, or the cloud setup CLIs), not just run benchmarks against it.
 
 If you only want to **run** benchmarks, the [getting-started
 guide](getting-started/README.md) has everything you need; you don't need
@@ -21,7 +19,7 @@ You'll need this page if you want to:
 
 - Modify the Java benchmark engine in `dimster-core/`.
 - Add a feature to the `dimster` CLI in `cli/`.
-- Modify the EKS setup helper in `eks-setup-cli/`.
+- Modify the cloud cluster setup helpers in `cloud/` (`cloud/common/`, `cloud/eks-cli/`, `cloud/gke-cli/`).
 - Add a new workload mode (an engine), change the deploy logic, or extend the
   Kubernetes manifests.
 
@@ -51,7 +49,7 @@ produce identical runtime images.
 ```
 dimster/
 ├── cli/                  # The `dimster` CLI (Rust, clap-based)
-├── eks-setup-cli/        # `eks-setup` helper for AWS EKS provisioning (Rust)
+├── cloud/                # Cloud provisioning workspace (`eks-setup` + `gke-setup` + shared `common`, Rust)
 ├── dimster-spi/          # Version-agnostic Kafka SPI (interfaces + Capabilities)
 ├── dimster-kafka-3.x/    # SPI impl bound to kafka-clients 3.x (no share groups)
 ├── dimster-kafka-4.1/    # SPI impl bound to kafka-clients 4.1 (share consumer only)
@@ -166,25 +164,21 @@ prefer the default host-build path there.
 > tarball layout. Always re-run `./dimster build` before claiming a
 > Java change works end-to-end.
 
-## eks-setup CLI dev loop
+## Cloud setup CLIs dev loop (`eks-setup` / `gke-setup`)
 
 ```bash
-cd eks-setup-cli
+cd cloud
 cargo build --release
-cp target/release/eks-setup ..
+cp target/release/eks-setup target/release/gke-setup ..
 cd ..
 ```
 
-Same shape as the dimster CLI. Run its own tests with `cargo test` from
-`eks-setup-cli/`. macOS users: re-codesign the resulting binary after each
-clean rebuild.
+Same shape as the dimster CLI. Run unit tests across all cloud crates with `cargo test` from `cloud/`. macOS users: re-codesign the resulting binaries after each clean rebuild.
 
 ## Testing
 
-- **Java engine:** `./mvnw test` from the repo root runs the full reactor's
-  test suite. `./mvnw -pl dimster-core test` scopes to one module.
-- **Rust CLIs:** `cargo test` from `cli/` or `eks-setup-cli/`. Both crates
-  ship with unit tests that don't require a cluster.
+- **Java engine:** `./mvnw test` from the repo root runs the full reactor's test suite. `./mvnw -pl dimster-core test` scopes to one module.
+- **Rust CLIs:** `cargo test` from `cli/` or `cloud/`. Both workspaces ship with unit tests that don't require a cluster.
 - **End-to-end:** the only authoritative end-to-end test is to actually
   run a benchmark on a cluster — the [first-benchmark
   page](getting-started/06-first-benchmark.md) walks through it. For

@@ -92,7 +92,7 @@ Profiles give starting points, and the flags above override them:
 | `gp3` | 1 ms | 3,000 | 125 MiB/s | gp3 defaults |
 | `gp3-max` | 1 ms | 16,000 | 1,000 MiB/s | gp3 at its classic provisioned maximum |
 
-The gp3 numbers match [05 — AWS EKS](05-aws-eks.md). AWS changes its limits from time to time, so check current figures for anything you publish.
+The gp3 numbers match [cloud/eks-cli/README.md](../../cloud/eks-cli/README.md). AWS changes its limits from time to time, so check current figures for anything you publish.
 
 Other volume types and instance limits are just different flags. For example, an m6i.2xlarge's 312 MB/s EBS bandwidth limit is `--rbps 297M`, since that page's MB/s are decimal and `M` here is binary.
 

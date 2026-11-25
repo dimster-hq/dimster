@@ -225,4 +225,4 @@ Use the printed IP in both the Docker Compose `KAFKA_ADVERTISED_LISTENERS` env v
 ## What's next
 
 - [02 — Deploy modes](02-deploy-modes.md): the conceptual difference between `full` and `external`.
-- [05 — AWS EKS](05-aws-eks.md): if you want Dimster to own Kafka on EKS instead of pointing at MSK/CC.
+- [05 — Cloud Kubernetes](05-cloud-k8s.md): if you want Dimster to own Kafka on EKS or GKE instead of pointing at MSK/CC.

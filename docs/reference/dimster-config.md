@@ -296,6 +296,7 @@ workers:
 | `heap` | string | -- | JVM heap flags. |
 | `requests.cpu` | string | -- | CPU request/limit. |
 | `requests.memory` | string | -- | Memory request/limit. |
+| `nodeLabel` | string | inherits `monitoring.nodeLabel` (else `workers.nodeLabel`) | Explicit node selector label (`key=value`, e.g. `role=infra` or `role=worker`) for the coordinator pod. |
 
 The coordinator deployment uses `strategy: Recreate` because it has a ReadWriteOnce PVC that cannot be attached to multiple nodes simultaneously.
 

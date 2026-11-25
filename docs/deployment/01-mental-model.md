@@ -57,7 +57,7 @@ That's the entire shopping list. Per env, the CLI sizes each of these (replicas,
 
 These are all on you (or on your platform team):
 
-- **Cluster creation** — minikube/k3d/kind on your laptop, EKS via `eks-setup` (page 05), GKE/AKS/on-prem entirely by hand (refer to your cloud provider's docs).
+- **Cluster creation** — minikube/k3d/kind on your laptop, EKS via `eks-setup` (page 05), GKE via `gke-setup` (page 11), AKS/on-prem by hand (refer to your cloud provider's docs).
 - **IAM, networking, DNS** — security groups, VPC peering, IRSA roles, ingress, DNS.
 - **Image registry credentials** — Dimster pushes images to whatever registry you point `image:` at, but you handle the auth (e.g. `aws ecr get-login-password`, `gcloud auth configure-docker`).
 - **Storage class definitions** — Dimster *uses* a storage class via `kafka.pvcStorageClass`, but you create the StorageClass object in the cluster yourself.

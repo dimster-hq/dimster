@@ -166,7 +166,7 @@ Then in two terminals:
 For any serious benchmarking you'll need to deploy to a production-like environment. The next stop is a real multi-node Kubernetes cluster:
 
 - [Deploying Dimster — overview](../deployment/) — start here for the mental model and to pick your target.
-- [AWS EKS](../deployment/05-aws-eks.md) — production-scale benchmarks on AWS, with separate nodegroups for Kafka, workers, and monitoring, set up via the `eks-setup` wizard.
+- [Cloud Kubernetes](../deployment/05-cloud-k8s.md) — production-scale benchmarks on AWS EKS (`eks-setup`) or GCP GKE (`gke-setup`), with separate nodegroups for Kafka, workers, and monitoring.
 - [External Kafka](../deployment/06-external-kafka.md) — point Dimster workers at Confluent Cloud, MSK, or anything else that speaks the Kafka protocol.
 
 The `exampleRemoteFull` and `exampleRemoteExt` blocks already in your `dimster-config.yaml` are starter templates for those shapes.

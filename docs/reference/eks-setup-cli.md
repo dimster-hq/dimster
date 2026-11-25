@@ -2,11 +2,11 @@
 
 The `eks-setup` CLI automates creation and deletion of EKS clusters sized for Dimster benchmarks. It can run interactively, replay from an answers file, or generate a shell script.
 
-Binary location: `eks-setup-cli/target/release/eks-setup`
+Binary location: `cloud/target/release/eks-setup`
 
-Build: `cd eks-setup-cli && cargo build --release`
+Build: `cd cloud && cargo build --release -p eks-setup`
 
-Or build and copy to project root (for convenience): `cd eks-setup-cli && cargo build --release && cp target/release/eks-setup ../ && cd ..`
+Or build and copy to project root (for convenience): `cd cloud && cargo build --release -p eks-setup && cp target/release/eks-setup .. && cd ..`
 
 ## Commands
 
@@ -21,7 +21,7 @@ eks-setup create [options]
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--answers <path>` | No | -- | Path to an answers YAML file. Replays the configuration without interactive prompts. |
-| `--instance-types <path>` | No | `eks-setup-cli/instance-types.yaml` | Path to the instance types definition YAML. |
+| `--instance-types <path>` | No | `cloud/eks-cli/instance-types.yaml` | Path to the instance types definition YAML. |
 | `--dry-run` | No | `false` | Show the commands that would be executed without running anything. |
 | `--generate-script` | No | `false` | Output a shell script instead of executing commands directly. |
 | `-y`, `--yes` | No | `false` | Skip all interactive confirmations. |
@@ -93,7 +93,7 @@ aws:
   dimsterName: my-dimster
   region: us-west-2
   az: us-west-2b
-  eksVersion: "1.31"
+  eksVersion: "1.32"
 
 deployMode: full
 # bootstrapServers: "broker1:9092,broker2:9092"  # required when deployMode is "external" (generates bootstrap.servers in dimster-config.yaml)
@@ -138,7 +138,7 @@ coordinator:
 | `dimsterName` | string | `my-dimster` | Resource name prefix. The EKS cluster is named `{dimsterName}-benchmark`. |
 | `region` | string | `us-west-2` | AWS region. |
 | `az` | string | `{region}b` | Availability zone. The CLI queries available AZs from AWS when running interactively. |
-| `eksVersion` | string | `1.31` | EKS Kubernetes version. |
+| `eksVersion` | string | `1.32` | EKS Kubernetes version. |
 
 #### Top-level
 

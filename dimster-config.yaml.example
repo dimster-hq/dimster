@@ -187,11 +187,11 @@ environments:
   #       cpu: "1"
   #       memory: "2Gi"
 
-  # Example: AWS EKS deployment (see docs/eks-setup.md for full guide)
+  # Example: AWS EKS deployment (see cloud/eks-cli/README.md for full guide)
   # aws:
   #   image: 123456789.dkr.ecr.us-west-2.amazonaws.com/dimster
   #   context: arn:aws:eks:us-west-2:123456789:cluster/my-cluster
-  #   hardware: "kafka=3xm6i.2xlarge, workers=4xm6i.xlarge, storage=ebs/500Gi/provisioned/3000iops/300MBs, region=us-west-2, az=us-west-2b, eks=1.31"
+  #   hardware: "kafka=3xm6i.2xlarge, workers=4xm6i.xlarge, storage=ebs/500Gi/provisioned/3000iops/300MBs, region=us-west-2, az=us-west-2b, eks=1.32"
   #   system: "Apache Kafka 4.2"
   #   # Experimental cpuManager validation for benchmark-node kubelet settings.
   #   # cpuManager:
@@ -227,6 +227,7 @@ environments:
   #     requests:
   #       cpu: "500m"
   #       memory: "2Gi"
+  #     nodeLabel: "role=infra"
   #   monitoring:
   #     nodeLabel: "role=infra"
   #     cgroupMetrics: true     # per-pod CPU/disk/network for the resources report
@@ -238,6 +239,48 @@ environments:
   #       requests:
   #         cpu: "1"
   #         memory: "2Gi"
+
+  # Example: GCP GKE deployment (see cloud/gke-cli/README.md for full guide)
+  # gke:
+  #   image: us-central1-docker.pkg.dev/my-project/my-dimster/dimster
+  #   context: gke_my-project_us-central1-a_my-dimster-benchmark
+  #   hardware: "kafka=3xc3-standard-8, workers=2xc3-standard-4, storage=hyperdisk-balanced/500Gi/provisioned/16000iops/800MiBs, region=us-central1, zone=us-central1-a, gke=regular"
+  #   system: "Apache Kafka 4.2.0"
+  #   kafka:
+  #     version: "4.2.0"
+  #     replicas: 3
+  #     pvcSize: 500Gi
+  #     pvcStorageClass: dimster-hyperdisk-balanced-fast
+  #     heap: "-Xms8G -Xmx8G"
+  #     requests:
+  #       cpu: "6"
+  #       memory: "26Gi"
+  #     nodeLabel: "role=kafka"
+  #     brokerConfig: "run/broker-configs/default.yaml"
+  #   workers:
+  #     replicas: 2
+  #     heap: "-Xms2G -Xmx8G"
+  #     requests:
+  #       cpu: "3"
+  #       memory: "11Gi"
+  #     nodeLabel: "role=worker"
+  #   coordinator:
+  #     heap: "-Xms512M -Xmx512M"
+  #     requests:
+  #       cpu: "500m"
+  #       memory: "1Gi"
+  #     nodeLabel: "role=infra"
+  #   monitoring:
+  #     nodeLabel: "role=infra"
+  #     cgroupMetrics: true
+  #     prometheus:
+  #       requests:
+  #         cpu: "750m"
+  #         memory: "2Gi"
+  #     grafana:
+  #       requests:
+  #         cpu: "750m"
+  #         memory: "1Gi"
 
 results:
   dir: ./results

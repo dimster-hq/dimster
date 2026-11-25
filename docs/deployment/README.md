@@ -12,7 +12,7 @@ The pages split into two halves: **concepts** (01–03) build the mental model o
 | [02 — Deploy modes](02-deploy-modes.md) | `deploy: full`, `external` and `external-env` — when to use each, what each provisions |
 | [03 — Scheduling and storage](03-scheduling-and-storage.md) | Why a serious benchmark needs `nodeLabel` and `pvcStorageClass`, and how to use them |
 | [04 — Local clusters](04-local.md) | Pointer back to getting-started; when local is enough |
-| [05 — AWS EKS](05-aws-eks.md) | End-to-end: provision an EKS cluster with the `eks-setup` wizard, build, deploy, run, plus EC2 instance selection guidance |
+| [05 — Cloud Kubernetes](05-cloud-k8s.md) | Deploying to AWS EKS (`eks-setup`), GCP GKE (`gke-setup`), or AKS / on-prem, with links to the per-CLI guides |
 | [06 — External Kafka](06-external-kafka.md) | Connecting to Confluent Cloud, MSK, self-managed Kafka, or local Docker Compose |
 | [07 — In-cluster mTLS](07-mtls-full-mode.md) | Enable mTLS for `deploy: full` — auto-generated certs, per-workload opt-in, side-by-side TLS vs PLAINTEXT runs |
 | [08 — Infrastructure dimensions](08-infra-dimensions.md) | Learn how to include infrastructure in dimensional testing |
@@ -31,8 +31,9 @@ There's also one un-numbered reference page that's optional reading:
 
 | You want to... | Go to |
 |----------------|-------|
-| Benchmark Kafka on AWS EKS using the wizard | [05 — AWS EKS](05-aws-eks.md) |
-| Benchmark on GKE / AKS / on-prem | Bring your own cluster — read [03 — Scheduling and storage](03-scheduling-and-storage.md) for the env-block requirements, then refer to your cloud provider's docs for cluster setup |
+| Benchmark Kafka on AWS EKS using the wizard | [05 — Cloud Kubernetes](05-cloud-k8s.md) / [cloud/eks-cli/README.md](../../cloud/eks-cli/README.md) |
+| Benchmark Kafka on GCP GKE using the wizard | [05 — Cloud Kubernetes](05-cloud-k8s.md) / [cloud/gke-cli/README.md](../../cloud/gke-cli/README.md) |
+| Benchmark on AKS / on-prem | Bring your own cluster — read [03 — Scheduling and storage](03-scheduling-and-storage.md) for the env-block requirements, then refer to your cloud provider's docs for cluster setup |
 | Benchmark Confluent Cloud, MSK, or another managed Kafka | [06 — External Kafka](06-external-kafka.md) |
 | Benchmark locally against gp3-like disks | [09 — Emulated network-attached storage](09-emulated-network-storage.md) |
 | Run two workloads at once against one Kafka cluster | [10 — Sharing a Kafka cluster](10-shared-kafka.md) |

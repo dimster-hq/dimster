@@ -35,14 +35,15 @@
 - [02 — Deploy modes](deployment/02-deploy-modes.md) — `full` vs `external`.
 - [03 — Scheduling and storage](deployment/03-scheduling-and-storage.md) — `nodeLabel` and `pvcStorageClass`.
 - [04 — Local](deployment/04-local.md) — the laptop story (pointer back to Getting Started).
-- [05 — AWS EKS](deployment/05-aws-eks.md) — production-scale benchmarks via the `eks-setup` wizard.
+- [05 — Cloud Kubernetes](deployment/05-cloud-k8s.md) — production-scale benchmarks on AWS EKS (`eks-setup`), GCP GKE (`gke-setup`), or bring-your-own cloud k8s.
 - [06 — External Kafka](deployment/06-external-kafka.md) — point Dimster workers at Confluent Cloud, MSK, or any other managed Kafka.
 - [09 — Emulated network-attached storage](deployment/09-emulated-network-storage.md) — gp3-like disk latency and caps for local brokers.
 
 ## Reference
 
 - [Dimster CLI](reference/cli.md) — every command and flag.
-- [EKS Setup CLI](reference/eks-setup-cli.md) — the EKS provisioning helper.
+- [EKS Setup CLI](reference/eks-setup-cli.md) — the AWS EKS provisioning helper.
+- [GKE Setup CLI](reference/gke-setup-cli.md) — the GCP GKE provisioning helper.
 - [`dimster-config.yaml`](reference/dimster-config.md) — env-block schema.
 - [Kafka Configs](reference/kafka-configs.md) — broker, producer, consumer settings.
 - [Workload Reference](reference/workloads.md) — every field you can put in a workload file.
